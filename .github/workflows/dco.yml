@@ -1,0 +1,46 @@
+name: DCO
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  dco:
+    name: DCO
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check Signed-off-by on every commit
+        env:
+          # Passed via env, not interpolated into the script (branch names are attacker-controlled).
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -u
+          bad=""
+          for sha in $(git rev-list --no-merges "origin/${BASE_REF}..HEAD"); do
+            case "$(git log -1 --format=%an "$sha")" in
+              "dependabot[bot]"|"github-actions[bot]") continue ;;  # dependabot and release-please
+            esac
+            if ! git log -1 --format=%B "$sha" | grep -Eq '^Signed-off-by: .+ <.+>$'; then
+              bad="${bad}$(git log -1 --format='  %h %s' "$sha")"$'\n'
+            fi
+          done
+          if [ -n "$bad" ]; then
+            echo "::error::DCO check failed: these commits have no Signed-off-by line:"
+            printf '%s' "$bad"
+            cat <<EOF
+
+          Fix: sign off your commits (https://developercertificate.org/).
+            Last commit only:   git commit --amend -s --no-edit
+            Several commits:    git rebase --signoff origin/${BASE_REF}
+          Then force-push:      git push --force-with-lease
+          EOF
+            exit 1
+          fi
+          echo "All commits are signed off."

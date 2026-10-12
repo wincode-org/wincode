@@ -23,6 +23,14 @@ git commit -s -m "feat(cli): ..."
 
 This adds a `Signed-off-by: Your Name <you@example.com>` line. Use your real name.
 
+The **DCO** check (`.github/workflows/dco.yml`) fails a PR if any commit in it lacks that line. To fix it:
+
+```
+git commit --amend -s --no-edit      # only the last commit is unsigned
+git rebase --signoff origin/main     # several commits are unsigned
+git push --force-with-lease          # then force-push your branch
+```
+
 ## Clean-room rule for Apple file formats
 
 Some parts of winCode (for example the `Assets.car` compiler) must produce Apple file formats that Apple does not document. To keep the project legally clean:
