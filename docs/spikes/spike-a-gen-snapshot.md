@@ -1,6 +1,6 @@
 # Spike A: gen_snapshot for iOS arm64 on a Linux host (phase A0 recon)
 
-Status: phase A0 (recon) done, 2026-10-12. Nothing has been built from source yet. Phase A1 needs approval.
+Status: phase A1 done, 2026-10-12. **Verdict: GREEN, pending on-device proof in spike B.** A0 recon is kept below for the reasoning; A1 results come first.
 
 ## Question
 
@@ -13,6 +13,135 @@ Can a non-Mac host produce the iOS release AOT output (`App.framework/App`) that
 - **RED:** it is impossible without macOS. The project would then need a remote Mac or CI fallback.
 
 **A0 assessment: GREEN is likely, not yet proven.** Nothing found in the source requires macOS to *produce* the output. The remaining blocker is build plumbing (GN/toolchain checks that assume a Mac host), not code generation.
+
+## Phase A1 results
+
+**Verdict: GREEN** (on-device load still to be proven in spike B).
+
+A gen_snapshot built on Linux x64 from the standalone Dart SDK at `dart_revision` produces iOS arm64 `App.framework/App` output that:
+- carries the snapshot hash and features string of the pinned Flutter.framework exactly, and
+- is **byte-identical to the official macOS gen_snapshot's output** once the two hosts' libc `qsort` tie-breaking is aligned.
+
+Without that alignment the bytes differ only in code and data *layout*: a different but equally valid ordering. The scripts are in `spikes/a-gen-snapshot/`.
+
+### GN approach
+
+The preferred route worked: a real iOS target configuration (`target_os="ios"`, `target_cpu="arm64"`), building only the host-toolchain `gen_snapshot` (Linux x64 → iOS arm64). Every GN default that depends on `target_os == "ios"` is kept, including the `DART_TARGET_OS_MACOS_IOS` define. The fallback (forcing defines onto a Linux target) was not needed.
+
+GN-only changes, applied idempotently by `build.sh`. No Dart C++ was changed.
+
+| File | Change | Why |
+| --- | --- | --- |
+| `build/config/BUILDCONFIG.gn`, `is_ios` branch | On a Linux host: `host_toolchain = //build/toolchain/linux:clang_$host_cpu` and default toolchain `//build/toolchain/linux:clang_$target_cpu` | The stock branch hardcodes `//build/toolchain/mac`, which asserts `host_os == "mac"`. The default toolchain must differ from the host toolchain, because GN ignores `toolchain_args` for the default toolchain. Otherwise gen_snapshot would compile with `current_os=ios` and `current_cpu=arm64` |
+| `build/config/compiler/BUILD.gn`, clang version stamp | For `is_mac || is_ios` on a Linux host, read `buildtools/linux-x64/clang/.versions/clang.cipd_version` | The stamp follows `is_ios`, not the installed clang. It only feeds a `TOOLCHAIN_VERSION` define that forces rebuilds, with no codegen effect |
+| new `wincode_spike/BUILD.gn` | `group("gen_snapshot_ios") { deps = [ "//runtime/bin:gen_snapshot($host_toolchain)" ] }`, used with `gn gen --root-target=//wincode_spike --root-pattern=//wincode_spike:*` | Restricts the default (iOS) toolchain graph to gen_snapshot's dependencies. Unrelated samples and FFI test libraries expect Apple `.dylib` names under `is_ios` and fail GN's generated-input check |
+
+`args.gn`, with the reason for each arg:
+
+| Arg | Value | Reason |
+| --- | --- | --- |
+| `target_os` / `target_cpu` / `dart_target_arch` | `ios` / `arm64` / `arm64` | Target of the generated code, as in the engine's iOS release build |
+| `use_simulator` | `false` | iOS device, not simulator |
+| `ios_sdk_path` | `/nonexistent/iPhoneOS.sdk` | Only stops `ios_sdk.gni` from running `find_sdk.py` (macOS-only); nothing is compiled for iOS |
+| `is_debug` / `is_release` / `is_product` / `dart_debug` | `false` / `false` / `true` / `false` | Dart's own product mode (`tools/gn.py`) |
+| `dart_runtime_mode` | `release` | Engine: `runtime_mode release` → `dart_runtime_mode release` → `PRODUCT` for `runtime/bin:gen_snapshot` (`dart_maybe_product_config`) |
+| `dart_use_compressed_pointers` | `false` | Engine enables it for Android only ("iOS is excluded") |
+| `dart_default_optimization_level` | `2` | Engine sets it for `target_os` android/ios |
+| `dart_component_kind` / `dart_lib_export_symbols` | `static_library` / `false` | Engine values |
+| `dart_dynamic_modules` | `false` | Engine default (only set with `--dart-dynamic-modules`) |
+| `dart_sdk_verification_hash` | `04bcd1036c` | Engine uses `dart_version[:10]`. It must match the kernel SDK hash in `app.dill`, which reads `04bcd1036c` at byte offset 8 |
+| `dart_version_git_info` / `exclude_kernel_service` / `is_clang` | `true` / `false` / `true` | Engine/Dart defaults, set explicitly |
+
+`gen_snapshot --version` prints `Dart SDK version: 3.13.5 (stable) (Tue Sep 29 01:00:52 2026 -0700) on "linux_simarm64"`. On an x64 host targeting arm64, Dart compiles in its arm64 simulator (`DART_INCLUDE_SIMULATOR`). The official x86_64 slice does the same, and it produces the same output as the arm64 slice (see below).
+
+### Build cost
+
+| Step | Time | Disk |
+| --- | --- | --- |
+| `sync.sh`: depot_tools + `gclient sync --no-history` (with `download_reclient=False`) | 168 s | dart-sdk 5.6 GB + depot_tools 0.9 GB |
+| `build.sh`: `gn gen` + ninja of `clang_x64/gen_snapshot` only, 1145 steps, `nice -n 10`, 12 jobs | 133 s | `out/` 284 MB |
+| Total A1 growth in WSL | about 5 min of compute | +7.3 GB (D: free 82.5 → 75.2 GB) |
+
+No `sudo` and no apt packages were needed: Dart's sync brings its own clang, sysroot, gn and ninja. Oracle runs on `macos-latest`: 2 of the 3 allowed, with job times of 81 s and 99 s.
+
+### Gate: hash and features
+
+| Source | Snapshot header |
+| --- | --- |
+| Official iOS output (oracle `App`, accepted by Flutter.framework) | `0451907c2eaa8467e848c0067bfe8ed4` `product no-asan no-msan no-tsan no-shared_data no-code_comments no-dwarf_stack_traces arm64 ios no-compressed-pointers` |
+| Derived from `Dart::FeaturesString` (`runtime/vm/dart.cc`) for a PRODUCT AOT snapshot, arm64, `DART_TARGET_OS_MACOS_IOS`, no compressed pointers, default flags | same |
+| Our Linux-built gen_snapshot | same: **MATCH** |
+
+The Flutter.framework runtime computes this string at runtime from its compiled-in configuration, so the full string is not stored in the framework binary. Its fragments are (` arm64`, ` ios`, ` no-compressed-pointers`, see A0). The oracle output is the authoritative full string. `--dwarf-stack-traces` (split debug info) flips `no-dwarf_stack_traces` on both sides.
+
+### Oracle diff
+
+Workflow `.github/workflows/spike-a-oracle.yml`, on `macos-latest`: macOS 26.6.2 (25G83), Xcode 26.6 (17F113). It ran the official `gen_snapshot_arm64` from engine `deb28748` (`Dart 3.13.5 … on "macos_arm64"`) with the exact flutter_tools arguments. `compare.sh` ran our gen_snapshot on the **runner's** `app.dill` with identical arguments and relative output names.
+
+| Comparison | `App.framework/App` | `app.o` |
+| --- | --- | --- |
+| Official, run 1 vs run 2 vs a re-run vs the thin re-signed arm64 copy | identical (`d0821148…`) | n/a |
+| Official **x86_64 slice** (Rosetta; includes the simulator like ours) vs arm64 slice | identical | n/a |
+| Ours (Linux) vs official | different: same symbol count (8351), same exports, same load-command set and snapshot header; code **order** differs. That changes the UUID and section sizes, and which name a deduplicated function keeps | different |
+| Ours with an `LD_PRELOAD`ed tie-reversing `qsort` vs ours | different | n/a |
+| **Official + interposed glibc-style stable `qsort` (45,432 calls intercepted) vs ours** | **byte-identical** (`12212f79…2339`) | differs only in DWARF producer string |
+
+Explanation:
+- Dart's `GrowableArray::Sort` calls the host libc `qsort` (`runtime/platform/growable_array.h:228`). The AOT dispatch-table generator sorts selector rows by call count and size (`runtime/vm/compiler/aot/dispatch_table_generator.cc:625-658`), with many ties. macOS libc and glibc 2.39 (a stable merge sort) break those ties differently. The result is a different, equally valid table and code layout.
+- With the tie-breaking aligned, the Mac and Linux outputs are byte-identical. So our build configuration (GN args, simulator, compiler, libc++/libstdc++) reproduces the official gen_snapshot's code generation exactly.
+- `app.o` is the relocatable object used only for `dsymutil`. In `__debug_info` it embeds the VM version string with the host, `"macos_arm64"` vs `"linux_simarm64"`, which is 3 bytes longer and shifts the rest of the DWARF data. Debug info only; it is not shipped.
+- Classification: **acceptable**. The `App` difference is ordering only, and the `app.o` difference is debug-info metadata only. If byte-identical Linux and Mac output is ever wanted, the clean fix is upstream: Dart should use a host-independent sort, for example a stable sort or tie-breaking comparators, in `--deterministic` mode. Changing Dart C++ is out of scope for this spike.
+
+### Our `App.framework` (Linux only)
+
+`make_app.sh` reproduces flutter_tools' iOS release bundle for the counter app on Linux, using our own `app.dill`:
+1. Kernel.
+2. gen_snapshot.
+3. `dsymutil` (xtool toolset) → `App.framework.dSYM`.
+4. `strip -x` (as `llvm-objcopy --discard-all`).
+5. Single-arch "lipo" (a copy).
+6. `flutter build bundle --release --target-platform ios` → `flutter_assets`.
+7. `Info.plist` from `ios/Flutter/AppFrameworkInfo.plist` with `MinimumOSVersion=15.0`.
+
+Mach-O checks on `App`:
+
+| Check | Result |
+| --- | --- |
+| Type | Mach-O 64-bit arm64 dynamically linked shared library |
+| `LC_BUILD_VERSION` | platform ios, minos 15.0 (sdk field 15.0) |
+| `LC_ID_DYLIB` | `@rpath/App.framework/App` |
+| `LC_RPATH` | `@executable_path/Frameworks`, `@loader_path/Frameworks` |
+| `LC_UUID`, `LC_ENCRYPTION_INFO_64`, `LC_CODE_SIGNATURE` | present (also after strip) |
+| Exports | `_kDartSnapshotText` (T), `_kDartSnapshotData` (S). At this version the engine looks these up for both VM and isolate snapshots (`engine/src/flutter/runtime/dart_snapshot.cc:18-21`), not `_kDartVmSnapshot*`/`_kDartIsolateSnapshot*` |
+| Header | hash + features match (above) |
+| Size | 4,362,672 bytes unstripped, 3,434,736 bytes stripped; dSYM DWARF 1.9 MB; framework 5.3 MB |
+
+Differences from a Mac build that spike B must handle:
+- **No codesign.** flutter_tools runs `codesign --force --sign <identity or ->` on the framework; spike B signs with zsign. Stripping rewrote the binary, so the ad-hoc linker signature from gen_snapshot must be replaced anyway.
+- **Asset bundle.** It comes from `flutter build bundle`, not the `release_ios_bundle_flutter_assets` target, which cannot run on Linux because its dependency `AotAssemblyRelease` needs Xcode. It contains `.last_build_id`. To be checked against an Xcode-built bundle when convenient.
+
+## Spike B prerequisites
+
+1. **Inputs from A1 (Linux):**
+   - `App.framework` from `make_app.sh`.
+   - `Flutter.framework` from `bin/cache/artifacts/engine/ios-release/Flutter.xcframework/ios-arm64/`.
+   - The same engine revision `deb28748` as the gen_snapshot's `dart_revision`.
+2. **Runner:**
+   - xtool's SwiftPM runner with `Flutter.framework` linked and embedded under `Frameworks/`, and `App.framework` embedded next to it.
+   - `FlutterViewController` created in code, with no storyboards.
+3. **Signing:**
+   - zsign, inside-out: `App.framework`, then `Flutter.framework`, then the app.
+   - A development profile via xtool, and the merged entitlements.
+4. **Device:**
+   - An iPhone on iOS 17.4 or later, with Developer Mode on.
+   - Attached to WSL through usbipd (already the case).
+   - Install and launch with xtool or pymobiledevice3.
+5. **Pass criteria:**
+   - The counter app launches and the Dart VM accepts the snapshot: no "snapshot version/features mismatch" in the device log.
+   - Taps increment the counter.
+6. **Optional:** repeat with the oracle's `App` swapped in. It's the same code with a different layout, so it isolates packaging problems from code generation.
+
+## Phase A0 recon
 
 ## Pinned versions
 
@@ -222,8 +351,10 @@ Both estimates are unmeasured. Both need approval (gclient sync; possibly over 3
 
 ## Open questions
 
-- Which GN args does the Flutter engine set for Dart in an iOS release build that a standalone Dart build does not? Examples: `dart_runtime_mode`, `exclude_kernel_service`, `dart_support_perfetto`, `dart_lib_export_symbols`, LTO. Some could change codegen or the features string. The oracle diff in step 4 answers this empirically. Reading `engine/src/flutter/BUILD.gn` and `//flutter/common/config.gni` answers it on paper.
-- Does the Dart standalone `gclient sync` on Linux pull anything Mac-only that we would need? Expected no.
+- ~~Which Dart GN args does the engine set for an iOS release build?~~ Answered in A1 (`args.gn` table). The oracle diff confirms codegen equivalence.
+- ~~Does the Dart standalone `gclient sync` on Linux pull anything Mac-only?~~ No. It needed nothing Mac-only and no apt packages.
+- Should winCode ship byte-identical-to-Mac output? Not required for correctness. If wanted, it needs an upstream Dart change: a host-independent sort in `--deterministic` mode.
+- Per-release maintenance: re-run `sync.sh` and `build.sh` at each Flutter release's `dart_revision`. The three GN edits are anchored string replacements, and `build.sh` fails loudly if an anchor moves. CI cost per release is about 3 min sync + 2–3 min build on 12 cores, plus about 6.5 GB of cache.
 - Is the ad-hoc `LC_CODE_SIGNATURE` written by gen_snapshot fine to re-sign with zsign, the same way Xcode re-signs it with `codesign --force`?
 - `dsymutil` and `strip -x`: do we ship stripped binaries (App Store size) and keep a dSYM (crash symbolication)? The tools exist on Linux (xtool toolset `dsymutil`, `llvm-strip`). It needs a decision, not research.
 - Darling on WSL2 stays unexplored unless P1 fails.
