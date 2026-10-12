@@ -1,0 +1,44 @@
+name: Device report
+description: Report whether winCode works on your iPhone
+labels: ["needs-device-test"]
+body:
+  - type: input
+    id: device
+    attributes:
+      label: iPhone model
+    validations:
+      required: true
+  - type: input
+    id: ios
+    attributes:
+      label: iOS version
+      description: winCode targets iOS 17.4 or later.
+    validations:
+      required: true
+  - type: input
+    id: flutter
+    attributes:
+      label: Flutter version
+    validations:
+      required: true
+  - type: dropdown
+    id: account
+    attributes:
+      label: Apple account type
+      options: [Free Apple ID, Paid developer account]
+    validations:
+      required: true
+  - type: dropdown
+    id: stage
+    attributes:
+      label: How far did it get?
+      multiple: true
+      options: [Build, Sign, Install, Launch, Debug / hot reload, Upload to App Store Connect]
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes and logs
+      description: Remove secrets before pasting.
+      render: shell

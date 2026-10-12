@@ -1,0 +1,56 @@
+# Dart / Flutter
+.dart_tool/
+.packages
+.pub-cache/
+.pub/
+build/
+pubspec.lock
+!/samples/**/pubspec.lock
+*.g.dart.tmp
+coverage/
+.flutter-plugins
+.flutter-plugins-dependencies
+.fvm/
+flutter_*.log
+
+# Swift
+.build/
+.swiftpm/
+*.xcodeproj/xcuserdata/
+DerivedData/
+Package.resolved
+
+# Apple SDK, Xcode and caches - never commit
+*.xip
+Xcode*.app/
+*.sdk/
+*.xcframework.zip
+sdk-cache/
+.sdk-cache/
+darwin-sdk/
+toolchain/cache/
+engine/out/
+engine/cache/
+
+# Secrets - never commit
+*.p8
+*.p12
+*.pfx
+*.cer
+*.certSigningRequest
+*.mobileprovision
+*.provisionprofile
+*.pem
+*.key
+.env
+.env.*
+secrets/
+
+# IDE / OS
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
+desktop.ini
+*.log

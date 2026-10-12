@@ -1,0 +1,33 @@
+name: Bug report
+description: Something does not work as expected
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: winCode version or commit
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: Windows, WSL2 distro and Flutter version
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Remove secrets (tokens, keys, Apple IDs) before pasting.
+      render: shell
