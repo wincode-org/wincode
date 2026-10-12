@@ -1,0 +1,93 @@
+name: spike-a-oracle
+
+# Spike A oracle: build App.framework/App for the counter app with the OFFICIAL
+# iOS gen_snapshot on macOS, using the exact flutter_tools iOS release steps,
+# so the Linux-built gen_snapshot can be byte-compared against it.
+# Runs only on pushes that touch this file, on the spike branch.
+
+on:
+  push:
+    branches: [spike/a-gen-snapshot-recon]
+    paths: [.github/workflows/spike-a-oracle.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  oracle:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    env:
+      FLUTTER_TAG: "3.47.7"
+      CI: "true"
+    steps:
+      - name: Clone Flutter
+        run: |
+          git clone -q --depth 1 --branch "$FLUTTER_TAG" https://github.com/flutter/flutter.git "$RUNNER_TEMP/flutter"
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+
+      - name: Precache iOS artifacts
+        run: |
+          flutter --version --machine
+          flutter precache --ios
+
+      - name: Create counter app
+        run: |
+          cd "$RUNNER_TEMP"
+          flutter create --project-name counter --org dev.wincode.spike counter
+          cd counter && flutter pub get
+
+      - name: Kernel (flutter_tools iOS release KernelSnapshot)
+        run: |
+          set -euo pipefail
+          C="$RUNNER_TEMP/flutter/bin/cache"
+          O="$RUNNER_TEMP/oracle"; mkdir -p "$O"
+          cd "$RUNNER_TEMP/counter"
+          cmd=("$C/dart-sdk/bin/dartaotruntime" "$C/dart-sdk/bin/snapshots/frontend_server_aot.dart.snapshot"
+            --sdk-root "$C/artifacts/engine/common/flutter_patched_sdk_product/"
+            --target=flutter --no-print-incremental-dependencies
+            -Ddart.vm.profile=false -Ddart.vm.product=true
+            --delete-tostring-package-uri=dart:ui --delete-tostring-package-uri=package:flutter
+            --aot --tfa --target-os ios
+            --packages "$RUNNER_TEMP/counter/.dart_tool/package_config.json"
+            --output-dill "$O/app.dill" --depfile "$O/app.d" --verbosity=error
+            package:counter/main.dart)
+          printf '%q ' "${cmd[@]}" > "$O/kernel-command.txt"; echo >> "$O/kernel-command.txt"
+          "${cmd[@]}"
+
+      - name: gen_snapshot (official, flutter_tools iOS release AOTSnapshotter args)
+        run: |
+          set -euo pipefail
+          O="$RUNNER_TEMP/oracle"
+          GS="$RUNNER_TEMP/flutter/bin/cache/artifacts/engine/ios-release/gen_snapshot_arm64"
+          cd "$O" && mkdir -p arm64/App.framework
+          cmd=("$GS" --deterministic
+            --snapshot_kind=app-aot-macho-dylib
+            --macho=arm64/App.framework/App
+            --macho-object=arm64/app.o
+            --macho-min-os-version=15.0
+            --macho-rpath=@executable_path/Frameworks,@loader_path/Frameworks
+            --macho-install-name=@rpath/App.framework/App
+            app.dill)
+          printf '%q ' "${cmd[@]}" > gen-snapshot-command.txt; echo >> gen-snapshot-command.txt
+          "${cmd[@]}"
+          "$GS" --version > gen-snapshot-version.txt 2>&1 || true
+
+      - name: Record environment and hashes
+        run: |
+          O="$RUNNER_TEMP/oracle"; cd "$O"
+          { sw_vers; echo; xcodebuild -version; echo; uname -m
+            echo; file "$RUNNER_TEMP/flutter/bin/cache/artifacts/engine/ios-release/gen_snapshot_arm64"
+            echo; shasum -a 256 app.dill arm64/App.framework/App arm64/app.o
+            echo; file arm64/App.framework/App
+            echo; cat "$RUNNER_TEMP/flutter/bin/internal/engine.version"
+          } > env.txt 2>&1
+          cat env.txt
+
+      - name: Upload oracle outputs
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: spike-a-oracle
+          path: ${{ runner.temp }}/oracle/
+          retention-days: 7
+          if-no-files-found: error
