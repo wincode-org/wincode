@@ -70,7 +70,7 @@ It has none of the `DTSDK*`, `DTXcode*`, `DTPlatform*`, `DTCompiler` or `BuildMa
 
 - **WSL needs a real user.** xtool keeps its config and the SDK per user (`~/.config/xtool`, `~/.swiftpm`), so set up a normal user rather than relying on root. Set the user as default in `/etc/wsl.conf` (`[user] default=...`).
 - **Keep the clock in sync.** Clock drift breaks Apple login. Check with `timedatectl` before debugging login errors. Restarting WSL (`wsl --shutdown`) is the likely fix after sleep or hibernate, but it was not verified.
-- **Apple login can fail on some networks.** Password mode failed with Apple error `-80045` ("This action cannot be completed at this time") during setup. xtool did not generate that code; it comes from Apple's reply. API key mode worked. Cause unconfirmed.
+- **Password login failed with Apple error `-80045`** ("This action cannot be completed at this time"). Apple rejected xtool's client identity server-side, for every account. It is fixed in xtool 1.22.2 (xtool-org/xtool#329, fixed by #337 and #340); see `spike-b-device.md`.
 - **Swift via swiftly.** `swiftly init` already installs the latest Swift (6.4.0 here) and prints a list of extra system packages to install as root (`zip gnupg2 libpython3-dev pkg-config zlib1g-dev`).
 - **AppImage needs FUSE.** `libfuse2t64` on Ubuntu 24.04.
 - **Piping scripts from PowerShell to WSL adds CRLF line endings** and breaks them. Pipe from Git Bash, or write the script file with LF endings.
