@@ -12,7 +12,7 @@ It will not ship an iOS Simulator. Instead there is a planned iOS-mode preview o
 
 ## Relationship to xtool
 
-winCode builds on [xtool](https://github.com/xtool-org/xtool) (MIT) instead of reimplementing it. xtool provides the Darwin Swift SDK setup, Apple Developer Services access (XKit) and signing/install for SwiftPM apps. winCode adds the Flutter-specific parts: the project translator, Dart AOT `gen_snapshot` for iOS, the Windows setup and device bridge, asset catalog compilation, and App Store Connect upload. Anything that is not Flutter-specific is meant to go upstream to xtool.
+winCode builds on [xtool](https://github.com/xtool-org/xtool) (MIT) instead of reimplementing it. xtool provides the Darwin Swift SDK setup, Apple Developer Services access (XKit) and signing/install for SwiftPM apps. winCode adds everything else: the Flutter project translator, Dart AOT `gen_snapshot` for iOS, the Windows setup and device link, asset catalog compilation, and App Store Connect upload. All of winCode's code lives in this repository. winCode uses xtool's official releases as an external tool and does not send changes upstream to xtool.
 
 ## Repository layout
 

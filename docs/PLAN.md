@@ -47,23 +47,23 @@ Positioning: don't sell it as an "Xcode replacement" or use Apple marks in the n
 
 ## Build on xtool, don't clone it
 
-xtool already solves half of winCode and is MIT-licensed, so winCode builds on top of it instead of reverse engineering it. Anything that is not Flutter-specific goes upstream to xtool as a PR.
+xtool already solves half of winCode and is MIT-licensed, so winCode uses it as a tool instead of reverse engineering it. All of winCode's own code, Flutter-specific or not, lives in the winCode repo; winCode does not send changes upstream to xtool (ADR-0006).
 
 How xtool works: setup asks you to supply Xcode.xip yourself and builds a Darwin Swift SDK from it on your machine. It then compiles with `swift build --swift-sdk arm64-apple-ios`, signs, installs on a device, and talks to Apple Developer Services through its `XKit` library. It runs on Linux, WSL and macOS.
 
 What xtool does not do, per its author: Interface Builder (storyboards), asset catalogs ("require reverse engineering"), Apple-only macros, LLDB debugging on iOS 17+, and App Store Connect deployment. It builds only SwiftPM packages, not Xcode projects, and knows nothing about Dart, `App.framework` or `Flutter.framework`.
 
-| Need | Reuse | Build new in winCode | Upstream to xtool? |
-| --- | --- | --- | --- |
-| Darwin SDK from Xcode.xip | `xtool sdk` | Windows setup wizard around it | No |
-| Compile runner + plugins | xtool's Swift SDK | Translator: `ios/Runner` + Flutter's SwiftPM plugin package into one SwiftPM package | No |
-| Apple account, certificates, App IDs, profiles | XKit | GUI flows | No |
-| Code signing | zsign (xtool bundles it) | Entitlements merge | No |
-| Install and launch on iPhone | XKit for install (spike B); pymobiledevice3 for launch and debugging | Device link setup through Apple's Windows device service (ADR-0005) | No |
-| Dart AOT for iOS | Nothing | `gen_snapshot` built on Linux per Flutter release (ADR-0004, proven in spike A) | No (Flutter-specific) |
-| App icon in `Assets.car` | Nothing | Clean-room compiler | Yes |
-| LLDB on iOS 17+ | pymobiledevice3 | Integration | Yes |
-| App Store upload | Nothing | App Store Connect API client | Yes |
+| Need | Reuse | Build new in winCode |
+| --- | --- | --- |
+| Darwin SDK from Xcode.xip | `xtool sdk` | Windows setup wizard around it |
+| Compile runner + plugins | xtool's Swift SDK | Translator: `ios/Runner` + Flutter's SwiftPM plugin package into one SwiftPM package |
+| Apple account, certificates, App IDs, profiles | XKit | GUI flows |
+| Code signing | zsign (xtool bundles it) | Entitlements merge |
+| Install and launch on iPhone | XKit for install (spike B); pymobiledevice3 for launch and debugging | Device link setup through Apple's Windows device service (ADR-0005) |
+| Dart AOT for iOS | Nothing | `gen_snapshot` built on Linux per Flutter release (ADR-0004, proven in spike A) |
+| App icon in `Assets.car` | Nothing | Clean-room compiler |
+| LLDB on iOS 17+ | pymobiledevice3 | Integration |
+| App Store upload | Nothing | App Store Connect API client |
 
 ## Architecture
 
@@ -207,7 +207,7 @@ wincode/
 | Apple breaks Apple ID login for third-party tools (it did: `-80045`, fixed in xtool 1.22.2 within days) | Track xtool releases; recommend API key login for paid accounts | API key login only |
 | The device link breaks (Apple Devices or WSL networking changes) | `wincode setup` checks it (ADR-0005); NAT + port proxy as fallback | Install from Windows with pymobiledevice3 |
 | Apple rejects non-Xcode builds | Gates table; oracle diffs | Mac release lane stays production default |
-| `Assets.car` too hard | Clean-room spec; collaborate with xtool maintainer | Mac lane for store builds only |
+| `Assets.car` too hard | Clean-room spec in `docs/formats/` | Mac lane for store builds only |
 | Licence enforcement / bans / takedowns | No SDK redistribution; BYO Xcode.xip; lawyer review | Drop App Store upload from Windows |
 | Flutter iOS internals change each release | Support latest two stables; CI on stable + beta | — |
 | New iOS breaks device protocols | Lean on pymobiledevice3/xtool upstream | — |
@@ -222,7 +222,7 @@ wincode/
 - [x] Days 6–8, spike B: hand-assemble `Runner.app` (SwiftPM runner + Flutter.framework + App.framework), sign with zsign through xtool, install with xtool, counter app runs (`docs/spikes/spike-b-device.md`).
 - [x] Week 2: ADRs. ADR-0001 (WSL2 toolchain) is accepted; ADR-0002 (Dart CLI) and ADR-0003 (SwiftPM-only plugins in v1) stay proposed; ADR-0004 (gen_snapshot on Linux) and ADR-0005 (device link) were added.
 - [ ] Week 2: open phase 1 issues.
-- [ ] Week 2: post spike result publicly; contact xtool maintainer.
+- [ ] Week 2: post spike result publicly.
 - [x] Gate G0 (2026-10-16).
 
 Once phase 1 ships, SPC Studio's iOS option can call `wincode build ipa` instead of generating a prompt for a Mac.
