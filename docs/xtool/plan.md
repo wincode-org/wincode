@@ -71,19 +71,21 @@ Not in xtool, and built in winCode (ADR-0006):
 ## 5. Copying xtool's source into winCode
 
 - **Legal:** yes. xtool is MIT.
-- **What to copy:** the 1.22.2 tree (`65bf3cc`) into `third_party/xtool/`, with its `LICENSE.md` unchanged and a `README.md` stating the source, version and any local changes.
-- **What to leave out:** the three tutorial screenshots (8.6 MB). The scan found no keys, certificates or profiles in the tree.
+- **Done** (ADR-0007, `third_party/README.md`):
+  - Every file xtool tracks at `65bf3cc` is in `third_party/xtool/`, byte-identical (260 entries, checked against upstream's git index), with its `LICENSE.md` unchanged.
+  - Left out: xtool's coding-agent instruction files and the three tutorial screenshots (8.6 MB).
+  - The scan found no keys, certificates or profiles in the tree.
 - **Dependencies stay external.** SwiftPM fetches them, so no LGPL source is copied.
 - **When the LGPL parts matter:** only when winCode builds and **ships its own xtool binary**. Then:
   - `xadi` (LGPL-2.1), `unxip` (LGPL-3.0) and the libimobiledevice family (LGPL-2.1) need their licence texts;
   - a source offer;
   - shared, replaceable libraries, which the AppImage already uses.
-- **Recommendation:** copy the source now for reference and patching, but keep running the official release binary in v1. Switch to building our own binary only when winCode needs a patch upstream won't take, for example launch on Linux, streaming upload, or secret storage. Record each local patch in `third_party/xtool/README.md`, so new upstream releases can still be merged.
+- **Recommendation:** keep running the official release binary in v1. Switch to building our own binary only when winCode needs a patch upstream won't take, for example launch on Linux, streaming upload, or secret storage. Record each local patch in `third_party/README.md`, so new upstream releases can still be merged.
 
 ## 6. Next steps
 
 1. Test `xtool launch` on the iPhone (section 3) and record the result.
-2. Copy xtool's source to `third_party/xtool/` (section 5) in its own pull request.
+2. ~~Copy xtool's source to `third_party/xtool/`~~ Done (section 5, ADR-0007).
 3. Add to issue #7:
    - wrapper rules (section 1)
    - secret hardening (2.1)
