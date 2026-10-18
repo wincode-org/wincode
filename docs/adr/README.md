@@ -11,3 +11,6 @@ Architecture Decision Records. Copy `0000-template.md` for each new decision.
 | [0005](0005-device-link-apple-device-service.md) | Reach the iPhone through Apple's Windows device service | Accepted |
 | [0006](0006-keep-code-in-wincode.md) | Keep all of winCode's code in the winCode repository | Accepted |
 | [0007](0007-vendor-xtool-source.md) | Keep a copy of xtool's source in third_party/xtool | Accepted |
+| [0008](0008-two-release-lanes.md) | Two release lanes: pure Windows and cloud Mac | Proposed |
+| [0009](0009-store-signing-in-wincode.md) | winCode owns store signing and never revokes certificates on its own | Proposed |
+| [0010](0010-native-build-hooks.md) | Run Dart build hooks ourselves, with an xcrun shim for the Darwin SDK | Proposed |

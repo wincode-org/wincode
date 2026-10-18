@@ -1,6 +1,8 @@
 # winCode — Build Flutter iOS apps on Windows
 
-Status: APPROVED by Alpha on 2026-10-12. This is the plan of record. Updated 2026-10-16 with the phase 0 results.
+Status: v2 proposed 2026-10-18. v1 was approved by Alpha on 2026-10-12.
+
+Gate G0 is met: a Flutter app built on Windows runs on an iPhone. What still stands between winCode and the App Store is Apple accepting a Windows-built IPA, and Apple's licence. Plan v2 tests store acceptance within three weeks (spike C), moves shipping ahead of hot reload, and adds a cloud-Mac release lane so shipping never blocks.
 
 ## Phase 0 results (2026-10-16)
 
@@ -18,97 +20,257 @@ Status: APPROVED by Alpha on 2026-10-12. This is the plan of record. Updated 202
   - Apple ID login needs xtool 1.22.2 or later.
   - The device link and launch notes are updated.
 
-## Working agreement (how we build it)
+## Where we stand
 
-- Two lanes:
-  - Web / account / browser tasks (GitHub org + repo settings, Apple Developer, App Store Connect, research): the chat assistant does them directly.
-  - Coding / file creation / running commands: the chat assistant writes a prompt, Alpha pastes it into the coding assistant, the coding assistant does the work, Alpha pastes back the result or errors.
-- The coding assistant is opened in the winCode repo folder (not inside the xtool clone). The xtool clone sits next to it as read-only reference, added with `--add-dir`.
-- Real REA (morluto/rea, `npx rea-agents setup`) is installed in the coding assistant. Never use the fake `rea-tools/rea` repo or its `rea.exe`.
-- Every change goes through a PR on GitHub, even solo: Conventional Commits, DCO sign-off, green CI.
-
-## Verdict: buildable, except the simulator
-
-winCode can realistically take a Flutter app from Windows to a signed IPA, onto a real iPhone, and up to App Store Connect. It cannot ship an iOS Simulator on Windows, and App Store acceptance of a non-Xcode build is still unproven.
-
-| Feature | Feasible? | How winCode does it | Main blocker |
-| --- | --- | --- | --- |
-| Build an IPA on Windows | Yes, proven in phase 0 | Linux toolchain in WSL2, Darwin SDK from the user's own Xcode.xip (the xtool approach), `gen_snapshot` for iOS built on Linux (ADR-0004) | Solved for the compile step; store builds still need `Assets.car` (below) |
-| Install and run on a real iPhone | Yes, proven on iOS 27.0.1 | xtool (XKit, zsign) in WSL2, through Apple's Windows device service (ADR-0005) | No launch from Linux yet: the app is opened by hand. The first launch needs the developer profile trusted and Developer Mode on |
-| Debug mode and hot reload on iPhone | Yes, the hardest part | debugserver over the iOS 17 tunnel + LLDB + `flutter attach` | iOS 26 blocks Dart's JIT unless a debugger manages memory |
-| iOS Simulator on Windows | No | Replaced by an iOS-mode preview on Windows + the real device | The Simulator is macOS-only; QEMU iOS emulation is research-grade |
-| Upload to App Store Connect | Yes | App Store Connect API build uploads, no Xcode | None technical |
-| Pass Apple's upload validation and review | Unproven | Own `Assets.car` compiler, correct build keys in Info.plist | Asset catalog format is undocumented; Xcode 26 / iOS 26 SDK rule |
-| Every Flutter plugin | Partial | Swift Package Manager plugins only in v1 | CocoaPods-only plugins need conversion |
-
-Recommended v1 scope: Flutter apps whose plugins support Swift Package Manager (the default since Flutter 3.44), iPhones on iOS 17.4 or later, release and profile builds first, hot reload second.
-
-Positioning: don't sell it as an "Xcode replacement" or use Apple marks in the name or logo. Sell it as "Flutter iOS without a Mac: build, run on your iPhone, ship to TestFlight".
-
-## Build on xtool, don't clone it
-
-xtool already solves half of winCode and is MIT-licensed, so winCode uses it as a tool instead of reverse engineering it. All of winCode's own code, Flutter-specific or not, lives in the winCode repo; winCode does not send changes upstream to xtool (ADR-0006).
-
-How xtool works: setup asks you to supply Xcode.xip yourself and builds a Darwin Swift SDK from it on your machine. It then compiles with `swift build --swift-sdk arm64-apple-ios`, signs, installs on a device, and talks to Apple Developer Services through its `XKit` library. It runs on Linux, WSL and macOS.
-
-What xtool does not do, per its author: Interface Builder (storyboards), asset catalogs ("require reverse engineering"), Apple-only macros, LLDB debugging on iOS 17+, and App Store Connect deployment. It builds only SwiftPM packages, not Xcode projects, and knows nothing about Dart, `App.framework` or `Flutter.framework`.
-
-| Need | Reuse | Build new in winCode |
+| Area | Status | Evidence |
 | --- | --- | --- |
-| Darwin SDK from Xcode.xip | `xtool sdk` | Windows setup wizard around it |
-| Compile runner + plugins | xtool's Swift SDK | Translator: `ios/Runner` + Flutter's SwiftPM plugin package into one SwiftPM package |
-| Apple account, certificates, App IDs, profiles | XKit | GUI flows |
-| Code signing | zsign (xtool bundles it) | Entitlements merge |
-| Install and launch on iPhone | XKit for install (spike B); pymobiledevice3 for launch and debugging | Device link setup through Apple's Windows device service (ADR-0005) |
-| Dart AOT for iOS | Nothing | `gen_snapshot` built on Linux per Flutter release (ADR-0004, proven in spike A) |
-| App icon in `Assets.car` | Nothing | Clean-room compiler |
-| LLDB on iOS 17+ | pymobiledevice3 | Integration |
-| App Store upload | Nothing | App Store Connect API client |
+| Dart to iOS machine code on Linux | Proven | Spike A, ADR-0004 |
+| Runner + Flutter.framework + App.framework | Proven | Spike B: counter app on iPhone 15, iOS 27.0.1 |
+| Development signing and install | Proven | xtool 1.22.2 via Apple's device service on Windows (ADR-0005) |
+| Apple ID login | Works again | xtool 1.22.2 fixed -80045; SMS-only 2FA still fails (xtool#345) |
+| Launch from Windows | Open | xtool launch untested; iOS 17+ needs the personalized developer disk image |
+| App Store signing | Not started | xtool only makes development certificates/profiles |
+| Assets.car (app icon) | Not started | Required by the App Store |
+| Upload | Not started | Official routes: Build Uploads API, Transporter for Windows |
+| Apple accepting a non-Xcode build | Unknown | The remaining kill switch |
+| Real-app readiness | Audited 2026-10-18 | The reference app's plugins are all SwiftPM; five gaps found (see the audit section) |
+| Native build hooks | Open | The `path_provider` chain runs a hook that calls `xcrun`, which fails off macOS; spike E |
+| Debugging and hot reload | Not started | xcross is a candidate but unproven: it auto-revokes certificates and ignores flavors |
+| Toolchain on this PC | Rebuilt 2026-10-18 | The WSL disk on D: vanished on 2026-10-17; Ubuntu is back on C:, rebuilt by `tools/setup-wsl-toolchain.sh` (Swift 6.4, xtool 1.22.2, Darwin SDK) and snapshotted with `wsl --export` |
+
+Repo: PRs #9 (xtool teardown) and #10 (xtool source copy) are merged; issue #7 tracks phase 1.
+
+## What changes in v2
+
+1. Spike C now, not in phase 4: prove a Windows-built IPA passes App Store Connect processing and installs from TestFlight, within three weeks, alongside phase 1.
+2. Shipping moves ahead of hot reload. New order: release builds → ship to Apple → preview and Studio → debugging and hot reload → hardening.
+3. The Assets.car compiler starts now as a parallel track (longest task, blocks every store build).
+4. Two release lanes: pure Windows (the goal) and cloud Mac (safety net). Cloud Mac is the default for store builds until spike C passes and the licence review is done.
+5. Zero-rejection gate: nothing uploads unless `wincode doctor --store`, an IPA diff against an Xcode-built copy, and Apple's own validation all pass.
+6. winCode owns store signing: Apple Distribution certificate + App Store profile via the App Store Connect API (xtool covers development only).
+7. Launch through the user's own Xcode: the personalized developer disk image comes from the user's Xcode.xip (XcodeSystemResources_Full.pkg), never a third-party mirror; launch via pymobiledevice3 as a separate process.
+8. No Simulator clone; the emulator need is met by two legal layers (below). The cloud Simulator idea is cancelled (maintainer, 2026-10-18).
+9. Phase 1 grows by two items: the reference-app audit found native build hooks (a `path_provider` chain that calls `xcrun`) and Xcode flavors that winCode must handle. The hooks get a short spike E first.
+
+## Roadmap v2 (gates renumbered)
+
+| Phase | Length | Deliverables | Gate |
+| --- | --- | --- | --- |
+| 0 Foundations | done | spikes A and B | G0 met 2026-10-16 |
+| 1 Release builds | 6–8 weeks | build ipa, install, run, plugins, launch | G1: 5 sample apps with plugins run on device |
+| 2 Ship to Apple | 6–10 weeks | store signing, Assets.car, upload, doctor, both lanes | G2: a real app approved on the App Store (was G4) |
+| 3 Preview + Studio | 4 weeks | iOS preview, device mirror, Studio, alpha v0.1 | G3: alpha installable by outsiders (was G2) |
+| 4 Debug + hot reload | 6–8 weeks | debugserver, LLDB, flutter attach, DevTools | G4: hot reload on iOS 26+ (was G3) |
+| 5 Hardening | ongoing | installer, docs, stable + beta CI, more plugins | — |
+
+Parallel tracks from week 1: spike C (gate GC, weeks 1–3), cloud Mac lane v0 (weeks 1–2), Assets.car compiler (clean-room, needed for G2). Gate GC decides which lane the Ship phase builds first.
+
+- **Scope of v1:** Flutter apps whose plugins support Swift Package Manager (the default since Flutter 3.44), iPhones on iOS 17.4 or later, release and profile builds first, hot reload after shipping.
+- **Positioning:** don't sell it as an "Xcode replacement" or use Apple marks in the name or logo. Sell it as "Flutter iOS without a Mac: build, run on your iPhone, ship to TestFlight".
+
+## Spike C: prove App Store acceptance
+
+Pass: the build reaches "Ready to Test" in TestFlight with no ITMS warning, then installs and runs on the iPhone.
+
+Before it starts (decided 2026-10-18: no own account for now, so spike C runs on a test developer team):
+- The developer-account holder's written OK: spike C touches their account (an app record, a distribution certificate, uploads) and the licence risk falls on it.
+- A separate test app record on that team (e.g. "winCode store test") so the build numbers and TestFlight of the maintainer's real apps stay untouched; the real apps follow once C1 passes.
+- Never revoke or replace the team's existing distribution certificate; if a new one is needed, the account holder or an Admin creates it.
+- An App Store Connect API key on that team; a final (non-beta) Xcode 26+ .xip (uploads must use Xcode 26 + iOS 26 SDK since 2026-04-28; beta tools are refused).
+
+1. Reference build: same counter app with Xcode on the macOS runner (`flutter build ipa`).
+2. Store signing from Windows: CSR, Apple Distribution certificate, App ID, App Store profile via the API; sign with zsign (production entitlements, no get-task-allow).
+3. Build metadata: diff Info.plist keys against the reference; fill SDK/platform values from the user's own Xcode files; record any key that can't be filled truthfully.
+4. Icon: C1 uses an Assets.car made by actool on the runner (tests the binary alone); C2 repeats with winCode's own Assets.car.
+5. Upload: Transporter for Windows (`-assetFile`, API key) first, Build Uploads API second; read Apple's validation details and email.
+6. Install from TestFlight (internal testers need no Beta App Review).
+
+| Result | Meaning | Next |
+| --- | --- | --- |
+| Ready to Test, no warnings | Pure-Windows lane works technically | Build that lane in the Ship phase; run C2 later |
+| Fixable error | Packaging gap | Fix, add a doctor check, upload again |
+| Toolchain rejection not fixable with honest metadata | Pure-Windows store builds blocked | Cloud Mac lane becomes the store lane for good |
+
+## Spike E: native build hooks
+
+Can winCode run the Dart build hooks of an app's packages for iOS arm64 on Linux, and bundle their output so the app runs on the iPhone?
+
+- **Why:** `path_provider_foundation` 2.6.0 calls Foundation through Dart FFI using `objective_c`, whose build hook compiles Objective-C with clang and runs `xcrun --show-sdk-path`. There is no `xcrun` off macOS, and almost every Flutter app depends on path_provider.
+- **How:** run the hooks with Dart's own hook runner and the Swift toolchain's clang for `arm64-apple-ios`, with an `xcrun` shim that points at the Darwin SDK; bundle each dylib as a framework.
+- **Plan and pass criteria:** `docs/spikes/spike-e-native-build-hooks.md`. It decides ADR-0010 and runs before the rest of phase 1 (decision 7 below).
+
+## Zero-rejection checks
+
+| Check | Why | When |
+| --- | --- | --- |
+| Final Xcode 26+ and iOS 26 SDK | Upload requirement since 2026-04-28 | doctor |
+| Minimum iOS 13+ | Upload requirement since 2026-09-09 | doctor |
+| App icon in Assets.car, CFBundleIconName, 1024 px store icon | Icons come from the asset catalog | build |
+| Privacy manifests, required-reason APIs | Required since 2024-05-01 | doctor |
+| Purpose string per permission | ITMS-90683 | doctor |
+| Device-only arm64, no simulator slices | ITMS-90087 | build |
+| Distribution signature on every nested binary; entitlements match profile | signature checks | after signing |
+| Launch screen; iPad orientation keys | ITMS-90474 | doctor |
+| Build number above last upload | duplicates refused | before upload (API) |
+| ITSAppUsesNonExemptEncryption | otherwise each build waits for an export answer | doctor |
+| Same structure as Xcode reference IPA | catches the rest | every release (CI) |
+| Apple's validation of the upload | final word | after upload (API) |
+
+App Review itself is human; winCode adds a checklist of common guideline rejections and blocking App Store Connect items (age-rating questions since 2026-01-31, EU trader status), but cannot promise approval.
+
+## Two release lanes
+
+Decision record: ADR-0008.
+
+| | Pure Windows | Cloud Mac |
+| --- | --- | --- |
+| Command | `wincode ship` | `wincode ship --lane mac` |
+| iOS SDK runs on | WSL2 on the user's PC | hosted macOS runner in the user's GitHub repo |
+| Builder | winCode toolchain | Xcode via `flutter build ipa` |
+| Upload | Transporter for Windows / Build Uploads API | same, from the runner |
+| Licence | conflicts with the Apple-hardware clause | inside the agreement |
+| Toolchain rejection risk | unknown until spike C | none |
+| Cost | free | free on public repos (standard runners); paid minutes on private |
+| Default for store builds | after spike C + legal review | until then |
+
+## Signing and upload
+
+- **Development signing** stays with xtool (ADR-0006). The App Store Connect API key is the preferred login. A free Apple ID gets short-lived profiles; Apple ID login needs xtool 1.22.2 or later (1.21.0 hit Apple's `-80045`), and accounts with only SMS two-factor authentication still fail (xtool-org/xtool#345).
+- **Store signing is winCode's own** (ADR-0009): CSR (OpenSSL), Apple Distribution certificate, App ID and App Store profile through the App Store Connect API; signed with zsign. Store builds never go through xtool provisioning, and winCode never revokes a certificate on its own.
+- **Secrets** stay in Windows Credential Manager and are passed per call.
+- **Build metadata:** only true values from the user's own Xcode.xip; never fake a Mac build machine (spike C, step 3).
+- **Upload:** Transporter for Windows first, the App Store Connect API build uploads (create, reserve, send, commit) second.
+
+## Licence and account risk
+
+The published Xcode and Apple SDKs Agreement (copy dated 2016-08-24) allows installing the software only on Apple-branded computers, forbids running it on other hardware, and forbids reverse engineering. The pure-Windows lane runs the SDK from the user's Xcode.xip on a PC, as xtool does; commentators warned this could risk a developer account. Handling: lawyer review before the pure lane becomes a default; users bring their own Xcode.xip (ADR-0001); spike C on the test developer team only with the account holder's written OK; `wincode setup` and docs state the risk and offer the cloud Mac lane; no reverse engineering of Apple software.
+
+What "legal review" means: a lawyer who knows software licensing reads Apple's two contracts (the Apple Developer Program License Agreement, which governs the account, and the Xcode and Apple SDKs Agreement, which governs Xcode and the SDK) and answers: does building with the SDK on a PC break them, what can Apple do about an upload built that way, and what must winCode tell its users. If paying a lawyer isn't possible yet, the minimum is that the developer-account holder reads those clauses and agrees in writing before spike C, and real releases keep using the cloud Mac lane.
+
+The legal line, unchanged from v1:
+
+- Ship no SDK bits: users download Xcode.xip from Apple and accept its licence themselves, as with xtool. README and `wincode setup` say so.
+- Never redistribute SDK headers or libraries, Xcode binaries, Apple fonts, simulator runtimes or developer disk images, including through public CI caches. Never download disk images from third-party mirrors.
+- Formats and outputs only (compiled `Assets.car`, Xcode-written Info.plist keys, `.ipa` layout); never decompile Apple tools (`actool`, `ibtool`, CoreUI).
+- Clean room for `Assets.car`: A builds samples with real Xcode on Apple hardware (macOS CI) and writes a spec in `docs/formats/`; B implements from the spec only; PRs record provenance.
+- No Apple logos; no "Xcode for Windows" tagline.
+- Dependency licences: pymobiledevice3 is GPL-3.0 and xcross is AGPL-3.0, so each runs only as a separate process the user installs, never imported into MIT code. zsign and xtool are MIT, the Flutter engine BSD.
+- Apple can terminate developer accounts; the README states the risk.
+- Not legal advice.
+
+## The emulator question
+
+Chrome DevTools device mode only resizes a web page and changes the user agent; no iOS code runs. winCode's equivalent is `wincode preview`. The Simulator is not an emulator (it runs simulator builds on macOS, on a runtime that needs the macOS kernel), the agreement forbids reverse engineering it, and QEMU iPhone emulators are research-grade with no usable Metal for Flutter.
+
+| Layer | What you see | How | When |
+| --- | --- | --- | --- |
+| iOS preview on Windows | app with iOS look and behaviour, phone frames, hot reload | Flutter Windows runner with iOS platform behaviour | Preview/Studio phase |
+| Mirrored real iPhone | real app on your phone, shown and controlled on the PC | USB screen capture + input via a test agent | spike in that phase |
+
+## Test apps audit and the xcross review
+
+The reference app (a production white-label Flutter app with several brands) uses only SwiftPM plugins, so ADR-0003 holds, yet it cannot build with winCode today: a read-only audit on 2026-10-18 found five gaps. Client details are deliberately left out of this repo.
+
+| Gap | What the audit found | winCode answer |
+| --- | --- | --- |
+| Native build hook | `path_provider_foundation` 2.6.0 calls Dart FFI through `objective_c` 9.5.0. Its build hook compiles Objective-C with clang and runs `xcrun --show-sdk-path`, which fails off macOS. Most Flutter apps use path_provider. | Spike E: run the hooks ourselves with an `xcrun` shim that points at the Darwin SDK, clang for arm64-apple-ios, then bundle the dylib. |
+| Flavors | Three flavors, each with Debug, Release and Profile configurations and an xcconfig that sets bundle ID, name, team, sign-in client IDs and which asset catalogs are included. | winCode reads the Xcode project and xcconfig files itself (phase 1). |
+| Engine version | The app builds with Flutter 3.47.5; spike A's `gen_snapshot` is for 3.47.7. | Build `gen_snapshot` per Flutter engine release in CI; `wincode doctor` matches the app's Flutter to a published build. |
+| Icon and launch screen | One 1024 px icon per brand and a launch colour in the asset catalog; `Main.storyboard` holds only a FlutterViewController. | The `Assets.car` track already planned; replace the storyboard with code. |
+| Unchecked | `stripe_ios` pulls stripe-ios-spm 26.3.0, not cached on the PC; whether it ships prebuilt binary targets is unknown. | Test SwiftPM binary targets in the xtool pipeline. |
+
+Everything else is clean: nine of the ten native plugins ship a `Package.swift` (the tenth, `path_provider_foundation`, has no native target), and there is no Podfile, no app extension, one permission string (camera), one entitlement (Sign in with Apple), an iOS 15 target and an icon without alpha. One finding concerns the app, not winCode: both brands declare universal-link hosts and a deep-link scheme, but the iOS project has neither the entitlement nor the URL scheme.
+
+**xcross review** (source code read, v2.0.6 released 2026-10-16; not yet run on the iPhone):
+
+- **It breaks the never-revoke rule.** With an API key it revokes every certificate on the team, distribution certificates included, without asking, when creating a certificate hits Apple's limit (HTTP 409) or when its cached certificate has vanished from the team. It also deletes an App ID's development profile when that profile is the only one. xcross never gets a real team's key.
+- **It ignores flavors.** It reads only `Debug.xcconfig`, so a flavor build would use the unflavored bundle ID with the name and sign-in settings unresolved.
+- **Setup failed three times on this PC, then worked.** It missed the winget alias, Windows PowerShell 5.1 inherited the wrong module path, and the 2.1 GB Swift download dropped after 636 MB and 35 minutes; nothing was installed. On 2026-10-18 a fourth run worked once Swift for Windows was installed first from a resumable, SHA-256-checked download; Swift 6.4.1's own clang 21 and `ld64.lld` meet its LLVM requirement.
+- **Windows Defender blocked it.** Right after setup, Defender stopped `xcross.exe` (the official v2.0.6 binary, checksum verified) with a behaviour-based detection, `Behavior:Win32/DefenseEvasion.A!ml`, until the maintainer allowed it. Other Windows users may hit the same.
+- **Licence and maturity.** The licence file is AGPL-3.0, so winCode only runs it as a separate tool; one maintainer. CocoaPods-only plugins are skipped with a warning, and the reference app has none.
+- **Verdict: unproven.** xcross has what winCode lacks (native Windows, iOS 17+ launch, hot reload, debugging), but it can only be used with a throwaway free Apple ID, or where signing stays out of its hands. The trial continues on the stock counter app.
+
+## Hardening from the xtool teardown
+
+- Secrets: keep the .p8 in Windows Credential Manager, pass it per call, lock ~/.config/xtool to the owner (xtool stores keys in mode-644 files).
+- Pin and SHA-256-check the SDK builder's downloads.
+- Pass every answer as a flag/stdin line; treat any prompt as an error.
+- Warn before touching shared teams (each install re-creates the dev profile with every team device).
+- Store builds never go through xtool provisioning (it rewrites bundle IDs to XTL-<prefix>.<id>).
+- Extract XcodeSystemResources_Full.pkg (developer disk images) from the user's .xip; xtool's SDK cleanup deletes it.
+- Never revoke for the user: winCode lists the certificates and profiles it would change and asks first; it never revokes a distribution certificate on its own. xcross does, which is why it stays away from real teams.
+- A lost toolchain must cost an hour: the WSL disk on D: vanished on 2026-10-17 with xtool, the Darwin SDK and the spike files. Setup is one idempotent script (`tools/setup-wsl-toolchain.sh`), and `wsl --export` snapshots the disk once it works.
+- Resumable, verified downloads: a 2.1 GB Swift download dropped after 636 MB and 35 minutes. Installers resume interrupted downloads, check SHA-256 and expect flaky networks and little free memory.
 
 ## Architecture
 
-winCode is a Dart CLI and a Flutter GUI on Windows that drive a Linux toolchain in WSL2. The iPhone is reached through Apple's device service on Windows (ADR-0005). Provisioning and signing run in WSL2 through xtool.
+winCode is a Dart CLI and a Flutter GUI on Windows that drive a Linux toolchain in WSL2. The iPhone is reached through Apple's device service on Windows (ADR-0005). Development provisioning and signing run in WSL2 through xtool; store signing is winCode's own (ADR-0009).
 
 - **Windows host:**
   - winCode Studio (Flutter GUI) → wincode CLI (Dart, orchestrates everything)
   - Flutter SDK for Windows (frontend_server → app.dill, assets, flutter attach)
   - iOS preview (desktop runner in iOS mode + device frames)
-  - Device link: Apple Devices' device service on `127.0.0.1:27015`, used from WSL2 through mirrored networking (ADR-0005); pymobiledevice3 for launch and debugserver (phase 3)
-  - App Store client (API key: certs, profiles, build uploads)
+  - Device link: Apple Devices' device service on `127.0.0.1:27015`, used from WSL2 through mirrored networking (ADR-0005); pymobiledevice3 for launch (phase 1) and debugserver (phase 4)
+  - App Store client (API key: certs, profiles, build uploads) and Transporter for Windows
 - **WSL2 toolchain (Linux):**
   - Darwin Swift SDK (built from the user's Xcode.xip, never shipped)
-  - gen_snapshot for iOS (Dart AOT → iOS arm64, built by winCode CI per Flutter release, ADR-0004)
+  - gen_snapshot for iOS (Dart AOT → iOS arm64, built by winCode CI per Flutter engine release, ADR-0004)
   - Swift + LLVM via xtool (compiles runner and plugins, links Mach-O)
-  - Resources + xtool signing with zsign (Info.plist, Assets.car, provisioning, the .ipa)
+  - Dart build hooks for iOS (native assets, ADR-0010)
+  - Resources + signing with zsign (Info.plist, Assets.car, provisioning, the .ipa)
 - **Outside the PC:**
   - iPhone (USB, iOS 17.4+, Developer Mode)
   - App Store Connect (TestFlight, review)
-  - optional macOS CI (Mac release lane + Xcode oracle tests)
+  - cloud Mac lane: a hosted macOS runner in the user's GitHub repo (ADR-0008)
+  - winCode's macOS CI (Xcode oracle tests and reference IPAs)
 
-The two pieces no open-source project provides yet: `gen_snapshot` for iOS on a non-Mac host (done in phase 0, ADR-0004) and an `Assets.car` compiler (phase 4).
+The two pieces no open-source project provides yet: `gen_snapshot` for iOS on a non-Mac host (done in phase 0, ADR-0004) and an `Assets.car` compiler (phase 2, a parallel track from week 1).
+
+## Build on xtool, don't clone it
+
+xtool already solves half of winCode and is MIT-licensed, so winCode uses it as a tool instead of reverse engineering it. All of winCode's own code, Flutter-specific or not, lives in the winCode repo; winCode does not send changes upstream to xtool (ADR-0006). A copy of xtool's source sits in `third_party/xtool` for reference (ADR-0007).
+
+How xtool works: setup asks you to supply Xcode.xip yourself and builds a Darwin Swift SDK from it on your machine. It then compiles with `swift build --swift-sdk arm64-apple-ios`, signs, installs on a device, and talks to Apple Developer Services through its `XKit` library. It runs on Linux, WSL and macOS.
+
+What xtool does not do, per its author: Interface Builder (storyboards), asset catalogs ("require reverse engineering"), Apple-only macros, LLDB debugging on iOS 17+, and App Store Connect deployment. It builds only SwiftPM packages, not Xcode projects, knows nothing about Dart, `App.framework` or `Flutter.framework`, and makes development certificates and profiles only.
+
+| Need | Reuse | Build new in winCode |
+| --- | --- | --- |
+| Darwin SDK from Xcode.xip | `xtool sdk` | Windows setup wizard around it |
+| Compile runner + plugins | xtool's Swift SDK | Translator: `ios/Runner` + Flutter's SwiftPM plugin package into one SwiftPM package; flavor reader |
+| Native build hooks | Dart's hook runner | `xcrun` shim for the Darwin SDK, bundling (ADR-0010) |
+| Development account, certificates, App IDs, profiles | XKit | GUI flows |
+| Store certificates and profiles | Nothing | App Store Connect API client (ADR-0009) |
+| Code signing | zsign (xtool bundles it) | Entitlements merge |
+| Install and launch on iPhone | XKit for install (spike B); pymobiledevice3 for launch and debugging | Device link setup through Apple's Windows device service (ADR-0005); developer disk image from the user's Xcode.xip |
+| Dart AOT for iOS | Nothing | `gen_snapshot` built on Linux per Flutter engine release (ADR-0004, proven in spike A) |
+| App icon in `Assets.car` | Nothing | Clean-room compiler |
+| LLDB on iOS 17+ | pymobiledevice3 | Integration |
+| App Store upload | Transporter for Windows | Build Uploads API client |
 
 ## Build pipeline: Dart source to signed IPA
 
-1. Read the project: `pubspec.yaml`, `ios/Runner/Info.plist`, entitlements, `AppDelegate.swift`, flavors. Stop with a clear message if a plugin is CocoaPods-only.
-2. Dart to kernel: Flutter's `frontend_server` in AOT mode → `app.dill`; build `flutter_assets`. Both already run on Windows.
-3. Kernel to iOS machine code (ADR-0004):
-   - **Tool:** winCode's Linux-built `gen_snapshot` for the user's Flutter version. winCode CI builds and publishes it per Flutter release from the `dart_revision` that release pins.
+1. Read the project: `pubspec.yaml`, `ios/Runner/Info.plist`, entitlements, `AppDelegate.swift`, and flavors, meaning the Xcode project's build configurations and their xcconfig files (bundle ID, display name, team, asset catalogs). Stop with a clear message if a plugin is CocoaPods-only.
+2. Native build hooks: run the build hooks of the app's packages for iOS arm64 (for example `objective_c`, which path_provider uses), with an `xcrun` shim that points at the Darwin SDK. Their dylibs are bundled in step 8 (ADR-0010; spike E decides).
+3. Dart to kernel: Flutter's `frontend_server` in AOT mode → `app.dill`, with the native-asset mapping from step 2; build `flutter_assets`. Both already run on Windows.
+4. Kernel to iOS machine code (ADR-0004):
+   - **Tool:** winCode's Linux-built `gen_snapshot` for the user's Flutter version. winCode CI builds and publishes it per Flutter engine release from the `dart_revision` that release pins, and `wincode doctor` matches the app's Flutter version to a published build.
    - **Arguments:** exactly flutter_tools' iOS release arguments, `--snapshot_kind=app-aot-macho-dylib` and the `--macho*` flags.
    - **Output:** gen_snapshot writes the Mach-O `App.framework/App` directly, with the iOS build version, install name, rpaths, compact unwind info and an ad-hoc signature.
    - **Then:** `dsymutil` for the dSYM and `strip -x`. Add `Info.plist` (`io.flutter.flutter.app`, `MinimumOSVersion`) and `flutter_assets` to make `App.framework`.
    - The assembly + `clang` path is not used.
-4. Engine: download `Flutter.xcframework` for that engine hash, take the `ios-arm64` slice.
-5. Native code: generate one SwiftPM package (Runner + Flutter's generated plugin package + Flutter binary target), `swift build --swift-sdk arm64-apple-ios -c release` in WSL2.
+5. Engine: download `Flutter.xcframework` for that engine hash, take the `ios-arm64` slice.
+6. Native code: generate one SwiftPM package (Runner + Flutter's generated plugin package + Flutter binary target), `swift build --swift-sdk arm64-apple-ios -c release` in WSL2.
    - Spike B confirmed that `Flutter.xcframework` works as a SwiftPM binary target with xtool.
    - Use the release configuration: debug builds embed build-machine paths in the binary's rpaths.
-6. Resources: merge Info.plist; replace storyboards with `UILaunchScreen` + code-created `FlutterViewController` (no `ibtool`); compile the app icon into `Assets.car` + `CFBundleIconName`; copy `PrivacyInfo.xcprivacy` files.
-7. Bundle: `Runner.app` with `Frameworks/App.framework`, `Frameworks/Flutter.framework`, plugin frameworks, `embedded.mobileprovision`.
+7. Resources: merge Info.plist; replace storyboards with `UILaunchScreen` + code-created `FlutterViewController` (no `ibtool`); compile the app icon into `Assets.car` + `CFBundleIconName`; copy `PrivacyInfo.xcprivacy` files.
+8. Bundle: `Runner.app` with `Frameworks/App.framework`, `Frameworks/Flutter.framework`, plugin frameworks, native-asset frameworks from step 2, `embedded.mobileprovision`.
    - `App.framework` is copied in, not linked. Dart's Mach-O has no exports trie, so the linker refuses it, and the engine loads it at runtime anyway (spike B).
-8. Provision and sign inside-out (xtool with zsign, merged entitlements), zip `Payload/` → `.ipa`.
+9. Sign inside-out with zsign and merged entitlements: development builds through xtool's provisioning, store builds with winCode's Apple Distribution identity and App Store profile (ADR-0009). Zip `Payload/` → `.ipa`.
 
-Debug builds skip step 3 (kernel blob + engine JIT snapshots) and run only with a debugger attached. Every release is checked by an "oracle" CI job: the same sample built with real Xcode on a macOS runner, bundles diffed. For `gen_snapshot` the oracle already exists: `.github/workflows/spike-a-oracle.yml`.
+Debug builds skip step 4 (kernel blob + engine JIT snapshots) and run only with a debugger attached. Every release is checked by an "oracle" CI job: the same sample built with real Xcode on a macOS runner, bundles diffed. For `gen_snapshot` the oracle already exists: `.github/workflows/spike-a-oracle.yml`.
 
-## Real iPhone: install, logs, hot reload
+## Real iPhone: install, launch, logs, hot reload
 
 - Connection (ADR-0005):
   - Apple's device service from the Apple Devices app, reached from WSL2 in mirrored networking mode at `127.0.0.1:27015`.
@@ -117,64 +279,13 @@ Debug builds skip step 3 (kernel blob + engine JIT snapshots) and run only with 
   - Developer Mode must be on. The first launch of a development-signed app needs the developer profile trusted in Settings.
 - Release/profile loop (phase 1): build, sign with development profile, install, launch, stream device log. No debugger needed.
   - Spike B proved every step except launch.
-  - xtool cannot mount the developer disk image on Linux, so the app is opened by hand until winCode has a launch path. pymobiledevice3 on Windows is the candidate.
-- Debug loop with hot reload (phase 3), copying Flutter 3.38+ on Mac:
+  - Launch goes through the user's own Xcode: the personalized developer disk image comes from the user's Xcode.xip (`XcodeSystemResources_Full.pkg`), never from a third-party mirror. pymobiledevice3 on Windows mounts it and launches the app, as a separate process.
+- Debug loop with hot reload (phase 4), copying Flutter 3.38+ on Mac:
   1. Build debug (JIT).
   2. Install, launch stopped through `debugserver` over the iOS 17 tunnel.
   3. Attach LLVM `lldb` and load Flutter's LLDB helper (breakpoint on `NOTIFY_DEBUGGER_ABOUT_RX_PAGES`). Since iOS 26 a debug build without a debugger crashes at launch.
   4. Forward the Dart VM service port; `flutter attach --debug-url` from Windows → hot reload, DevTools.
 - Support floor v1: Flutter 3.38+, iOS 17.4+, USB first.
-
-## No simulator: preview on Windows plus the real iPhone
-
-- Why not emulate: QEMU iOS projects boot iOS 3.1.3 or partial iOS 14 with patched kernels; research only, and breaks Apple's licence.
-- `wincode preview`: Windows desktop Flutter app with target platform forced to iOS; iPhone frames, safe areas, Cupertino widgets, mock plugin channels with "mocked" badges, licence-safe font substitute, desktop hot reload. Cannot show native plugin behaviour, platform views, real performance.
-- Device mirror: optional low-fps screenshot stream from the iPhone.
-- Remote Mac Simulator: plugin, not in v1.
-
-## Signing and App Store submission
-
-- Free Apple ID: development signing, short-lived profiles.
-  - Apple ID login needs xtool 1.22.2 or later; 1.21.0 hit Apple's `-80045`.
-  - Accounts with only SMS two-factor authentication currently fail (xtool-org/xtool#345).
-- Paid account: App Store Connect API key (.p8); winCode makes CSR (OpenSSL), distribution cert, App ID, profile via API; secrets in Windows Credential Manager.
-- Signing: zsign (native Windows/Linux, MIT), through xtool in v1.
-- Upload: App Store Connect API Build uploads (create, reserve, send, commit; webhook for status). Transporter CLI as backup.
-
-| Gate | Apple's rule | winCode's answer |
-| --- | --- | --- |
-| SDK version | Since April 28, 2026: Xcode 26+ / iOS 26 SDK | Require the user's Xcode 26.x xip |
-| Minimum iOS | Since September 9, 2026: target iOS 13+ | Default iOS 14 (Info.plist launch screen) |
-| App icon | Asset catalog + `CFBundleIconName` (ITMS-90713) | Own `Assets.car` compiler |
-| Privacy manifest | Approved reasons for required-reason APIs | Merge `PrivacyInfo.xcprivacy` |
-| Build metadata | Xcode writes SDK/toolchain keys | Only true values from the user's Xcode.xip; never fake a Mac build machine |
-
-Fallback: Mac release lane — generated GitHub Actions workflow builds the final App Store binary on a macOS runner. Default for production until several winCode-built apps are accepted.
-
-## Reverse engineering scope and the legal line
-
-- Use the real REA (morluto/rea). `rea-tools/rea` is an impersonation/malware repo.
-- REA only for file formats and outputs (compiled `Assets.car`, Xcode-written Info.plist keys, `.ipa` layout). Never decompile Apple tools (`actool`, `ibtool`, CoreUI).
-- Clean room for `Assets.car`: A builds samples with real Xcode on Apple hardware (macOS CI) and writes a spec in `docs/formats/`; B implements from the spec only; PRs record provenance.
-- Apple terms forbid running Apple SDKs on non-Apple-branded computers and reverse engineering Apple software. xtool model: ship no SDK bits; users download Xcode.xip and accept the licence themselves. winCode does the same and says so in README and `wincode setup`.
-- Never redistribute SDK headers/libs, Xcode binaries, Apple fonts, simulator runtimes (incl. public CI caches).
-- Apple can terminate developer accounts; README states the risk.
-- No Apple logos; no "Xcode for Windows" tagline.
-- Dependency licences: pymobiledevice3 is GPL-3.0 → separate process the user installs, never imported into MIT code. zsign and xtool MIT, Flutter engine BSD.
-- Not legal advice; lawyer review before marketing App Store submission from Windows.
-
-## Roadmap (rough, one part-time maintainer)
-
-| Phase | Duration | Deliverables | Gate |
-| --- | --- | --- | --- |
-| 0 Foundations | 2 weeks | Repo + governance, xtool in WSL2, gen_snapshot spike, hand-assembled counter app | G0: counter app built on Windows runs on the iPhone (met 2026-10-16) |
-| 1 Release builds | 6–8 weeks | `wincode build ipa / install / run`, SwiftPM plugins, translator, signing, device logs | G1: 5 sample apps with common plugins run on device |
-| 2 Preview + Studio | 4 weeks | iOS-mode preview, device mirror, Studio GUI, alpha v0.1 | G2: alpha v0.1 installable by outsiders |
-| 3 Debug + hot reload | 6–8 weeks | debugserver + LLDB helper, flutter attach, DevTools | G3: hot reload on an iOS 26 iPhone over USB |
-| 4 Ship to Apple | 6–10 weeks | Assets.car compiler, certs/profiles via API, build upload, Mac lane fallback | G4 (key gate): one real app accepted on TestFlight and the App Store |
-| 5 v1.0 hardening | ongoing | Installer, docs site, Flutter stable+beta CI, iOS 27, more plugins, co-maintainers | — |
-
-G0 was met on 2026-10-16, so the first kill switch below is retired.
 
 ## Open-source setup: repo, PRs, CI
 
@@ -200,41 +311,65 @@ wincode/
 
 ## Risks and kill switches
 
+The first kill switch (`gen_snapshot` on a non-Mac host) was retired on 2026-10-16. The one that remains is Apple accepting a non-Xcode build, which spike C tests.
+
 | Risk | Mitigation | Kill switch / pivot |
 | --- | --- | --- |
 | `gen_snapshot` for iOS can't be built for Linux/Windows host | Retired 2026-10-16: built on Linux and matched against the Mac output (ADR-0004) | — |
 | Dart changes break the Linux `gen_snapshot` build | Anchored GN edits fail loudly; per-release CI with the hash, features and oracle checks (ADR-0004) | Hold that Flutter release until the build is fixed |
 | Apple breaks Apple ID login for third-party tools (it did: `-80045`, fixed in xtool 1.22.2 within days) | Track xtool releases; recommend API key login for paid accounts | API key login only |
 | The device link breaks (Apple Devices or WSL networking changes) | `wincode setup` checks it (ADR-0005); NAT + port proxy as fallback | Install from Windows with pymobiledevice3 |
-| Apple rejects non-Xcode builds | Gates table; oracle diffs | Mac release lane stays production default |
-| `Assets.car` too hard | Clean-room spec in `docs/formats/` | Mac lane for store builds only |
-| Licence enforcement / bans / takedowns | No SDK redistribution; BYO Xcode.xip; lawyer review | Drop App Store upload from Windows |
+| Apple rejects non-Xcode builds | Spike C within three weeks; zero-rejection checks; IPA diff against an Xcode-built copy | The cloud Mac lane becomes the store lane for good (ADR-0008) |
+| `Assets.car` too hard | Clean-room spec in `docs/formats/`; a parallel track from week 1 | Cloud Mac lane for store builds only |
+| Licence enforcement / bans / takedowns | No SDK redistribution; BYO Xcode.xip; the account holder's written OK for spike C; lawyer review before the pure lane becomes a default | Cloud Mac lane only; drop App Store upload from Windows |
+| Native build hooks can't run off macOS | Spike E: run them ourselves with an `xcrun` shim (ADR-0010) | Pin the last plugin-based `path_provider_foundation` (2.5.1); ship such apps through the cloud Mac lane |
+| A tool revokes the team's certificates (xcross does) | winCode never revokes on its own (ADR-0009); xcross only with a throwaway free Apple ID | — |
+| The toolchain disk is lost (it happened on 2026-10-17) | One idempotent setup script; `wsl --export` snapshot | Rebuild from the script in about an hour |
 | Flutter iOS internals change each release | Support latest two stables; CI on stable + beta | — |
 | New iOS breaks device protocols | Lean on pymobiledevice3/xtool upstream | — |
 | Solo burnout | Narrow v1; two co-maintainers by v0.1; Sponsors | — |
 
-## First two weeks
+## Next three weeks
 
-- [x] Day 1: remove fake `rea.exe`, install real REA (`npx rea-agents setup`).
-- [x] Day 1: create org + repo with licence, README, CONTRIBUTING, CoC, SECURITY, PR/issue templates. Branch protection is not available for a private repo on the free plan.
-- [x] Day 2: xtool in WSL2 Ubuntu, Xcode 26.x xip from Apple, build xtool hello-world (`docs/spikes/day2-xtool-setup.md`). The first iPhone install happened in spike B.
-- [x] Days 3–5, spike A: build `gen_snapshot` (Flutter 3.47 engine revision) Linux host → iOS arm64; compile counter `app.dill`; compare with macOS `gen_snapshot` on a GitHub macOS runner (`docs/spikes/spike-a-gen-snapshot.md`).
-- [x] Days 6–8, spike B: hand-assemble `Runner.app` (SwiftPM runner + Flutter.framework + App.framework), sign with zsign through xtool, install with xtool, counter app runs (`docs/spikes/spike-b-device.md`).
-- [x] Week 2: ADRs. ADR-0001 (WSL2 toolchain) is accepted; ADR-0002 (Dart CLI) and ADR-0003 (SwiftPM-only plugins in v1) stay proposed; ADR-0004 (gen_snapshot on Linux) and ADR-0005 (device link) were added.
-- [ ] Week 2: open phase 1 issues.
-- [ ] Week 2: post spike result publicly.
-- [x] Gate G0 (2026-10-16).
+- [x] Maintainer: merge PRs #9 and #10.
+- [ ] Maintainer: get the developer-account holder's written OK for spike C (test app record, distribution certificate, TestFlight uploads).
+- [ ] Maintainer: create a throwaway free Apple ID for the xcross trial and run `xcross auth` yourself, so the maintainer's main Apple ID and the test developer team stay out of it.
+- [x] Dev: read-only plugin audit of the reference app (done 2026-10-18; results above).
+- [x] Dev: rebuild the WSL toolchain on C: from one script (Swift 6.4, xtool 1.22.2, Darwin SDK), then snapshot it with `wsl --export` (done 2026-10-18).
+- [ ] Maintainer: run `xtool auth` with the API key; the Issuer ID was on the lost disk, so read it again in App Store Connect.
+- [ ] Dev: xcross trial on the stock counter app only, after the toolchain, with a resumable Swift download (setup done 2026-10-18).
+- [ ] Dev: spike E, native build hooks: an `xcrun` shim and the `objective_c` hook on iOS arm64.
+- [ ] Dev: update docs/PLAN.md to v2; ADR-0008 (two release lanes), ADR-0009 (winCode owns store signing), ADR-0010 (native build hooks).
+- [ ] Dev: cloud Mac lane v0 (also spike C's reference IPA).
+- [ ] Dev: store signing in the CLI via the API, never revoking anything on its own.
+- [ ] Dev: spike C1, once the OK and the toolchain are in.
+- [ ] Dev: Assets.car track (document Xcode's output for an app icon; evaluate xcbuild's BSD asset-catalog code).
+- [ ] Maintainer: before G2, a legal review, or at least the account holder's informed OK.
+- [ ] Phase 1 continues from issue #7, now including the flavor reader and per-engine `gen_snapshot` builds.
 
-Once phase 1 ships, SPC Studio's iOS option can call `wincode build ipa` instead of generating a prompt for a Mac.
+## Decisions for the maintainer
+
+1. Spike C on a test developer team. Decided: no own account for now. Next: the account holder's written OK.
+2. Cloud Mac as default store lane until spike C passes and the risk is accepted (recommended: yes).
+3. New phase order, shipping before hot reload (recommended: yes).
+4. ADR-0002 (Dart CLI) and ADR-0003 (SwiftPM-only plugins v1): the audit supports accepting ADR-0003, since every native plugin in the reference app is SwiftPM.
+5. When the repo goes public: reminder set for 2026-11-08.
+6. Hot-reload phase: build it, or integrate xcross. Undecided: xcross auto-revokes certificates and ignores flavors, so it only runs with a throwaway Apple ID until the trial and a workaround settle it.
+7. Spike E (native build hooks) before the rest of phase 1 (recommended: yes, because almost every Flutter app depends on path_provider).
 
 ## Sources
 
-- xtool: https://github.com/xtool-org/xtool · announcement: https://forums.swift.org/t/xtool-cross-platform-xcode-replacement-build-ios-apps-on-linux-and-more/79803
-- REA official: https://github.com/morluto/rea (avoid https://github.com/rea-tools/rea)
 - Apple upcoming requirements: https://developer.apple.com/news/upcoming-requirements/
+- Transporter user guide: https://help.apple.com/itc/transporteruserguide/en.lproj/static.html
 - ASC API build uploads: https://developer.apple.com/documentation/appstoreconnectapi/build-uploads
+- Apple developer forums: https://developer.apple.com/forums/thread/14367 · https://developer.apple.com/forums/thread/799875
+- Xcode and Apple SDKs Agreement (copy): https://data.gpo.zugaina.org/jm-overlay/licenses/Xcode
+- xtool: https://github.com/xtool-org/xtool · announcement: https://forums.swift.org/t/xtool-cross-platform-xcode-replacement-build-ios-apps-on-linux-and-more/79803 · coverage: https://www.osnews.com/story/142331/xtool-cross-platform-xcode-replacement-for-linux-windows-and-macos/
+- xtool login fix (`-80045`): https://github.com/xtool-org/xtool/issues/329 · xtool device link on WSL: https://github.com/xtool-org/xtool/issues/19 · usbipd-win: https://github.com/dorssel/usbipd-win/issues/959
+- xcross: https://xcross.sh and https://github.com/arxdeus/xcross (LICENSE: AGPL-3.0)
+- xcbuild: https://github.com/facebook/xcbuild
+- Dart build hooks (`hooks`, `hooks_runner`, `code_assets`): https://github.com/dart-lang/native
 - Flutter SwiftPM: https://docs.flutter.dev/packages-and-plugins/swift-package-manager/for-app-developers
 - Dart app-aot-macho-dylib commit: https://dart.googlesource.com/sdk/+/38ef28a0589c0ac3009856a636b353e419e25c46%5E%21
 - Flutter iOS 26 debug + LLDB: https://startdebugging.net/2026/08/fix-mprotect-failed-permission-denied-in-a-flutter-ios-debug-build/
 - pymobiledevice3: https://github.com/doronz88/pymobiledevice3 · zsign: https://github.com/zhlynn/zsign
-- xtool login fix (`-80045`): https://github.com/xtool-org/xtool/issues/329 · xtool device link on WSL: https://github.com/xtool-org/xtool/issues/19 · usbipd-win: https://github.com/dorssel/usbipd-win/issues/959
