@@ -19,6 +19,8 @@ flutter_*.log
 *.xcodeproj/xcuserdata/
 DerivedData/
 Package.resolved
+# Upstream code in third_party keeps its own pin files (ADR-0007)
+!/third_party/**/Package.resolved
 
 # Apple SDK, Xcode and caches - never commit
 *.xip
