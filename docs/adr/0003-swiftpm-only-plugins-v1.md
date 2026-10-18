@@ -21,3 +21,7 @@ v1 builds Flutter apps whose iOS plugins all support Swift Package Manager. `win
 
 - Run CocoaPods in WSL2: needs Ruby, an Xcode project and build tooling we do not have.
 - Convert podspecs automatically: possible, but a large effort and error-prone for v1.
+
+## Notes
+
+- 2026-10-18: a read-only audit of a production reference app (a white-label Flutter app with several brands) supports accepting this ADR. Nine of its ten native plugins ship a `Package.swift`, the tenth (`path_provider_foundation`) has no native target, and there is no Podfile. The gap it found is native build hooks, not CocoaPods (ADR-0010). The status stays Proposed until the maintainer decides (`docs/PLAN.md`, "Decisions for the maintainer").
