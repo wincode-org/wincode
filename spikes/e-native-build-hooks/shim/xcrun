@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Spike E: xcrun for Dart build hooks on Linux. It answers SDK-path queries with the Darwin SDK
+# that xtool built from the user's own Xcode.xip, logs every call, and refuses anything else so
+# each new kind of call shows up. Only HOME and PATH reach hooks, so the paths derive from HOME.
+set -euo pipefail
+echo "xcrun $*" >>"$HOME/.cache/wincode-xcrun-shim.log"
+SDKS=$HOME/.swiftpm/swift-sdks/darwin.artifactbundle/Developer/Platforms
+case "$*" in
+  "--show-sdk-path --sdk iphoneos") echo "$SDKS/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk" ;;
+  *) echo "xcrun shim: unsupported call: xcrun $*" >&2; exit 64 ;;
+esac

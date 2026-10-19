@@ -25,6 +25,19 @@ To be confirmed or rejected by spike E (`docs/spikes/spike-e-native-build-hooks.
 - The shim stays small and honest: it reports paths into the user's own SDK; it does not imitate Xcode's tools.
 - A hook that needs another macOS-only tool fails with a clear message that names the package.
 
+Spike E results (2026-10-19, `docs/spikes/spike-e-native-build-hooks.md`):
+
+- **The approach works.** `objective_c` 9.5.0's hook ran on Linux through `hooks_runner` 1.5.0 with one shim answer, the SDK path. On an iPhone 15 with iOS 27.0.1, `path_provider` 2.6.0 returned the app's documents directory. The comparison with an Xcode-built reference IPA is still open.
+- **The C compiler must link with an iOS-capable `ld64.lld`.** That means `clang -B <Darwin SDK toolset> -fuse-ld=lld`:
+  - The Swift toolchain's own lld refuses iOS.
+  - A bare `--ld-path` makes clang pass ld64 flags that lld rejects.
+  - LLD warns that iOS is unsupported. It is the same linker xtool uses for every iOS app.
+- **winCode must build `flutter_assets` itself for apps with hooks.** `flutter build bundle --target-platform ios` runs the hooks too and stops off macOS ("Failed to find xcrun"). The spike's stopgap, a copy of the app without the hook packages, loses those packages' licences from `NOTICES`.
+- **The Dart compile needs Flutter's plugin registrant,** or Dart-only plugin implementations such as `path_provider_foundation` are never registered. Flutter 3.47 ships the native-asset mapping as `flutter_assets/NativeAssetsManifest.json`, not in the kernel.
+- **winCode needs its own install-name edit.** Linux has no `install_name_tool` or `lipo`, so winCode needs a Mach-O edit of its own, or `llvm-install-name-tool`, to set each framework's `@rpath` install name.
+- **Store signing must leave entitlements off embedded frameworks (ADR-0009).** xtool's signer gives every embedded framework the app's entitlements, and iOS logs an AMFI notice. Development builds still run.
+- **The 2.5.1 fallback** resolves on Flutter 3.47.7 and runs no hooks. It needs the SwiftPM plugin path of phase 1 instead, and it was not run on the device.
+
 ## Alternatives considered
 
 - **Pin the last plugin-based `path_provider_foundation` (2.5.1)** with a dependency override: quick, but it fights version constraints and doesn't help other packages with hooks.

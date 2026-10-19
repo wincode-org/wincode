@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Spike E: the C compiler handed to Dart build hooks: the Swift toolchain's clang, linking with the
+# Darwin SDK's ld64.lld (the one xtool links iOS apps with). -fuse-ld=lld makes clang pass lld's
+# flags (-platform_version), and -B makes it find the toolset's ld64.lld: the Swift toolchain's
+# own lld refuses iOS, and a bare --ld-path makes clang pass old ld64 flags that lld rejects.
+exec "$HOME/.local/share/swiftly/toolchains/6.4.0/usr/bin/clang" \
+  -B "$HOME/.swiftpm/swift-sdks/darwin.artifactbundle/toolset/bin" -fuse-ld=lld \
+  -Wno-unused-command-line-argument "$@"
