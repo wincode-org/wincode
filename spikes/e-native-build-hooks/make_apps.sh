@@ -60,13 +60,13 @@ fi
 
 if [ ! -d hooks_app_251 ]; then
   cp -r hooks_app hooks_app_251
-  sed -i 's/^name: hooks_app$/name: hooks_app_251/' hooks_app_251/pubspec.yaml
+  perl -pi -e 's/^name: hooks_app$/name: hooks_app_251/' hooks_app_251/pubspec.yaml   # perl: sed -i differs on macOS
   (cd hooks_app_251 && flutter pub remove objective_c && flutter pub add path_provider_foundation:2.5.1)
 fi
 
 if [ ! -d hooks_app_bundle ]; then
   cp -r hooks_app hooks_app_bundle
-  sed -i 's/^name: hooks_app$/name: hooks_app_bundle/' hooks_app_bundle/pubspec.yaml
+  perl -pi -e 's/^name: hooks_app$/name: hooks_app_bundle/' hooks_app_bundle/pubspec.yaml
   (cd hooks_app_bundle && flutter pub remove path_provider path_provider_foundation objective_c)
   cp counter/lib/main.dart hooks_app_bundle/lib/main.dart
 fi
