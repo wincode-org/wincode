@@ -1,0 +1,14 @@
+name: run_hooks
+description: Spike E. Runs an app's Dart build hooks for iOS arm64 on Linux.
+publish_to: none
+
+environment:
+  sdk: ^3.13.0
+
+# hooks_runner and code_assets at the versions flutter_tools 3.47.7 pins.
+dependencies:
+  code_assets: 1.2.1
+  file: any
+  hooks_runner: 1.5.0
+  logging: any
+  package_config: any
