@@ -1,0 +1,271 @@
+#!/usr/bin/env python3
+"""ipa-diff: list the differences between two iOS app bundles, by category.
+
+  tools/ipa-diff <A> <B>     each a .app directory, an .ipa file, or a folder holding one .app
+  tools/ipa-diff --self-test
+
+Categories: Info.plist keys, framework layout, load commands and build versions, entitlements,
+resources. Typical use: A is the Windows-built bundle (spike E, spikes/e-native-build-hooks), B the
+Xcode-built one (.github/workflows/oracle-reference-builds.yml). The two main executables are
+compared as <executable>, whatever their names. Exit status: 0 when nothing differs, 1 otherwise.
+
+It only reads files: the Mach-O and code-signature layouts follow Apple's open-source headers
+(mach-o/loader.h, kern/cs_blobs.h). It runs no Apple tool, so it also works on Linux.
+"""
+import hashlib
+import plistlib
+import struct
+import sys
+import tempfile
+import zipfile
+from collections import Counter
+from pathlib import Path
+
+LOAD_COMMANDS = {
+    0x2: "LC_SYMTAB", 0xB: "LC_DYSYMTAB", 0xC: "LC_LOAD_DYLIB", 0xD: "LC_ID_DYLIB", 0xE: "LC_LOAD_DYLINKER",
+    0x19: "LC_SEGMENT_64", 0x1B: "LC_UUID", 0x1D: "LC_CODE_SIGNATURE", 0x1E: "LC_SEGMENT_SPLIT_INFO",
+    0x25: "LC_VERSION_MIN_IPHONEOS", 0x26: "LC_FUNCTION_STARTS", 0x29: "LC_DATA_IN_CODE",
+    0x2A: "LC_SOURCE_VERSION", 0x2C: "LC_ENCRYPTION_INFO_64", 0x2E: "LC_LINKER_OPTIMIZATION_HINT",
+    0x32: "LC_BUILD_VERSION", 0x80000018: "LC_LOAD_WEAK_DYLIB", 0x8000001C: "LC_RPATH",
+    0x8000001F: "LC_REEXPORT_DYLIB", 0x80000022: "LC_DYLD_INFO_ONLY", 0x80000023: "LC_LOAD_UPWARD_DYLIB",
+    0x80000028: "LC_MAIN", 0x80000033: "LC_DYLD_EXPORTS_TRIE", 0x80000034: "LC_DYLD_CHAINED_FIXUPS",
+}
+DYLIB_COMMANDS = {0xC, 0xD, 0x80000018, 0x8000001F, 0x80000023}
+PLATFORMS = {1: "macos", 2: "ios", 3: "tvos", 4: "watchos", 6: "maccatalyst", 7: "ios-simulator", 11: "visionos"}
+TOOLS = {1: "clang", 2: "swift", 3: "ld", 4: "lld"}
+CPU_ARM64 = 0x0100000C
+
+
+def version(v):
+    major, minor, patch = v >> 16, (v >> 8) & 0xFF, v & 0xFF
+    return f"{major}.{minor}" + (f".{patch}" if patch else "")
+
+
+def cstring(data, offset):
+    return data[offset:data.index(b"\0", offset)].decode(errors="replace")
+
+
+def macho(data):
+    """Load-command summary of a 64-bit Mach-O (the arm64 slice of a fat file), or None."""
+    try:
+        return _macho(data)
+    except (struct.error, ValueError, IndexError):  # truncated or not really Mach-O: a resource
+        return None
+
+
+def _macho(data):
+    if data[:4] in (b"\xca\xfe\xba\xbe", b"\xca\xfe\xba\xbf"):  # fat header, big-endian
+        wide, count = data[3] == 0xBF, struct.unpack_from(">I", data, 4)[0]
+        if count > 32:  # Java class files share this magic
+            return None
+        for i in range(count):
+            fmt, size = (">iiQQ", 32) if wide else (">iiII", 20)
+            cpu, _, offset, length = struct.unpack_from(fmt, data, 8 + i * size)
+            if cpu == CPU_ARM64:
+                return _macho(data[offset:offset + length])
+        return None
+    if data[:4] != b"\xcf\xfa\xed\xfe":  # MH_MAGIC_64, little-endian
+        return None
+    _, _, _, filetype, ncmds, _, _, _ = struct.unpack_from("<IiiIIIII", data, 0)
+    info = {"filetype": filetype, "commands": Counter(), "id": None, "dylibs": [], "rpaths": [],
+            "build": None, "encryption": None, "signature": None}
+    offset = 32
+    for _ in range(ncmds):
+        cmd, size = struct.unpack_from("<II", data, offset)
+        name = LOAD_COMMANDS.get(cmd, hex(cmd))
+        info["commands"][name] += 1
+        if cmd in DYLIB_COMMANDS:
+            path = cstring(data, offset + struct.unpack_from("<I", data, offset + 8)[0])
+            if cmd == 0xD:
+                info["id"] = path
+            else:
+                info["dylibs"].append(path if cmd == 0xC else f"{path} ({name})")
+        elif cmd == 0x8000001C:
+            info["rpaths"].append(cstring(data, offset + struct.unpack_from("<I", data, offset + 8)[0]))
+        elif cmd == 0x32:
+            platform, minos, sdk, ntools = struct.unpack_from("<IIII", data, offset + 8)
+            tools = [struct.unpack_from("<II", data, offset + 24 + 8 * i) for i in range(ntools)]
+            info["build"] = f"{PLATFORMS.get(platform, platform)} minos {version(minos)} sdk {version(sdk)}" + "".join(
+                f", {TOOLS.get(tool, tool)} {version(v)}" for tool, v in tools)
+        elif cmd == 0x25:
+            minos, sdk = struct.unpack_from("<II", data, offset + 8)
+            info["build"] = f"ios (LC_VERSION_MIN) minos {version(minos)} sdk {version(sdk)}"
+        elif cmd == 0x2C:
+            _, cryptsize, cryptid = struct.unpack_from("<III", data, offset + 8)
+            info["encryption"] = f"cryptid {cryptid}, cryptsize {cryptsize}"
+        elif cmd == 0x1D:
+            dataoff, datasize = struct.unpack_from("<II", data, offset + 8)
+            info["signature"] = data[dataoff:dataoff + datasize]
+        offset += size
+    return info
+
+
+def entitlements(signature):
+    """The entitlements in an embedded code signature (CS_SuperBlob): a dict, {} if none, None if unsigned."""
+    if not signature:
+        return None
+    magic, _, count = struct.unpack_from(">III", signature, 0)
+    if magic != 0xFADE0CC0:
+        return None
+    for i in range(count):
+        _, offset = struct.unpack_from(">II", signature, 12 + 8 * i)
+        blob_magic, length = struct.unpack_from(">II", signature, offset)
+        if blob_magic == 0xFADE7171:  # CSMAGIC_EMBEDDED_ENTITLEMENTS, an XML plist
+            return plistlib.loads(signature[offset + 8:offset + length])
+    return {}
+
+
+def open_bundle(path, scratch):
+    p = Path(path)
+    if p.is_file():  # an .ipa, or any zip holding the .app
+        with zipfile.ZipFile(p) as z:
+            z.extractall(scratch)
+        p = Path(scratch)
+    if p.suffix == ".app":
+        return p
+    apps = sorted(p.glob("Payload/*.app")) or sorted(p.glob("*.app")) or sorted(p.glob("*/*.app"))
+    if len(apps) != 1:
+        sys.exit(f"ipa-diff: expected one .app in {path}, found {len(apps)}")
+    return apps[0]
+
+
+def load(app):
+    """Bundle files by relative path, with the main executable renamed <executable>."""
+    files = {f.relative_to(app).as_posix(): f.read_bytes() for f in sorted(app.rglob("*")) if f.is_file()}
+    executable = plistlib.loads(files["Info.plist"]).get("CFBundleExecutable")
+    return executable, {("<executable>" if k == executable else k): v for k, v in files.items()}
+
+
+def short(value, limit=90):
+    text = repr(value)
+    return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
+def compare(a_path, b_path):
+    with tempfile.TemporaryDirectory() as ta, tempfile.TemporaryDirectory() as tb:
+        a_exe, a = load(open_bundle(a_path, ta))
+        b_exe, b = load(open_bundle(b_path, tb))
+    a_macho = {k: m for k, v in a.items() if (m := macho(v))}
+    b_macho = {k: m for k, v in b.items() if (m := macho(v))}
+    out = [f"ipa-diff  A: {a_path} (executable {a_exe})", f"          B: {b_path} (executable {b_exe})"]
+    differences = 0
+
+    def section(title, lines):
+        nonlocal differences
+        differences += len(lines)
+        out.append(f"\n== {title}")
+        out.extend(lines or ["  no differences"])
+
+    def only(label, a_items, b_items, render=str):
+        a_items, b_items = set(a_items), set(b_items)
+        return ([f"  only in A: {label}{render(x)}" for x in sorted(a_items - b_items)]
+                + [f"  only in B: {label}{render(x)}" for x in sorted(b_items - a_items)])
+
+    # Info.plist keys, every Info.plist in the bundle
+    lines = []
+    for path in sorted(p for p in set(a) & set(b) if p.endswith("Info.plist")):
+        pa, pb = plistlib.loads(a[path]), plistlib.loads(b[path])
+        keys = []
+        for key in sorted(set(pa) | set(pb)):
+            if key not in pb:
+                keys.append(f"    only in A: {key} = {short(pa[key])}")
+            elif key not in pa:
+                keys.append(f"    only in B: {key} = {short(pb[key])}")
+            elif pa[key] != pb[key]:
+                keys.append(f"    differs:   {key}: A {short(pa[key], 60)} | B {short(pb[key], 60)}")
+        if keys:
+            lines += [f"  -- {path}"] + keys
+    section("Info.plist keys", lines)
+
+    # Framework layout: top-level entries, frameworks, and the files inside shared frameworks
+    def top(files):
+        return {k.split("/")[0] for k in files}
+
+    def frameworks(files):
+        return {"/".join(k.split("/")[:2]) for k in files if k.startswith("Frameworks/") and k.count("/") >= 2}
+
+    lines = only("", top(a) - {"Frameworks"}, top(b) - {"Frameworks"}) + only("", frameworks(a), frameworks(b))
+    for fw in sorted(frameworks(a) & frameworks(b)):
+        inside = only(f"{fw}/", [k[len(fw) + 1:] for k in a if k.startswith(fw + "/")],
+                      [k[len(fw) + 1:] for k in b if k.startswith(fw + "/")])
+        lines += inside
+    section("Framework layout", lines)
+
+    # Load commands and build versions, for every Mach-O
+    lines = []
+    for path in sorted(set(a_macho) | set(b_macho)):
+        ma, mb = a_macho.get(path), b_macho.get(path)
+        if not (ma and mb):
+            m, side = ma or mb, "A" if ma else "B"
+            lines.append(f"  -- {path}: only in {side} ({m['build']}; links {', '.join(m['dylibs']) or 'nothing'})")
+            continue
+        rows = []
+        for field in ("build", "id", "encryption"):
+            if ma[field] != mb[field]:
+                rows.append(f"    {field}: A {ma[field]} | B {mb[field]}")
+        rows += [r.replace("  only", "    only") for r in only("dylib ", ma["dylibs"], mb["dylibs"])]
+        rows += [r.replace("  only", "    only") for r in only("rpath ", ma["rpaths"], mb["rpaths"])]
+        if (ma["signature"] is None) != (mb["signature"] is None):
+            rows.append(f"    code signature: A {'yes' if ma['signature'] else 'no'} | B {'yes' if mb['signature'] else 'no'}")
+        commands = sorted(set(ma["commands"]) | set(mb["commands"]))
+        changed = [c for c in commands if ma["commands"][c] != mb["commands"][c]]
+        if changed:
+            rows.append("    load commands: " + ", ".join(f"{c} A {ma['commands'][c]} B {mb['commands'][c]}" for c in changed))
+        if rows:
+            lines += [f"  -- {path}"] + rows
+    section("Load commands and build versions", lines)
+
+    # Entitlements, from the embedded code signature of each Mach-O both bundles have
+    def show(e):
+        return "unsigned" if e is None else short(e, 70) if e else "signed, none"
+
+    lines = []
+    for path in sorted(set(a_macho) & set(b_macho)):
+        ea, eb = entitlements(a_macho[path]["signature"]), entitlements(b_macho[path]["signature"])
+        if ea != eb:
+            lines.append(f"  {path}: A {show(ea)} | B {show(eb)}")
+    section("Entitlements", lines)
+
+    # Resources: every other file, by path and SHA-256
+    def resources(files, machos):
+        return {k: hashlib.sha256(v).hexdigest() for k, v in files.items() if k not in machos and not k.endswith("Info.plist")}
+
+    ra, rb = resources(a, a_macho), resources(b, b_macho)
+    lines = only("", ra, rb) + [f"  differs:   {k}" for k in sorted(set(ra) & set(rb)) if ra[k] != rb[k]]
+    same = sum(1 for k in set(ra) & set(rb) if ra[k] == rb[k])
+    section(f"Resources ({same} identical)", lines)
+
+    print("\n".join(out))
+    return 1 if differences else 0
+
+
+def self_test():
+    def command(cmd, body):
+        pad = -(8 + len(body)) % 8
+        return struct.pack("<II", cmd, 8 + len(body) + pad) + body + b"\0" * pad
+
+    def dylib(cmd, name):
+        return command(cmd, struct.pack("<IIII", 24, 0, 0x10000, 0x10000) + name.encode() + b"\0")
+
+    commands = [command(0x32, struct.pack("<IIIIII", 2, 0x000F0000, 0x001A0500, 1, 4, 0x00150106)),
+                dylib(0xD, "@rpath/T.framework/T"), dylib(0xC, "/usr/lib/libSystem.B.dylib"),
+                command(0x8000001C, struct.pack("<I", 12) + b"@loader_path/Frameworks\0")]
+    body = b"".join(commands)
+    m = macho(struct.pack("<IiiIIIII", 0xFEEDFACF, CPU_ARM64, 0, 6, len(commands), len(body), 0, 0) + body)
+    assert m["build"] == "ios minos 15.0 sdk 26.5, lld 21.1.6", m["build"]
+    assert m["id"] == "@rpath/T.framework/T", m["id"]
+    assert m["dylibs"] == ["/usr/lib/libSystem.B.dylib"] and m["rpaths"] == ["@loader_path/Frameworks"]
+    xml = plistlib.dumps({"get-task-allow": True})
+    blob = struct.pack(">II", 0xFADE7171, 8 + len(xml)) + xml
+    assert entitlements(struct.pack(">IIIII", 0xFADE0CC0, 20 + len(blob), 1, 5, 20) + blob) == {"get-task-allow": True}
+    assert entitlements(None) is None and macho(b"\x7fELF" + b"\0" * 60) is None
+    print("ipa-diff self-test: ok")
+
+
+if __name__ == "__main__":
+    if sys.argv[1:] == ["--self-test"]:
+        self_test()
+    elif len(sys.argv) == 3:
+        sys.exit(compare(sys.argv[1], sys.argv[2]))
+    else:
+        sys.exit(__doc__)
