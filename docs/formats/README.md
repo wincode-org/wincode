@@ -6,4 +6,4 @@ Status: nothing implemented yet.
 
 | File | Format | State |
 | --- | --- | --- |
-| [assets-car-app-icon.md](assets-car-app-icon.md) | `Assets.car`, app icon | A-side sample defined; no observations yet |
+| [assets-car-app-icon.md](assets-car-app-icon.md) | `Assets.car`, app icon | A-side observations from run 39513689791 |

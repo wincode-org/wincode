@@ -29,10 +29,42 @@ Clean-room rule (CONTRIBUTING.md): this file holds what the A side observes in t
 
 ### Observations
 
-Not recorded yet: the workflow has not run. After the first run, this section records the following, from the files above only and with the run's ID and tool versions:
+Run 39513689791 (2026-10-20) on `macos-26`: macOS 26.6.2 (25G83), Xcode 26.6 (17F113), iphoneos SDK 26.5, `actool` 26.6 (bundle version 24765). Every fact below comes from that run's `icon-sample` and `xcode-dumps` artifacts.
 
-- the files actool writes next to `Assets.car`
-- the keys and values in the partial Info.plist (`CFBundleIcons`, `CFBundleIconName`, …)
-- what `assetutil --info` reports: the header entries and every rendition with its name, idiom, scale, size, pixel format and compression
-- `Assets.car`'s size
-- how Xcode's own `actool` invocation differs from the command above
+**Files actool wrote** (`compiled-files.txt`):
+
+| File | Bytes | Notes |
+| --- | --- | --- |
+| `Assets.car` | 170040 | |
+| `AppIcon60x60@2x.png` | 679 | 120 × 120, 8-bit RGBA |
+| `AppIcon76x76@2x~ipad.png` | 938 | 152 × 152, 8-bit RGBA |
+| `partial-Info.plist` | 713 | |
+
+So from a single 1024 px source, actool also writes two loose, downscaled PNGs next to `Assets.car`, and they carry an alpha channel even though the source has none.
+
+**Partial Info.plist:**
+
+- `CFBundleIcons` → `CFBundlePrimaryIcon` → `CFBundleIconFiles` = `[AppIcon60x60]`, `CFBundleIconName` = `AppIcon`
+- `CFBundleIcons~ipad` → `CFBundlePrimaryIcon` → `CFBundleIconFiles` = `[AppIcon60x60, AppIcon76x76]`, `CFBundleIconName` = `AppIcon`
+
+**`assetutil --info`, header entry:**
+
+- `Platform` ios, `PlatformVersion` 15.0 (the `--minimum-deployment-target`)
+- `CoreUIVersion` 975, `StorageVersion` 17, `SchemaVersion` 2
+- `AssetStorageVersion` "Xcode 26.6 (17F113) via AssetCatalogSimulatorAgent"
+- `Key Format`, in order: appearance, localization, scale, idiom, subtype, dimension2, identifier, element, part
+- `Appearances`: `UIAppearanceAny` = 0
+- `Timestamp` present (build time, so it differs between builds)
+
+**Renditions:** four entries, all `Name` AppIcon with `NameIdentifier` 6849.
+
+| AssetType | Idiom | Pixels | Encoding | Compression | Size on disk | Other |
+| --- | --- | --- | --- | --- | --- | --- |
+| Icon Image | phone | 1024 × 1024 | ARGB, 8 bits per component, RGB, sRGB | lzfse | 75732 | `Opaque` true, `Icon Index` 1, `Scale` 1, `RenditionName` icon-1024.png |
+| Icon Image | pad | 1024 × 1024 | same | lzfse | 75732 | same |
+| MultiSized Image | phone | — | — | — | 236 | `Sizes` ["1024x1024 index:1 idiom:phone"] |
+| MultiSized Image | pad | — | — | — | 236 | `Sizes` ["1024x1024 index:1 idiom:pad"] |
+
+The universal 1024 px source is stored twice, once per target device (`--target-device iphone`, `--target-device ipad`). Each idiom also gets a "MultiSized Image" index entry.
+
+**Xcode's own invocation** (`xcode-actool-invocations.txt`, from building the Flutter test apps) uses these flags, beyond the ones in the command above: `--compress-pngs`, `--development-region`, `--enable-on-demand-resources`, `--bundle-identifier`, `--export-dependency-info`, `--generate-asset-symbol-index`, `--generate-objc-asset-symbols`, `--generate-swift-asset-symbols`, and a first pass with `--print-asset-tag-combinations`. It does not pass `--errors`.
