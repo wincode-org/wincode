@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Spike C: read-only App Store Connect preflight for the test app. It sends GET requests only.
 
-  asc_preflight.py [--dry-run] [<bundle id>] the team's certificates, and the App IDs, apps and profiles that
-                                             match the bundle ID (default: from WINCODE_SPIKE_C_DIR's
-                                             config.json), as one table
+  asc_preflight.py [--dry-run] [<bundle id>] PASS or FAIL for: the key works, the app record is found by bundle ID
+                                             (default: from WINCODE_SPIKE_C_DIR's config.json), the app has no
+                                             builds yet; then the team's certificates and the App ID and profiles
+                                             that match, as one table without names or identifiers
   asc_preflight.py --self-test               offline: sign a token with a throwaway key and check it against
                                              Apple's documented format
 
@@ -34,6 +35,13 @@ from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
 API = "https://api.appstoreconnect.apple.com"
 LIFETIME = 600  # seconds; Apple refuses a token that expires more than 20 minutes after it was issued
 REPO = Path(__file__).resolve().parents[2]
+MASK = {}  # value -> placeholder; spike_config and sign.py add the bundle ID and team ID
+
+
+def masked(text):
+    for value, placeholder in MASK.items():
+        text = text.replace(value, placeholder)
+    return text
 
 
 def b64url(data):
@@ -54,11 +62,13 @@ def spike_config():
     if not os.environ.get("WINCODE_SPIKE_C_DIR"):
         sys.exit("set WINCODE_SPIKE_C_DIR to spike C's local folder (docs/spikes/spike-c-store-acceptance.md)")
     folder = private(os.environ["WINCODE_SPIKE_C_DIR"], "WINCODE_SPIKE_C_DIR")
-    config = json.loads((folder / "config.json").read_text())
+    # utf-8-sig: Notepad may start the file with a byte order mark
+    config = json.loads((folder / "config.json").read_text(encoding="utf-8-sig"))
     for key, pattern in (("bundle_id", r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+"), ("version", r"\d+(\.\d+){0,2}"),
                          ("build", r"\d+(\.\d+){0,2}")):
         if not re.fullmatch(pattern, str(config.get(key, ""))):
             sys.exit(f"config.json in WINCODE_SPIKE_C_DIR: {key} is missing or malformed")
+    MASK[config["bundle_id"]] = "<bundle ID>"
     return folder, config
 
 
@@ -69,7 +79,7 @@ def load_key(folder):
     if len(p8) != 1 or not re.fullmatch(r"AuthKey_[A-Z0-9]{10}\.p8", p8[0].name):
         sys.exit("WINCODE_ASC_KEY_DIR must hold one .p8, named AuthKey_<Key ID>.p8 as App Store Connect delivers it")
     issuer_file = folder / "issuer-id"
-    issuer = issuer_file.read_text().strip() if issuer_file.is_file() else ""
+    issuer = issuer_file.read_text(encoding="utf-8-sig").strip() if issuer_file.is_file() else ""
     if not re.fullmatch(r"[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}", issuer, re.I):
         sys.exit("WINCODE_ASC_KEY_DIR must hold a file issuer-id with the Issuer ID (a UUID) on one line")
     key = serialization.load_pem_private_key(p8[0].read_bytes(), password=None)
@@ -106,9 +116,11 @@ def get_all(path, params, bearer, dry_run):
             sys.exit(f"refusing to send the token outside {API}")
         if dry_run:
             auth = "token signed locally, not shown" if bearer else "no token: WINCODE_ASC_KEY_DIR is not set"
-            print(f"GET {urllib.parse.unquote(url)}\n    Authorization: Bearer <{auth}>")
+            print(masked(f"GET {urllib.parse.unquote(url)}\n    Authorization: Bearer <{auth}>"))
             return rows
         request = urllib.request.Request(url, method="GET")
+        if request.get_method() != "GET":
+            sys.exit("abort: the preflight sends GET requests only")
         request.add_unredirected_header("Authorization", f"Bearer {bearer}")
         try:
             with urllib.request.urlopen(request, timeout=60) as response:
@@ -136,30 +148,53 @@ def preflight(bundle_id, dry_run):
         sys.exit("set WINCODE_ASC_KEY_DIR to the API key folder (docs/spikes/spike-c-store-acceptance.md)")
     bearer = token(*load_key(folder)) if folder else None
 
+    MASK.setdefault(bundle_id, "<bundle ID>")
+    failed = []
+
     def get(path, params):
         return get_all(path, {**params, "limit": 200}, bearer, dry_run)
 
+    def check(name, ok):
+        if not dry_run:
+            print(f"{'PASS' if ok else 'FAIL'}  {name}")
+            failed.extend([name] * (not ok))
+
+    # The checks come first and need only read access to apps and builds; a key without access to certificates
+    # or profiles stops at the table, after them. An HTTP error (a key that doesn't work) stops with Apple's code.
+    try:
+        apps = get("/v1/apps", {"filter[bundleId]": bundle_id, "fields[apps]": "bundleId"})
+    except SystemExit:
+        check("the API key works", False)
+        raise
+    check("the API key works", True)
+    app = [a["id"] for a in apps if attr(a, "bundleId") == bundle_id]
+    check("the app record is found by bundle ID", len(app) == 1)
+    builds, uploads = [], []
+    for app_id in app or (["{id of the app record}"] if dry_run else []):
+        builds += get(f"/v1/apps/{app_id}/builds", {"fields[builds]": "processingState"})
+        uploads += get(f"/v1/apps/{app_id}/buildUploads", {"fields[buildUploads]": "state"})
+    check("the app has no builds and no build uploads yet", app and not builds and not uploads)
+
     certificates = get("/v1/certificates", {"fields[certificates]": "certificateType,expirationDate"})
-    bundle_ids = get("/v1/bundleIds", {"filter[identifier]": bundle_id, "fields[bundleIds]": "identifier,name,platform"})
-    apps = get("/v1/apps", {"filter[bundleId]": bundle_id, "fields[apps]": "name,bundleId"})
+    bundle_ids = get("/v1/bundleIds", {"filter[identifier]": bundle_id, "fields[bundleIds]": "identifier,platform"})
     exact = [b["id"] for b in bundle_ids if attr(b, "identifier") == bundle_id]
     profiles = []
     for bundle in exact or (["{id of the App ID}"] if dry_run else []):
-        profiles += get(f"/v1/bundleIds/{bundle}/profiles",
-                        {"fields[profiles]": "name,profileType,profileState,expirationDate"})
+        profiles += get(f"/v1/bundleIds/{bundle}/profiles", {"fields[profiles]": "profileType,profileState,expirationDate"})
     if dry_run:
         return
 
-    rows = [("certificate", attr(c, "certificateType"), "", "", "", attr(c, "expirationDate")[:10]) for c in certificates]
-    rows += [("App ID", attr(b, "platform"), attr(b, "name"), attr(b, "identifier"), "", "") for b in bundle_ids]
-    rows += [("app", "", attr(a, "name"), attr(a, "bundleId"), "", "") for a in apps]
-    rows += [("profile", attr(p, "profileType"), attr(p, "name"), bundle_id, attr(p, "profileState"),
-              attr(p, "expirationDate")[:10]) for p in profiles]
-    table(("KIND", "TYPE", "NAME", "IDENTIFIER", "STATE", "EXPIRES"), rows)
+    # Names and identifiers stay out of the table: they can carry the team's, client's or app's name.
+    rows = [("certificate", attr(c, "certificateType"), "", attr(c, "expirationDate")[:10]) for c in certificates]
+    rows += [("App ID", attr(b, "platform"), "", "") for b in bundle_ids if b["id"] in exact]
+    rows += [("profile", attr(p, "profileType"), attr(p, "profileState"), attr(p, "expirationDate")[:10]) for p in profiles]
+    print()
+    table(("KIND", "TYPE", "STATE", "EXPIRES"), rows)
     counts = Counter(attr(c, "certificateType") for c in certificates)
-    print(f"\ncertificates: {len(certificates)} ({', '.join(f'{t} {n}' for t, n in sorted(counts.items())) or 'none'})")
-    print(f"App IDs matching: {len(bundle_ids)}, exactly: {len(exact)}; apps: {len(apps)}; "
-          f"profiles of that App ID: {len(profiles)}")
+    print(f"\ncertificates: {len(certificates)} ({', '.join(f'{t} {n}' for t, n in sorted(counts.items())) or 'none'}); "
+          f"App IDs: {len(exact)}; profiles of that App ID: {len(profiles)}")
+    if failed:
+        sys.exit(f"{len(failed)} check(s) failed")
 
 
 def self_test():

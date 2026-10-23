@@ -1,9 +1,8 @@
 # Spike C: App Store acceptance of a Windows-built IPA
 
-Status: prepared 2026-10-23. **Nothing has been sent to Apple yet.**
-- **Done:** the distribution key and its backup (step 1), zsign (step 5), and the C1 bundle builder.
-- **Signing and upload scripts:** tested offline with throwaway keys.
-- **Waiting for the maintainer:** the certificate, the profile and the app record.
+Status: signed 2026-10-23. **Only GET requests have been sent to Apple; nothing is uploaded.**
+- **Done:** steps 1 to 7. The maintainer made the certificate, the profile and the app record by hand; the preflight passed; C1 is built and signed.
+- **Next:** the upload (step 8), after the maintainer's yes.
 
 The test developer team's account holder has agreed to spike C in writing. This is C1: the app icon's `Assets.car` and the launch storyboard come from Xcode, so the run tests the rest of the bundle. C2 repeats it with winCode's own `Assets.car`.
 
@@ -34,14 +33,15 @@ Does App Store Connect accept an IPA built and signed on Windows (WSL2), and doe
 
 ## Local files and secrets
 
-Two folders outside the repo and OneDrive, named by environment variables; the scripts refuse folders inside either.
+Named by environment variables, outside the repo and OneDrive; the scripts refuse folders inside either.
 
-| Folder | Holds |
+| Variable | Names |
 | --- | --- |
-| `WINCODE_SPIKE_C_DIR` | `dist.key` and `dist.csr` (step 1); the certificate (one `.cer`) and the App Store profile (one `.mobileprovision`) as downloaded; `config.json`; a note of what each write created (the undo list) |
-| `WINCODE_ASC_KEY_DIR` | `AuthKey_<Key ID>.p8` as downloaded and `issuer-id` with the Issuer ID on one line; used by the preflight and the upload |
+| `WINCODE_DIST_KEY` | `dist.key` (step 1). It stays on the WSL disk: `sign.py` refuses a path under `/mnt/`. `dist.csr` sits beside it |
+| `WINCODE_SPIKE_C_DIR` | A folder with the certificate (one `.cer`) and the App Store profile (one `.mobileprovision`) as downloaded, `dist.csr` for the portal, `config.json`, and a note of what each write created (the undo list). It may be on a Windows drive, so the maintainer can edit it in Notepad |
+| `WINCODE_ASC_KEY_DIR` | A folder with `AuthKey_<Key ID>.p8` as downloaded (not renamed: the Key ID is read from the name) and `issuer-id`, a file with no extension holding the Issuer ID on one line; used by the preflight and the upload |
 
-`config.json`: `{"bundle_id": "<bundle id>", "version": "1.0.0", "build": "1"}`. Each later upload takes a higher build number.
+`config.json`: `{"bundle_id": "<bundle id>", "version": "1.0", "build": "1"}`. Each later upload takes a higher build number. The scripts accept the byte order mark Notepad may write.
 
 - **The distribution key** is RSA 2048, PKCS#8, on the WSL disk (ext4; folder 700, file 600).
   - Its backup is on a second physical disk, encrypted with a passphrase (PBKDF2-HMAC-SHA256, 600,000 iterations, AES-256-CBC).
@@ -83,12 +83,19 @@ python3 spikes/c-store-acceptance/asc_preflight.py --dry-run
 python3 spikes/c-store-acceptance/asc_preflight.py
 ```
 
-It prints the team's certificates (type, expiry, count per type), then the App IDs, apps and profiles that match the config's bundle ID. What decides the next steps:
+It sends GET requests only, and stops if a request is anything else. It prints PASS or FAIL for three checks, and exits non-zero if one fails:
+- the API key works;
+- the app record is found by the config's bundle ID;
+- the app has no builds and no build uploads yet.
+
+Then it prints a table of the team's certificates (type, expiry, count per type) and the App ID and profiles that match the bundle ID, without names or identifiers. What decides the next steps:
 - **Distribution certificates** (`DISTRIBUTION`, `IOS_DISTRIBUTION`): Apple caps them per team; third-party docs say three. At the cap: STOP.
 - **App ID and app record:** whether they already exist.
 - **Profiles:** existing ones are left alone.
 
-If the key's role can't read certificates, the preflight shows Apple's 403; the developer portal shows the same list.
+If the key's role can't read certificates, the preflight shows Apple's 403 after the three checks; the developer portal shows the same list.
+
+**Run 2026-10-23** (after steps 3 and 4): the dry run printed six GETs; the real run passed all three checks, and listed our App ID with one active App Store profile.
 
 ### 3. Certificate and profile, by hand in the developer portal (maintainer)
 
@@ -143,13 +150,14 @@ It writes the `.app`, `c1-unsigned.ipa` and `ipa-diff-c1.txt` against Xcode's co
 | Bundle | Info.plist | Layout | Load | Entitlements | Resources |
 | --- | --- | --- | --- | --- | --- |
 | Spike D's counter bundle | 11 | 7 | 9 | 0 | 12 |
-| C1 | 9 | 4 | 9 | 0 | 11 |
+| C1, placeholder bundle ID, version 1.0.0 | 9 | 4 | 9 | 0 | 11 |
+| C1, the config's bundle ID, version 1.0, build 1 | 10 | 4 | 9 | 0 | 11 |
 
 What still differs:
 - **Info.plist:**
   - The four Xcode and Mac keys (above).
   - `CFBundleExecutable`, the runner's name.
-  - `CFBundleIdentifier`, from the config.
+  - `CFBundleIdentifier` and `CFBundleShortVersionString` (1.0 against Xcode's 1.0.0), from the config.
   - `ITSAppUsesNonExemptEncryption`, which only C1 has.
   - Xcode's `UIMainStoryboardFile` and scene configuration, which the SwiftUI runner doesn't use.
 - **Layout:**
@@ -177,12 +185,22 @@ python3 spikes/c-store-acceptance/sign.py <C1 .app> <out .ipa>
   - The certificate is a distribution certificate for `dist.key` and hasn't expired.
   - The profile is an App Store profile (no devices, no `get-task-allow`) for the config's bundle ID and includes the certificate.
   - The bundle carries the config's bundle ID.
-- **Dry run:** it lists what is still missing and prints the zsign command.
-- **Signing:** zsign signs a copy, then the script reads every signature back.
+- **Entitlements:** a minimal set, built at run time from the profile's team ID and the config's bundle ID; nothing about the team or app is in the repo.
+  - `application-identifier`: team ID + bundle ID.
+  - `com.apple.developer.team-identifier`: team ID.
+  - `get-task-allow`: false.
+  - `keychain-access-groups`: [team ID + bundle ID]. The team's wildcard group is not used.
+  - `beta-reports-active` is not added.
+  - Every key and value must be allowed by the profile (equal, or matched by its trailing `*`), or the script stops. `sign.py --self-test` checks that rule.
+  - **Not verified against Xcode:** no Xcode-signed reference exists, so this set is a guess at what Xcode signs.
+- **Dry run:** it lists what is still missing, the entitlements, and the zsign command. IDs are masked.
+- **Signing:** zsign signs a copy in a temporary folder and writes the IPA to a separate one, then the script reads every signature back.
+  - zsign is stopped and the IPA deleted if its files pass 1 GB (an earlier test zipped its own output in a loop).
   - Every Mach-O must be signed.
-  - The main executable must carry exactly the profile's entitlements, and every framework none.
-  - `embedded.mobileprovision` must be there.
-- **To watch:** the app gets all the profile's entitlements, including the team's `keychain-access-groups` wildcard and `get-task-allow` false. No Xcode-signed reference exists to compare them with.
+  - The main executable must carry exactly the minimal set, and every framework none.
+  - `embedded.mobileprovision` must be there, and the IPA must hold only `Payload/`.
+
+**Run 2026-10-23:** inputs OK (the profile includes our certificate and allows every key). Signed in one pass: the executable carries the four entitlements above, `App.framework` and `Flutter.framework` carry none, and the 6,703,711-byte IPA holds only `Payload/`.
 
 ### 8. Upload through the Build Uploads API (STOP)
 
@@ -200,7 +218,9 @@ python3 spikes/c-store-acceptance/asc_upload.py <signed .ipa>     # only after t
 
 - **Before anything is sent,** the IPA must carry the config's bundle ID, version and build number, and a profile.
 - **The request bodies** follow App Store Connect API 4.5.1.
-- **Two guesses:** the MD5 format (hex) and whether Apple also wants an `ASSET_DESCRIPTION` file. If Apple refuses either: STOP.
+- **Two guesses:** the MD5 format (hex) and whether Apple also wants an `ASSET_DESCRIPTION` file (a build upload has `assetDescriptionFile` and `assetSpiFile` relationships in the 4.5.1 spec). If Apple refuses either: STOP.
+- **No retry loop:** an HTTP error on any request or part ends the script with Apple's code; a part's error never prints its URL, a signed temporary link. An upload that ends in any state other than `COMPLETE` ends the script too, after Apple's messages.
+- **Dry run 2026-10-23:** it printed the six requests and the upload-operations placeholder, with the bundle ID masked, Apple's IDs as placeholders and no token.
 - **If this route fails,** Transporter for Windows is the fallback. Forum reports say it also wants an `AppStoreInfo.plist`, which Apple's Mac tools write. It isn't installed without asking.
 
 ### 9. Apple's verdict (GET only)
@@ -244,7 +264,7 @@ Install the build from the TestFlight app and launch it. The counter must start 
 
 - **`asc_preflight.py`:**
   - `--self-test` checks the token against Apple's documented format, and `openssl dgst -verify` accepts its signature.
-  - `--dry-run` prints the four GETs and hides the token.
+  - `--dry-run` prints the GETs, masks the bundle ID and hides the token.
   - Key folders inside the repo or OneDrive, a renamed or second `.p8`, a bad Issuer ID and an RSA key are refused. No message names the key file or the IDs.
 - **`dist-key.sh`,** with a throwaway key:
   - The restore check passes, and a wrong passphrase fails it.
@@ -254,6 +274,8 @@ Install the build from the TestFlight app and launch it. The counter must start 
   - The dry run lists the missing certificate and profile.
   - A profile for another bundle ID is refused.
   - A full signing run used a throwaway CA-issued identity and profile, passed to zsign as a `.p12` through a test wrapper; real Apple certificates need no wrapper. The main executable carried the profile's entitlements, both frameworks carried none, and the IPA held only `Payload/`.
+  - `--self-test`: the minimal set is built from a profile, and refused when the profile lacks a key, has `get-task-allow` true, or allows another keychain group or bundle ID.
+  - With the limit lowered to 1 MB, zsign was stopped and no file was left in the output folder.
 - **`asc_upload.py --dry-run`:**
   - It prints every request, with placeholders for Apple's IDs, and never the token, the Key ID or the Issuer ID.
   - A real run without a key, a build number that differs from the config, and an unsigned IPA are all refused.

@@ -29,7 +29,7 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-from asc_preflight import API, api_error, get_all, load_key, spike_config, token
+from asc_preflight import API, api_error, get_all, load_key, masked, spike_config, token
 
 POLL, PATIENCE = 30, 3600  # seconds
 
@@ -51,7 +51,7 @@ def check_ipa(ipa, config):
 
 
 def show(method, path, body=None):
-    print(f"{method} {API}{path}" + (f"\n    {json.dumps(body)}" if body else ""))
+    print(masked(f"{method} {API}{path}" + (f"\n    {json.dumps(body)}" if body else "")))
 
 
 def main(ipa, dry_run):
@@ -111,12 +111,16 @@ def main(ipa, dry_run):
         part = data[op["offset"]:op["offset"] + op["length"]]
         headers = {h["name"]: h["value"] for h in op.get("requestHeaders") or []}
         print(f"{op['method']} part {op.get('partNumber', 1)}: {len(part)} bytes")
-        with urllib.request.urlopen(urllib.request.Request(op["url"], data=part, method=op["method"], headers=headers),
-                                    timeout=600):
-            pass
+        try:
+            with urllib.request.urlopen(urllib.request.Request(op["url"], data=part, method=op["method"],
+                                                               headers=headers), timeout=600):
+                pass
+        except urllib.error.HTTPError as error:  # never print the part's URL: it is a signed, temporary link
+            sys.exit(f"part {op.get('partNumber', 1)}: HTTP {error.code}; stopped, nothing is retried")
     commit["data"]["id"] = reserved["id"]
     call("PATCH", f"/v1/buildUploadFiles/{reserved['id']}", commit)
 
+    # Every refusal stops the script: call() exits on an HTTP error, a FAILED state ends here. Nothing is retried.
     deadline, state = time.time() + PATIENCE, {}
     while time.time() < deadline:
         state = call("GET", f"/v1/buildUploads/{upload_id}")["data"]["attributes"]["state"]
@@ -126,7 +130,9 @@ def main(ipa, dry_run):
         time.sleep(POLL)
     for kind in ("errors", "warnings", "infos"):
         for detail in state.get(kind) or []:
-            print(f"{kind[:-1]}: {detail.get('code')}: {detail.get('description')}")
+            print(masked(f"{kind[:-1]}: {detail.get('code')}: {detail.get('description')}"))
+    if state.get("state") != "COMPLETE":
+        sys.exit(f"the upload ended in state {state.get('state')}; stopped, nothing is retried")
 
 
 if __name__ == "__main__":
