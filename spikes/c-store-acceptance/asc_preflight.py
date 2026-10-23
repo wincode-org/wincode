@@ -99,13 +99,15 @@ def token(key, key_id, issuer, now=None):
 
 
 def api_error(error, label):
-    """An HTTP error as Apple's error codes and details; never the request's headers."""
+    """An HTTP error with Apple's errors as sent, one per line (each error's own id masked), or the start of the
+    answer if it isn't Apple's JSON; masked, and never the request's headers."""
+    body = error.read()
     try:
-        errors = json.load(error).get("errors", [])
-    except ValueError:
+        errors = json.loads(body).get("errors", [])
+    except (ValueError, AttributeError):
         errors = []
-    return f"{label}: HTTP {error.code} " + "; ".join(f"{e.get('code')}: {e.get('detail') or e.get('title')}"
-                                                      for e in errors)
+    lines = [json.dumps({**e, "id": "<error ID>"} if "id" in e else e, ensure_ascii=False) for e in errors]
+    return masked(f"{label}: HTTP {error.code}\n" + ("\n".join(lines) or body[:2000].decode(errors="replace")))
 
 
 def get_all(path, params, bearer, dry_run):

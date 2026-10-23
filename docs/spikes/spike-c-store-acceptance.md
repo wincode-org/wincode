@@ -1,8 +1,9 @@
 # Spike C: App Store acceptance of a Windows-built IPA
 
-Status: signed 2026-10-23. **Only GET requests have been sent to Apple; nothing is uploaded.**
-- **Done:** steps 1 to 7. The maintainer made the certificate, the profile and the app record by hand; the preflight passed; C1 is built and signed.
-- **Next:** the upload (step 8), after the maintainer's yes.
+Status: uploaded 2026-10-23. **Apple accepted C1 and processed its build as `VALID`,** with no errors, warnings or infos.
+- **Done:** steps 1 to 8. The maintainer made the certificate, the profile and the app record by hand, and said yes to one upload.
+- **Next:** TestFlight's status and the team's email (step 9), then internal testing and the install (steps 10 and 11).
+- **Build 1 is used:** the next upload needs build 2 or higher.
 
 The test developer team's account holder has agreed to spike C in writing. This is C1: the app icon's `Assets.car` and the launch storyboard come from Xcode, so the run tests the rest of the bundle. C2 repeats it with winCode's own `Assets.car`.
 
@@ -41,7 +42,7 @@ Named by environment variables, outside the repo and OneDrive; the scripts refus
 | `WINCODE_SPIKE_C_DIR` | A folder with the certificate (one `.cer`) and the App Store profile (one `.mobileprovision`) as downloaded, `dist.csr` for the portal, `config.json`, and a note of what each write created (the undo list). It may be on a Windows drive, so the maintainer can edit it in Notepad |
 | `WINCODE_ASC_KEY_DIR` | A folder with `AuthKey_<Key ID>.p8` as downloaded (not renamed: the Key ID is read from the name) and `issuer-id`, a file with no extension holding the Issuer ID on one line; used by the preflight and the upload |
 
-`config.json`: `{"bundle_id": "<bundle id>", "version": "1.0", "build": "1"}`. Each later upload takes a higher build number. The scripts accept the byte order mark Notepad may write.
+`config.json`: `{"bundle_id": "<bundle id>", "version": "1.0", "build": "1"}`. Each later upload takes a higher build number; build 1 was used on 2026-10-23. The scripts accept the byte order mark Notepad may write.
 
 - **The distribution key** is RSA 2048, PKCS#8, on the WSL disk (ext4; folder 700, file 600).
   - Its backup is on a second physical disk, encrypted with a passphrase (PBKDF2-HMAC-SHA256, 600,000 iterations, AES-256-CBC).
@@ -95,7 +96,7 @@ Then it prints a table of the team's certificates (type, expiry, count per type)
 
 If the key's role can't read certificates, the preflight shows Apple's 403 after the three checks; the developer portal shows the same list.
 
-**Run 2026-10-23** (after steps 3 and 4): the dry run printed six GETs; the real run passed all three checks, and listed our App ID with one active App Store profile.
+**Run 2026-10-23** (after steps 3 and 4): the dry run printed six GETs; the real run passed all three checks, and listed our App ID with one active App Store profile. It passed again right before the upload.
 
 ### 3. Certificate and profile, by hand in the developer portal (maintainer)
 
@@ -214,14 +215,38 @@ python3 spikes/c-store-acceptance/asc_upload.py <signed .ipa>     # only after t
 3. **Reserve the file:** `POST /v1/buildUploadFiles` with `assetType` `ASSET`, `fileName`, `fileSize` and `uti` `com.apple.ipa`.
 4. **Send the parts:** each part goes as the answer's `uploadOperations` say (method, URL, byte range, headers), without the token.
 5. **Commit:** `PATCH /v1/buildUploadFiles/{id}` with `uploaded` true and the IPA's MD5 in `sourceFileChecksums`.
-6. **Wait:** `GET /v1/buildUploads/{id}` every 30 s, for up to an hour, until the state leaves `AWAITING_UPLOAD` and `PROCESSING`. Then it prints Apple's `errors`, `warnings` and `infos`.
+6. **Wait:** `GET /v1/buildUploads/{id}` with `include=build,assetFile`, every 30 s for up to 15 minutes after the commit, until the upload or its file fails or the build leaves `PROCESSING`. It prints each change of state (upload, file, build) with its time, and each of Apple's `errors`, `warnings` and `infos` once, as sent.
 
 - **Before anything is sent,** the IPA must carry the config's bundle ID, version and build number, and a profile.
 - **The request bodies** follow App Store Connect API 4.5.1.
-- **Two guesses:** the MD5 format (hex) and whether Apple also wants an `ASSET_DESCRIPTION` file (a build upload has `assetDescriptionFile` and `assetSpiFile` relationships in the 4.5.1 spec). If Apple refuses either: STOP.
-- **No retry loop:** an HTTP error on any request or part ends the script with Apple's code; a part's error never prints its URL, a signed temporary link. An upload that ends in any state other than `COMPLETE` ends the script too, after Apple's messages.
+- **Two guesses, both right for C1:**
+  - The MD5 in hex was accepted: the file reached `COMPLETE` with no errors.
+  - No `ASSET_DESCRIPTION` file was needed: the upload reached `COMPLETE` with the IPA alone. (The 4.5.1 spec gives a build upload `assetDescriptionFile` and `assetSpiFile` relationships.)
+- **Any refusal stops it, with no retry:**
+  - An HTTP error on any API request prints Apple's errors as sent, each error's own ID masked, and ends the script.
+  - A part's error prints its answer with URLs hidden, since a part's URL is a signed, temporary link.
+  - A failed upload, file or build ends the script too, after Apple's messages.
+- **Output:** each step with its UTC time. The bundle ID, the team ID and Apple's IDs for the app record, the upload and the file are masked.
 - **Dry run 2026-10-23:** it printed the six requests and the upload-operations placeholder, with the bundle ID masked, Apple's IDs as placeholders and no token.
-- **If this route fails,** Transporter for Windows is the fallback. Forum reports say it also wants an `AppStoreInfo.plist`, which Apple's Mac tools write. It isn't installed without asking.
+- **If this route fails,** Transporter for Windows is the fallback. Forum reports say it also wants an `AppStoreInfo.plist`, which Apple's Mac tools write. It isn't installed without asking. C1 didn't need it.
+
+**Run 2026-10-23,** the one attempt the maintainer said yes to.
+- **Before it:** the preflight passed all three checks again. The signed IPA was unchanged: same size, same MD5 as at the dry run, the same signatures read back, and the config's bundle ID, version 1.0 and build 1.
+- **Each answer, by time (UTC; the PC's clock is UTC+1):**
+
+| Time | Step | Apple's answer |
+| --- | --- | --- |
+| 22:25:55 | Find the app (GET) | The app record, found by bundle ID |
+| 22:25:56 | Create the upload (POST) | Accepted: version 1.0, build 1 |
+| 22:26:18 | Reserve the file (POST) | Accepted: two parts to send |
+| 22:27:04 | Part 1 | Accepted: 5,242,880 bytes |
+| 22:27:16 | Part 2 | Accepted: 1,460,831 bytes |
+| 22:27:21 | Commit (PATCH) | Accepted; file `COMPLETE`, no errors, no warnings |
+| 22:27:23 | Processing (GET) | Upload `PROCESSING`, no build yet |
+| 22:29:31 | Processing (GET) | Upload `COMPLETE`, build `VALID` |
+
+- **Apple's messages:** none. The upload, the file and the build gave no errors, warnings or infos at any stage.
+- **Time taken:** under four minutes from the first request to the processed build.
 
 ### 9. Apple's verdict (GET only)
 
@@ -230,6 +255,8 @@ python3 spikes/c-store-acceptance/asc_upload.py <signed .ipa>     # only after t
 - **Email:** Apple's email to the team.
 
 Every code and message goes into this doc word for word, without names. Any ITMS warning means no pass.
+
+**C1, 2026-10-23:** the upload is `COMPLETE` and the build `VALID`, and the API gave no errors, warnings or infos. Not checked yet: TestFlight's status ("Ready to Test") and Apple's email to the team.
 
 ### 10. Internal testing, on the website (maintainer or account holder)
 
@@ -279,3 +306,8 @@ Install the build from the TestFlight app and launch it. The counter must start 
 - **`asc_upload.py --dry-run`:**
   - It prints every request, with placeholders for Apple's IDs, and never the token, the Key ID or the Issuer ID.
   - A real run without a key, a build number that differs from the config, and an unsigned IPA are all refused.
+- **`asc_upload.py`, real path against a fake Apple,** with networking blocked:
+  - **Cases:** a normal run, a refused create, a refused part, a refused commit, a failed processing, and the 15-minute stop.
+  - **Refusals:** each one stopped the script at once, with Apple's message whole, and nothing more was sent.
+  - **Parts:** they rebuilt the IPA byte for byte, and the token never went with one.
+  - **Output:** no ID and no part URL was printed.
