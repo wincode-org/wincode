@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Spike C: read-only App Store Connect preflight for the test app. It sends GET requests only.
 
-  asc_preflight.py [--dry-run] <bundle id>   the team's certificates, and the App IDs, apps and profiles that
-                                             match <bundle id>, as one table
+  asc_preflight.py [--dry-run] [<bundle id>] the team's certificates, and the App IDs, apps and profiles that
+                                             match the bundle ID (default: from WINCODE_SPIKE_C_DIR's
+                                             config.json), as one table
   asc_preflight.py --self-test               offline: sign a token with a throwaway key and check it against
                                              Apple's documented format
 
@@ -39,11 +40,31 @@ def b64url(data):
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
 
 
-def load_key(folder):
-    """(private key, Key ID, Issuer ID) from the key folder. No message names the key file or the IDs."""
+def private(folder, variable):
+    """The folder, resolved; it must be outside the repo and outside OneDrive."""
     folder = Path(folder).resolve()
     if folder == REPO or REPO in folder.parents or any(p.lower().startswith("onedrive") for p in folder.parts):
-        sys.exit("WINCODE_ASC_KEY_DIR must be outside the repo and outside OneDrive")
+        sys.exit(f"{variable} must be outside the repo and outside OneDrive")
+    return folder
+
+
+def spike_config():
+    """(folder, config) from config.json in the folder WINCODE_SPIKE_C_DIR names: the bundle ID, version and
+    build number come from there, never from the repo."""
+    if not os.environ.get("WINCODE_SPIKE_C_DIR"):
+        sys.exit("set WINCODE_SPIKE_C_DIR to spike C's local folder (docs/spikes/spike-c-store-acceptance.md)")
+    folder = private(os.environ["WINCODE_SPIKE_C_DIR"], "WINCODE_SPIKE_C_DIR")
+    config = json.loads((folder / "config.json").read_text())
+    for key, pattern in (("bundle_id", r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+"), ("version", r"\d+(\.\d+){0,2}"),
+                         ("build", r"\d+(\.\d+){0,2}")):
+        if not re.fullmatch(pattern, str(config.get(key, ""))):
+            sys.exit(f"config.json in WINCODE_SPIKE_C_DIR: {key} is missing or malformed")
+    return folder, config
+
+
+def load_key(folder):
+    """(private key, Key ID, Issuer ID) from the key folder. No message names the key file or the IDs."""
+    folder = private(folder, "WINCODE_ASC_KEY_DIR")
     p8 = list(folder.glob("*.p8"))
     if len(p8) != 1 or not re.fullmatch(r"AuthKey_[A-Z0-9]{10}\.p8", p8[0].name):
         sys.exit("WINCODE_ASC_KEY_DIR must hold one .p8, named AuthKey_<Key ID>.p8 as App Store Connect delivers it")
@@ -67,6 +88,16 @@ def token(key, key_id, issuer, now=None):
     return f"{signing_input}.{b64url(r.to_bytes(32, 'big') + s.to_bytes(32, 'big'))}"
 
 
+def api_error(error, label):
+    """An HTTP error as Apple's error codes and details; never the request's headers."""
+    try:
+        errors = json.load(error).get("errors", [])
+    except ValueError:
+        errors = []
+    return f"{label}: HTTP {error.code} " + "; ".join(f"{e.get('code')}: {e.get('detail') or e.get('title')}"
+                                                      for e in errors)
+
+
 def get_all(path, params, bearer, dry_run):
     """All pages of a GET collection. GET only, to Apple's API host only; the token doesn't follow redirects."""
     url, rows = f"{API}{path}?{urllib.parse.urlencode(params)}", []
@@ -83,12 +114,7 @@ def get_all(path, params, bearer, dry_run):
             with urllib.request.urlopen(request, timeout=60) as response:
                 page = json.load(response)
         except urllib.error.HTTPError as error:
-            try:
-                errors = json.load(error).get("errors", [])
-            except ValueError:
-                errors = []
-            sys.exit(f"GET {path}: HTTP {error.code} "
-                     + "; ".join(f"{e.get('code')}: {e.get('detail') or e.get('title')}" for e in errors))
+            sys.exit(api_error(error, f"GET {path}"))
         rows += page["data"]
         url = page.get("links", {}).get("next")
     return rows
@@ -181,13 +207,11 @@ def self_test():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Read-only App Store Connect preflight for spike C (GET only).")
-    parser.add_argument("bundle_id", nargs="?", help="the test app's bundle ID")
+    parser.add_argument("bundle_id", nargs="?", help="the test app's bundle ID (default: from WINCODE_SPIKE_C_DIR)")
     parser.add_argument("--dry-run", action="store_true", help="print each request instead of sending it")
     parser.add_argument("--self-test", action="store_true", help="check the token format offline, then exit")
     args = parser.parse_args()
     if args.self_test:
         self_test()
-    elif args.bundle_id:
-        preflight(args.bundle_id, args.dry_run)
     else:
-        parser.error("give the test app's bundle ID, or --self-test")
+        preflight(args.bundle_id or spike_config()[1]["bundle_id"], args.dry_run)

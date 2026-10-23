@@ -1,6 +1,11 @@
 # Spike C: App Store acceptance of a Windows-built IPA
 
-Status: prepared 2026-10-21; step 1 is done. **Nothing has been sent to Apple yet.** The test developer team's account holder has agreed to spike C in writing. This is C1: the app icon's `Assets.car` comes from Xcode, so the run tests the rest of the bundle; C2 repeats it with winCode's own `Assets.car`.
+Status: prepared 2026-10-23. **Nothing has been sent to Apple yet.**
+- **Done:** the distribution key and its backup (step 1), zsign (step 5), and the C1 bundle builder.
+- **Signing and upload scripts:** tested offline with throwaway keys.
+- **Waiting for the maintainer:** the certificate, the profile and the app record.
+
+The test developer team's account holder has agreed to spike C in writing. This is C1: the app icon's `Assets.car` and the launch storyboard come from Xcode, so the run tests the rest of the bundle. C2 repeats it with winCode's own `Assets.car`.
 
 ## Question
 
@@ -8,154 +13,205 @@ Does App Store Connect accept an IPA built and signed on Windows (WSL2), and doe
 
 **Pass** (`docs/PLAN.md`): the build reaches "Ready to Test" in TestFlight with no ITMS warning, then installs and runs on the iPhone.
 
+## Decisions (maintainer, 2026-10-23)
+
+1. **Certificate and profile by hand:** the maintainer makes the Apple Distribution certificate (from `dist.csr`) and the App Store profile in the developer portal. No Admin API key.
+2. **Upload route:** the Build Uploads API first. Transporter only if that fails, and it isn't installed without asking.
+3. **zsign:** built from the version xtool uses, checked by the pinned commit and a checksum, with Ubuntu's `make` and `libssl-dev`.
+4. **App identity:** the bundle ID, version and build number come from the maintainer's local config, never from the repo.
+
 ## Rules
 
-- **A STOP before every write to Apple.** First the request is shown: method, URL and body with the real values, never the `Authorization` header. Nothing is sent until the maintainer says yes. One yes covers one write; an upload's create, reserve, send and commit requests are one write and are shown together.
-- **Never revoke or replace anything that exists on the team:** certificates, profiles, App IDs, app records, builds, testers. Our own writes are undone only after their own yes.
+- **Code makes one write to Apple, the upload, and a STOP comes before it.**
+  - First `asc_upload.py --dry-run` shows every request.
+  - Nothing is sent until the maintainer says yes, and one yes covers one upload.
+  - Every other write is the maintainer's, by hand in the developer portal or App Store Connect.
+  - The preflight stays read-only.
+- **Never revoke or replace anything that exists on the team:** certificates, profiles, App IDs, app records, builds, testers.
 - **If a limit blocks us, stop and tell the maintainer,** for example when the team already has the maximum number of distribution certificates. Never free a slot by revoking.
-- **No devices:** App Store profiles have none, so spike C registers no device.
+- **No devices:** App Store profiles have none.
 - **Names stay out of the repo:** the team, its ID, the bundle ID and app name, the Key ID and the Issuer ID never go into a repo file, a log or a PR.
-- **An undo list:** what each write created (kind, resource ID, date) is noted in a file next to the distribution key, outside the repo.
 
-## Secrets
+## Local files and secrets
 
-| Secret | Where | Rules |
-| --- | --- | --- |
-| App Store Connect API key | The folder that `WINCODE_ASC_KEY_DIR` names, outside the repo and OneDrive: `AuthKey_<Key ID>.p8` as downloaded, and `issuer-id` with the Issuer ID on one line | `asc_preflight.py` refuses a folder in the repo or OneDrive and never prints the key, the Key ID, the Issuer ID or the token |
-| Distribution private key | RSA 2048, PKCS#8, on the WSL disk (ext4; folder 700, file 600), outside the repo and OneDrive | Made on this PC and never sent anywhere; Apple only sees the CSR |
-| Its backup | A second physical disk, outside OneDrive: PKCS#8 encrypted with a passphrase (PBKDF2-HMAC-SHA256, 600,000 iterations, AES-256-CBC) | The passphrase is typed at openssl's prompt and never stored; it belongs in a password manager |
+Two folders outside the repo and OneDrive, named by environment variables; the scripts refuse folders inside either.
 
-- **What the preflight shows:** `--dry-run` prints `Authorization: Bearer <token signed locally, not shown>`; an HTTP error prints Apple's error code and detail only.
-- **Flags:** tools that take the Key ID and Issuer ID as flags (Transporter's `-apiKey`, `-apiIssuer`) run without echoing or logging their command line.
-- **WSL exports:** a later `wsl --export` copies the distribution key into the tar in clear; keep such tars like the key.
+| Folder | Holds |
+| --- | --- |
+| `WINCODE_SPIKE_C_DIR` | `dist.key` and `dist.csr` (step 1); the certificate (one `.cer`) and the App Store profile (one `.mobileprovision`) as downloaded; `config.json`; a note of what each write created (the undo list) |
+| `WINCODE_ASC_KEY_DIR` | `AuthKey_<Key ID>.p8` as downloaded and `issuer-id` with the Issuer ID on one line; used by the preflight and the upload |
+
+`config.json`: `{"bundle_id": "<bundle id>", "version": "1.0.0", "build": "1"}`. Each later upload takes a higher build number.
+
+- **The distribution key** is RSA 2048, PKCS#8, on the WSL disk (ext4; folder 700, file 600).
+  - Its backup is on a second physical disk, encrypted with a passphrase (PBKDF2-HMAC-SHA256, 600,000 iterations, AES-256-CBC).
+  - A later `wsl --export` copies the key into the tar in clear, so keep such tars like the key.
+- **The API scripts** never print the key, the Key ID, the Issuer ID or the token.
+  - A dry run shows `Authorization: Bearer <token signed locally, not shown>`.
+  - An HTTP error shows Apple's error code and detail only.
+  - The token never follows a redirect, and never goes to the upload URLs.
 - **The product** keeps these secrets in Windows Credential Manager (ADR-0009); the spike uses files.
 
 ## Steps
 
 ### 0. Before the first request
 
-- **The key's role:**
-  - The plan has the account holder or an Admin create a new distribution certificate.
-  - With an Admin key, W2 is that request, sent only after the maintainer's yes.
-  - With a lesser key, the account holder creates the certificate from our CSR.
 - **Agreements:** the account holder has accepted the latest agreements in App Store Connect. Pending agreements make the API answer 403 and block uploads.
+- **API key:** an App Store Connect API key on the team whose role can upload builds. Admin isn't needed, since the certificate is made by hand.
 - **Tester:** the maintainer's Apple ID is a user of the team in App Store Connect, so it can be an internal tester (step 10).
 - **SDK:** the Darwin SDK comes from the final Xcode 26.6 (iPhoneOS 26.5 SDK). That meets the rule that uploads use Xcode 26 and an iOS 26 SDK.
-- **App:**
-  - Spike E's counter app, built by spike D's `build.sh` (PR #17).
-  - The maintainer and the account holder choose a dedicated bundle ID and app name. Once a build is uploaded, Apple never lets that bundle ID be used again, even if the app is removed.
+- **Bundle ID:** a dedicated one. Once a build is uploaded, Apple never lets that bundle ID be used again, even if the app is removed.
 - **Reference (plan step 1):**
-  - The Xcode-built counter app from run 39513689791, kept outside the repo since spike D.
-  - It is unsigned, so it is a reference for the bundle, not for the signature.
+  - The macOS run 39513689791, kept outside the repo since spike D.
+  - Its Xcode-built counter app is unsigned, so it is a reference for the bundle, not for the signature.
   - No new macOS run without asking.
 
-### 1. Distribution key and backup (local)
+### 1. Distribution key and backup (local): done 2026-10-21
 
-In a WSL terminal:
-
-```bash
-bash spikes/c-store-acceptance/dist-key.sh <key dir> <backup dir>
-```
-
-- **It makes** `dist.key` and `dist.csr`, writes `dist.key.enc.pem` to the backup folder, then asks for the passphrase again and checks that the backup decrypts to the same key.
-- **It never overwrites:** running it again repeats only the restore check.
-- **The certificate request (W2) waits** until this prints `restore check OK`.
-
-**Done 2026-10-21.**
-- **The maintainer ran it,** and the restore check passed.
-- **The key:** RSA 2048, on the WSL disk, folder 700 and files 600. The CSR verifies and carries the key's public key.
-- **The backup:** 1,878 bytes on a second physical disk, encrypted PKCS#8 (PBES2, PBKDF2 with hmacWithSHA256 and 600,000 iterations, AES-256-CBC).
+`bash spikes/c-store-acceptance/dist-key.sh <key dir> <backup dir>`, run by the maintainer in a WSL terminal.
+- **It made** `dist.key` and `dist.csr`, wrote `dist.key.enc.pem` to the backup folder and passed the restore check. It never overwrites.
+- **Checked afterwards:**
+  - The key is RSA 2048, folder 700 and files 600.
+  - The CSR verifies and carries the key's public key.
+  - The backup is 1,878 bytes of encrypted PKCS#8 on a second physical disk.
 
 ### 2. Preflight (GET only)
 
 ```bash
-export WINCODE_ASC_KEY_DIR=<key folder>
 python3 spikes/c-store-acceptance/asc_preflight.py --self-test
-python3 spikes/c-store-acceptance/asc_preflight.py --dry-run <bundle id>
-python3 spikes/c-store-acceptance/asc_preflight.py <bundle id>
+python3 spikes/c-store-acceptance/asc_preflight.py --dry-run
+python3 spikes/c-store-acceptance/asc_preflight.py
 ```
 
-It prints the team's certificates (type, expiry, count per type), then the App IDs, apps and profiles that match the bundle ID. What decides the next steps:
-
+It prints the team's certificates (type, expiry, count per type), then the App IDs, apps and profiles that match the config's bundle ID. What decides the next steps:
 - **Distribution certificates** (`DISTRIBUTION`, `IOS_DISTRIBUTION`): Apple caps them per team; third-party docs say three. At the cap: STOP.
-- **App ID:** if it exists, W1 is skipped.
-- **App:** if it exists, W4 is skipped, once the maintainer confirms it is the test app.
-- **Profiles:** existing ones are left alone; W3 makes our own.
+- **App ID and app record:** whether they already exist.
+- **Profiles:** existing ones are left alone.
 
-### 3. W1: App ID, only if the preflight finds none (STOP)
+If the key's role can't read certificates, the preflight shows Apple's 403; the developer portal shows the same list.
 
-- **Request:** `POST /v1/bundleIds` with `{"data": {"type": "bundleIds", "attributes": {"identifier": "<bundle id>", "name": "<name>", "platform": "IOS"}}}`, no capabilities.
-- **If another team owns the identifier:** STOP and choose another.
+### 3. Certificate and profile, by hand in the developer portal (maintainer)
 
-### 4. W2: Apple Distribution certificate (STOP)
+1. **App ID:** register an explicit App ID for the bundle ID if the preflight found none. It needs no capabilities.
+2. **Certificate:** a new Apple Distribution certificate from `dist.csr`. At the cap: stop.
+3. **Profile:** an App Store profile for that App ID and that certificate.
+4. **Download** the `.cer` and the `.mobileprovision` into `WINCODE_SPIKE_C_DIR`, and note the certificate and profile in the undo list.
 
-- **Request:** `POST /v1/certificates` with `{"data": {"type": "certificates", "attributes": {"certificateType": "DISTRIBUTION", "csrContent": "<dist.csr>"}}}`.
-- **Answer:** its `certificateContent` is saved as `dist.cer` next to the key.
-- **At the cap (HTTP 409):** STOP.
-
-### 5. W3: App Store profile (STOP)
-
-- **Request:** `POST /v1/profiles` with `{"data": {"type": "profiles", "attributes": {"name": "<name>", "profileType": "IOS_APP_STORE"}, "relationships": {"bundleId": {"data": {"type": "bundleIds", "id": "<W1>"}}, "certificates": {"data": [{"type": "certificates", "id": "<W2>"}]}}}}`.
-- **Answer:** its `profileContent` becomes `embedded.mobileprovision`, kept outside the repo.
-
-### 6. W4: App record on the website (STOP)
+### 4. App record, on the App Store Connect website (maintainer or account holder)
 
 - **Why the website:** the API can't create apps; `/v1/apps` takes only GET and PATCH.
-- **Who:** the account holder or an Admin creates it in App Store Connect (Apps, then New App), after the values are shown.
-- **Values:** iOS, the name, the primary language, the bundle ID from W1, a SKU.
-- **If the name is taken:** choose another.
+- **Values:** Apps, then New App: iOS, a name, the primary language, the bundle ID and a SKU.
 
-### 7. Build, metadata, icon and signing (local)
+### 5. zsign (local): done 2026-10-23
 
-- **Build:** spike D's `build.sh` gives the five SDK keys, the release runner, the merged Info.plist and iOS shaders.
-- **Info.plist:**
-  - `CFBundleIdentifier` is the test bundle ID.
-  - `CFBundleShortVersionString` is 1.0.0 and `CFBundleVersion` is 1; each later upload takes a higher build number.
-  - `ITSAppUsesNonExemptEncryption` is false: the counter app uses no encryption, and without the key every build waits for an export answer.
+```bash
+bash spikes/c-store-acceptance/build-zsign.sh <dir>
+```
+
+- **Source:** the commit xtool pins, `xtool-org/zsign` 1.9.0 (`f6158be9`, MIT). The script refuses to build if `third_party/xtool/Package.resolved` no longer pins it.
+- **Checksum:** it downloads GitHub's archive of that commit (23,623,184 bytes) and checks its SHA-256, `423ebe2f4dd3380367461c03e6de3b9e9f31adcbe9a2f0237493c8f0bf9b7c5d`. On 2026-10-23 the archive's 243 files were identical to xtool's own checkout of the commit.
+- **Build:** it uses the Swift toolchain's clang, since g++ isn't installed.
+- **Installed for it:** Ubuntu's `make` 4.3-4.1build2 and `libssl-dev` 3.0.13-0ubuntu3.16, from archive.ubuntu.com.
+- **zsign's behaviour:** it signs only main executables with entitlements (`archo.cpp`), so frameworks get none (spike E, finding 6). It embeds the Apple intermediate that matches the certificate's issuer.
+
+### 6. The C1 bundle, unsigned (local)
+
+```bash
+python3 spikes/c-store-acceptance/c1_bundle.py <spike D's d-assets.app> <reference folder> <out dir>
+```
+
+It starts from spike D's counter bundle (`spikes/d-store-parity/build.sh`, PR #17), with the five SDK keys, the release runner, the merged Info.plist and iOS shaders. Then it adds:
+
+- **From `config.json`:** `CFBundleIdentifier`, `CFBundleShortVersionString` and `CFBundleVersion`.
+- **From Xcode:**
+  - The icon sample's compiled `Assets.car`, `AppIcon60x60@2x.png` and `AppIcon76x76@2x~ipad.png` (actool on the runner).
+  - Its partial Info.plist's `CFBundleIcons` and `CFBundleIcons~ipad`.
+  - The counter app's compiled `Base.lproj/LaunchScreen.storyboardc`, with `UILaunchStoryboardName`; `UILaunchScreen` is dropped.
+  - The runner is a SwiftUI app, so it needs no `Main.storyboardc` and no scene configuration.
+- **From the zero-rejection checks** (`docs/PLAN.md`):
+  - `ITSAppUsesNonExemptEncryption` false: the app uses no encryption.
+  - `PrivacyInfo.xcprivacy` with Apple's four keys, all empty: the runner calls no required-reason API, collects nothing and doesn't track. `Flutter.framework` ships its own manifest.
+  - The script checks that `MinimumOSVersion` is 13 or later; it is 15.0.
 - **Metadata (plan step 3):**
-  - **Filled from the SDK's own files** (spike D): `DTSDKName`, `DTSDKBuild`, `DTPlatformName`, `DTPlatformVersion`, `DTPlatformBuild`.
-  - **Can't be filled truthfully,** because no Xcode or Mac built the app: `DTXcode`, `DTXcodeBuild`, `DTCompiler`, `BuildMachineOSBuild`. They stay out.
-  - **If Apple refuses the build for their absence,** that is the plan's "toolchain rejection not fixable with honest metadata".
-- **Icon (C1, plan step 4):** taken from the reference app, which actool built on the macOS runner:
-  - `Assets.car`, `AppIcon60x60@2x.png` and `AppIcon76x76@2x~ipad.png`.
-  - The `CFBundleIcons` and `CFBundleIcons~ipad` keys (`CFBundleIconName` AppIcon).
-- **zsign (ADR-0009), with an install STOP:**
-  - Built in WSL from the zsign that xtool pins: `xtool-org/zsign` 1.9.0, `f6158be9`, MIT.
-  - It uses the Swift toolchain's clang instead of g++, which isn't installed (48 MB).
-  - It needs Ubuntu's `make` and `libssl-dev` (2 packages, 2.6 MB, from archive.ubuntu.com) and the zsign source from GitHub.
-- **Signing,** inside out:
-  - Frameworks get no entitlements (spike E, finding 6).
-  - The app gets the profile's production entitlements, with no `get-task-allow`, and `embedded.mobileprovision`.
-  - Zip `Payload/` into the IPA.
-- **Checks before the upload:**
-  - `tools/ipa-diff` against the reference: expect spike D's accepted differences, minus the icon.
-  - The entitlements of every binary.
-  - The zero-rejection checks in `docs/PLAN.md`.
+  - `DTXcode`, `DTXcodeBuild`, `DTCompiler` and `BuildMachineOSBuild` can't be filled truthfully, because no Xcode or Mac built the app, so they stay out.
+  - If Apple refuses the build for their absence, that is the plan's "toolchain rejection not fixable with honest metadata".
 
-### 8. W5: Upload (STOP)
+It writes the `.app`, `c1-unsigned.ipa` and `ipa-diff-c1.txt` against Xcode's counter app.
 
-**Route 1: Transporter for Windows.** It isn't installed yet, so an install STOP comes first.
-- **Command:** `iTMSTransporter -m upload -assetFile <ipa> -apiKey <Key ID> -apiIssuer <Issuer ID>`. Where it looks for the `.p8` is checked in its own help once it is installed.
-- **First run:** it may update itself from Apple, which makes it an Apple call.
-- **AppStoreInfo.plist:**
-  - Forum reports say Transporter on Windows and Linux also wants `-assetDescription AppStoreInfo.plist`, a file that Apple's Mac tools write.
-  - If it insists, use route 2.
-  - Writing that file ourselves would need a format spec first (CONTRIBUTING).
+**ipa-diff, 2026-10-23** (lines per category: Info.plist, layout, load commands, entitlements, resources):
 
-**Route 2: Build Uploads API** (App Store Connect API 4.x):
-1. `POST /v1/buildUploads` with the app, `cfBundleShortVersionString`, `cfBundleVersion` and platform `IOS`.
-2. `POST /v1/buildUploadFiles` with `assetType` `ASSET`, `fileName`, `fileSize` and `uti` `com.apple.ipa`.
-3. PUT each part to the URLs in `uploadOperations`.
-4. `PATCH /v1/buildUploadFiles/{id}` with `uploaded` true and `sourceFileChecksums`.
+| Bundle | Info.plist | Layout | Load | Entitlements | Resources |
+| --- | --- | --- | --- | --- | --- |
+| Spike D's counter bundle | 11 | 7 | 9 | 0 | 12 |
+| C1 | 9 | 4 | 9 | 0 | 11 |
+
+What still differs:
+- **Info.plist:**
+  - The four Xcode and Mac keys (above).
+  - `CFBundleExecutable`, the runner's name.
+  - `CFBundleIdentifier`, from the config.
+  - `ITSAppUsesNonExemptEncryption`, which only C1 has.
+  - Xcode's `UIMainStoryboardFile` and scene configuration, which the SwiftUI runner doesn't use.
+- **Layout:**
+  - `PrivacyInfo.xcprivacy`, which only C1 has.
+  - Xcode's `PkgInfo` and `AppFrameworkInfo.plist`.
+  - `App.framework/_CodeSignature`; signing adds it.
+- **Load commands:**
+  - lld instead of Apple's ld.
+  - The runner links SwiftUI and Swift concurrency, where Xcode's Flutter runner links only Foundation and UIKit (spike D).
+- **Resources:**
+  - The icon files: the icon sample's icon, not the counter app's.
+  - Xcode's `Main.storyboardc`.
+  - `NOTICES.Z` and `MaterialIcons-Regular.otf`, from spike E's asset-bundle stopgap.
+  - The native-asset manifest's JSON formatting.
+- **Launch image:** the launch storyboard shows the `LaunchImage` asset, which the icon sample's `Assets.car` doesn't have, so the launch screen is blank.
+
+### 7. Sign (local)
+
+```bash
+python3 spikes/c-store-acceptance/sign.py --dry-run <C1 .app> <out .ipa>
+python3 spikes/c-store-acceptance/sign.py <C1 .app> <out .ipa>
+```
+
+- **Checks before signing:**
+  - The certificate is a distribution certificate for `dist.key` and hasn't expired.
+  - The profile is an App Store profile (no devices, no `get-task-allow`) for the config's bundle ID and includes the certificate.
+  - The bundle carries the config's bundle ID.
+- **Dry run:** it lists what is still missing and prints the zsign command.
+- **Signing:** zsign signs a copy, then the script reads every signature back.
+  - Every Mach-O must be signed.
+  - The main executable must carry exactly the profile's entitlements, and every framework none.
+  - `embedded.mobileprovision` must be there.
+- **To watch:** the app gets all the profile's entitlements, including the team's `keychain-access-groups` wildcard and `get-task-allow` false. No Xcode-signed reference exists to compare them with.
+
+### 8. Upload through the Build Uploads API (STOP)
+
+```bash
+python3 spikes/c-store-acceptance/asc_upload.py --dry-run <signed .ipa>
+python3 spikes/c-store-acceptance/asc_upload.py <signed .ipa>     # only after the maintainer's yes
+```
+
+1. **Find the app:** `GET /v1/apps?filter[bundleId]=…` gives the app record's ID.
+2. **Create the upload:** `POST /v1/buildUploads` with the app, `cfBundleShortVersionString`, `cfBundleVersion` and platform `IOS`.
+3. **Reserve the file:** `POST /v1/buildUploadFiles` with `assetType` `ASSET`, `fileName`, `fileSize` and `uti` `com.apple.ipa`.
+4. **Send the parts:** each part goes as the answer's `uploadOperations` say (method, URL, byte range, headers), without the token.
+5. **Commit:** `PATCH /v1/buildUploadFiles/{id}` with `uploaded` true and the IPA's MD5 in `sourceFileChecksums`.
+6. **Wait:** `GET /v1/buildUploads/{id}` every 30 s, for up to an hour, until the state leaves `AWAITING_UPLOAD` and `PROCESSING`. Then it prints Apple's `errors`, `warnings` and `infos`.
+
+- **Before anything is sent,** the IPA must carry the config's bundle ID, version and build number, and a profile.
+- **The request bodies** follow App Store Connect API 4.5.1.
+- **Two guesses:** the MD5 format (hex) and whether Apple also wants an `ASSET_DESCRIPTION` file. If Apple refuses either: STOP.
+- **If this route fails,** Transporter for Windows is the fallback. Forum reports say it also wants an `AppStoreInfo.plist`, which Apple's Mac tools write. It isn't installed without asking.
 
 ### 9. Apple's verdict (GET only)
 
-- **The upload:** `GET /v1/buildUploads/{id}` gives the state (`PROCESSING`, `FAILED` or `COMPLETE`) with `errors`, `warnings` and `infos`.
+- **The upload:** its state, errors, warnings and infos (step 8).
 - **TestFlight:** the build's processing state.
 - **Email:** Apple's email to the team.
-- **Recording:** every code and message goes into this doc word for word, without names. Any ITMS warning means no pass.
 
-### 10. W6: Internal testing (STOP)
+Every code and message goes into this doc word for word, without names. Any ITMS warning means no pass.
+
+### 10. Internal testing, on the website (maintainer or account holder)
 
 - **No review:** internal testers need no Beta App Review.
 - **Tester first:** if the maintainer isn't yet a user of the team, the account holder adds them (Users and Access).
@@ -167,41 +223,37 @@ Install the build from the TestFlight app and launch it. The counter must start 
 
 ## What each write changes, and how to undo it
 
-| Write | Changes on the team | Undo, only with its own yes |
-| --- | --- | --- |
-| W1 App ID | One explicit App ID, no capabilities | `DELETE /v1/bundleIds/{id}`, but only until an app record uses it; after that it stays. Once a build is uploaded, the identifier can never be reused |
-| W2 Distribution certificate | One more Apple Distribution certificate, valid for a year. It takes a slot under Apple's cap and is listed for the team's Admins; only this PC holds its private key | Revoke this certificate only: `DELETE /v1/certificates/{id}`, with the ID recorded at creation. Our profile becomes invalid, and TestFlight may stop installing builds signed with it. The team's apps don't use it, so they aren't affected |
-| W3 App Store profile | One profile for the test App ID, no devices | `DELETE /v1/profiles/{id}` |
-| W4 App record | A private app in App Store Connect. It reserves the name and takes the bundle ID and the SKU | Remove the app (App Store Connect Help, "Remove an app"). The SKU can't be reused on the team, and the bundle ID can't be reused once a build was uploaded |
-| W5 Upload | A build under the test app. Apple processes it and may email the team; the build number is used up | None: builds can't be deleted. Expire it in TestFlight |
-| W6 Internal testing | An internal group on the test app and its tester, plus a team user if the account holder added one | Delete the group; the account holder removes the user |
+| Write | Who | Changes on the team | Undo |
+| --- | --- | --- | --- |
+| App ID | Maintainer, portal | One explicit App ID, no capabilities | Delete it while no app record uses it; after that it stays. Once a build is uploaded, the identifier can never be reused |
+| Distribution certificate | Maintainer, portal | One more Apple Distribution certificate, valid for a year. It takes a slot under Apple's cap and is listed for the team's Admins; only this PC holds its private key | Revoke this certificate only. Our profile becomes invalid, and TestFlight may stop installing builds signed with it. The team's apps don't use it |
+| App Store profile | Maintainer, portal | One profile for the test App ID, no devices | Delete it |
+| App record | Maintainer or account holder, website | A private app; it reserves the name and takes the bundle ID and the SKU | Remove the app (App Store Connect Help, "Remove an app"). The SKU can't be reused on the team, and the bundle ID can't be reused once a build was uploaded |
+| Upload | `asc_upload.py`, after a STOP | A build under the test app; Apple processes it and may email the team. The build number is used up | None: builds can't be deleted. Expire it in TestFlight |
+| Internal testing | Maintainer or account holder, website | An internal group and its tester, plus a team user if one was added | Delete the group; the account holder removes the user |
 
 ## Results
 
 | Result | Meaning | Next |
 | --- | --- | --- |
 | Ready to Test, no warnings | The pure-Windows lane works technically | Build that lane in the Ship phase; run C2 later |
-| Fixable error | A packaging gap | Fix it, add a doctor check, upload again (another W5) |
+| Fixable error | A packaging gap | Fix it, add a doctor check, upload again |
 | Toolchain rejection, not fixable with honest metadata | Pure-Windows store builds are blocked | The cloud Mac lane becomes the store lane for good |
 
-## Checked on this PC, 2026-10-21
+## Tested offline
 
-- **Transporter isn't installed:**
-  - No `itms` folder under Program Files, Program Files (x86) or the user's AppData.
-  - No uninstall entry and nothing on PATH.
-  - Nothing in WSL.
-- **WSL has what the scripts need:**
-  - Python 3.12 with `cryptography` 41, Ubuntu's package.
-  - OpenSSL 3.0.13.
-  - `script` from util-linux, used only for the tests.
-- **`asc_preflight.py --self-test` passes,** with a throwaway key:
-  - The header is `alg` ES256, `kid`, `typ` JWT.
-  - The claims are `iss`, `iat`, `exp` (`iat` + 600 s) and `aud` `appstoreconnect-v1`.
-  - The signature is 64 raw bytes (R||S), base64url without padding, and `openssl dgst -verify` accepts it.
-  - Key folders inside the repo or OneDrive are refused.
-- **`--dry-run`** prints the four GETs and hides the token. No message names the key file, the Key ID or the Issuer ID.
-- **`dist-key.sh`, with a throwaway key:**
-  - It made an RSA 2048 key and a SHA-256 CSR.
-  - The backup is PBES2: PBKDF2 with hmacWithSHA256 and 600,000 iterations, AES-256-CBC.
-  - The restore check passed, and a wrong passphrase failed it.
-  - Reruns changed no file, and a CSR without its key was refused.
+- **`asc_preflight.py`:**
+  - `--self-test` checks the token against Apple's documented format, and `openssl dgst -verify` accepts its signature.
+  - `--dry-run` prints the four GETs and hides the token.
+  - Key folders inside the repo or OneDrive, a renamed or second `.p8`, a bad Issuer ID and an RSA key are refused. No message names the key file or the IDs.
+- **`dist-key.sh`,** with a throwaway key:
+  - The restore check passes, and a wrong passphrase fails it.
+  - Reruns change no file.
+- **`c1_bundle.py`:** built the C1 bundle from spike D's counter bundle, with a placeholder bundle ID (table above).
+- **`sign.py`:**
+  - The dry run lists the missing certificate and profile.
+  - A profile for another bundle ID is refused.
+  - A full signing run used a throwaway CA-issued identity and profile, passed to zsign as a `.p12` through a test wrapper; real Apple certificates need no wrapper. The main executable carried the profile's entitlements, both frameworks carried none, and the IPA held only `Payload/`.
+- **`asc_upload.py --dry-run`:**
+  - It prints every request, with placeholders for Apple's IDs, and never the token, the Key ID or the Issuer ID.
+  - A real run without a key, a build number that differs from the config, and an unsigned IPA are all refused.
