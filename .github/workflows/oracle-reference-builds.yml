@@ -2,7 +2,8 @@ name: oracle-reference-builds
 
 # Reference data from real Xcode for the zero-rejection checks and the Assets.car track
 # (docs/PLAN.md): the spike counter app and the spike E hooks app built by Xcode, text dumps of
-# both bundles, and a placeholder app icon compiled by actool (docs/formats/assets-car-app-icon.md).
+# both bundles, and placeholder assets compiled by actool: an app icon (docs/formats/assets-car-app-icon.md),
+# and the colour set and image set that a UILaunchScreen entry names (ADR-0011, rule 3).
 # Outputs only: no signing, no Apple account, no secrets. Compare with the Windows-built bundles
 # using tools/ipa-diff. Manual only: gh workflow run oracle-reference-builds.yml --ref <branch>
 
@@ -68,24 +69,41 @@ jobs:
           done
           grep -h "/actool " "$RUNNER_TEMP"/dumps/build-*.log >"$RUNNER_TEMP/dumps/xcode-actool-invocations.txt" || true
 
-      - name: Icon sample (placeholder icon, compiled by actool)
+      - name: Icon sample (placeholder icon, launch colour and launch image, compiled by actool)
         run: |
           S="$RUNNER_TEMP/icon-sample"; C="$S/Sample.xcassets"; O="$S/compiled"
-          mkdir -p "$C/AppIcon.appiconset" "$O"
+          mkdir -p "$C/AppIcon.appiconset" "$C/LaunchBackground.colorset" "$C/LaunchImage.imageset" "$O"
           printf '{"info":{"author":"xcode","version":1}}\n' >"$C/Contents.json"
           printf '{"images":[{"filename":"icon-1024.png","idiom":"universal","platform":"ios","size":"1024x1024"}],"info":{"author":"xcode","version":1}}\n' \
             >"$C/AppIcon.appiconset/Contents.json"
-          python3 - "$C/AppIcon.appiconset/icon-1024.png" <<'PY'
-          # Placeholder icon: a plain 1024x1024 RGB gradient, no alpha, no art, no text.
+          # The colour set and the image set that UILaunchScreen names (UILaunchScreen.plist, below).
+          printf '{"colors":[{"color":{"color-space":"srgb","components":{"alpha":"1.000","blue":"0.600","green":"0.400","red":"0.200"}},"idiom":"universal"}],"info":{"author":"xcode","version":1}}\n' \
+            >"$C/LaunchBackground.colorset/Contents.json"
+          printf '{"images":[{"filename":"launch@1x.png","idiom":"universal","scale":"1x"},{"filename":"launch@2x.png","idiom":"universal","scale":"2x"},{"filename":"launch@3x.png","idiom":"universal","scale":"3x"}],"info":{"author":"xcode","version":1}}\n' \
+            >"$C/LaunchImage.imageset/Contents.json"
+          python3 - "$C/AppIcon.appiconset" "$C/LaunchImage.imageset" <<'PY'
+          # Placeholders, no art, no text: the icon is a plain 1024x1024 RGB gradient with no alpha; the launch
+          # image is one plain colour at 64, 128 and 192 px (1x, 2x, 3x), RGBA with alpha rising from left to right.
           import struct, sys, zlib
-          n = 1024
-          rows = b"".join(b"\0" + bytes(v for x in range(n) for v in (x // 4, y // 4, 128)) for y in range(n))
           def chunk(kind, data):
               return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
-          png = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", n, n, 8, 2, 0, 0, 0))
-                 + chunk(b"IDAT", zlib.compress(rows, 9)) + chunk(b"IEND", b""))
-          open(sys.argv[1], "wb").write(png)
+          def png(path, n, colour_type, rows):
+              open(path, "wb").write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", n, n, 8, colour_type, 0, 0, 0))
+                                     + chunk(b"IDAT", zlib.compress(rows, 9)) + chunk(b"IEND", b""))
+          n = 1024
+          png(f"{sys.argv[1]}/icon-1024.png", n, 2,
+              b"".join(b"\0" + bytes(v for x in range(n) for v in (x // 4, y // 4, 128)) for y in range(n)))
+          for scale in (1, 2, 3):
+              n = 64 * scale
+              png(f"{sys.argv[2]}/launch@{scale}x.png", n, 6,
+                  b"".join(b"\0" + bytes(v for x in range(n) for v in (32, 96, 160, 255 * x // (n - 1))) for y in range(n)))
           PY
+          printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
+            '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+            '<plist version="1.0"><dict><key>UILaunchScreen</key><dict>' \
+            '<key>UIColorName</key><string>LaunchBackground</string><key>UIImageName</key><string>LaunchImage</string>' \
+            '</dict></dict></plist>' >"$S/UILaunchScreen.plist"
+          plutil -lint "$S/UILaunchScreen.plist"
           cmd=(xcrun actool "$C" --compile "$O" --platform iphoneos --minimum-deployment-target 15.0
                --target-device iphone --target-device ipad --app-icon AppIcon
                --output-partial-info-plist "$O/partial-Info.plist"
