@@ -59,7 +59,7 @@ The quotes from both Apple pages were checked again on 2026-10-24.
 - **Evidence:**
   - **The merge works on the device:** it brought in Flutter's template keys and the app's iPad orientations, and both apps ran on the iPhone (spike D, c).
   - **Apple's rule names Xcode:** uploads "must be built with Xcode 26 or later using an SDK for iOS 26" (Upcoming Requirements, since April 28, 2026). So the Xcode keys probably matter.
-  - **C1 had none of the four Xcode keys:** it carried the five SDK keys only, and Apple processed it as `VALID` with no errors, warnings or infos (spike C, 2026-10-23). TestFlight's status and Apple's email are not checked yet.
+  - **C1 had none of the four Xcode keys:** it carried the five SDK keys only, and Apple processed it as `VALID` with no errors, warnings or infos (spike C, 2026-10-23). TestFlight lists build 1 as Ready to Submit in the Internal group and the tester installed it on an iPhone; no Apple warning email reached the uploader's inbox in the first hour; the account holder's inbox is not checked yet.
 - **Reverse if:**
   - **Spike C shows Apple requires the Xcode keys:** a refusal, or an error, warning or email that names them. The pure-Windows lane then can't meet the rule honestly, and the cloud Mac lane stays the only store lane (ADR-0008).
   - **An Xcode reference shows `DTPlatformBuild` different from `DTSDKBuild`:** the platform build is then read from the platform's own version file, which the SDK build must keep.
@@ -177,9 +177,9 @@ The quotes from both Apple pages were checked again on 2026-10-24.
 | --- | --- | --- |
 | App icon | Xcode-made `Assets.car`, and `CFBundleIcons` from actool's partial Info.plist (the icon sample) | winCode's own `Assets.car` |
 | Launch screen | Xcode's compiled `LaunchScreen.storyboardc`, named by `UILaunchStoryboardName`. Its `LaunchImage` isn't in the icon sample's `Assets.car` | `UILaunchScreen` only, with its colour and image in winCode's `Assets.car`; no storyboards |
-| Xcode keys | Without: none of the four | With: only a bundle that a Mac really built carries them honestly. The control is the cloud Mac lane's own build of the same app, uploaded like C1 after the maintainer's yes. Not run |
+| Xcode keys | Without: none of the four | With: only a bundle that a Mac really built carries them honestly. The "with the keys" control is the hybrid lane (Xcode builds the unsigned app on a hosted runner, the app is signed and uploaded as in C1), not a separate run |
 
-C1 so far: processed `VALID`, with no errors, warnings or infos. Still to check: "Ready to Test" in TestFlight, Apple's email, and the install.
+C1 so far: processed `VALID`, with no errors, warnings or infos. TestFlight lists build 1 as Ready to Submit in the Internal group and the tester installed it on an iPhone; no Apple warning email reached the uploader's inbox in the first hour; the account holder's inbox is not checked yet.
 
 ## Open questions
 
