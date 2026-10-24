@@ -250,6 +250,8 @@ What xtool does not do, per its author: Interface Builder (storyboards), asset c
 
 ## Build pipeline: Dart source to signed IPA
 
+Store bundle rules (SDK stamp, Info.plist keys, storyboard-free runner, framework signing, shaders): ADR-0011.
+
 1. Read the project: `pubspec.yaml`, `ios/Runner/Info.plist`, entitlements, `AppDelegate.swift`, and flavors, meaning the Xcode project's build configurations and their xcconfig files (bundle ID, display name, team, asset catalogs). Stop with a clear message if a plugin is CocoaPods-only.
 2. Native build hooks: run the build hooks of the app's packages for iOS arm64 (for example `objective_c`, which path_provider uses), with an `xcrun` shim that points at the Darwin SDK. Their dylibs are bundled in step 8 (ADR-0010; spike E decides).
 3. Dart to kernel: Flutter's `frontend_server` in AOT mode → `app.dill`, with the native-asset mapping from step 2; build `flutter_assets`. Both already run on Windows.
