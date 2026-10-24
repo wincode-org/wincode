@@ -58,10 +58,11 @@ The quotes from both Apple pages were checked again on 2026-10-24.
   - **Never faked:** `DTXcode`, `DTXcodeBuild`, `DTCompiler` and `BuildMachineOSBuild`. Xcode wrote `2660`, `17F113`, `com.apple.compilers.llvm.clang.1_0` and `25G83`, which describe an Xcode and a Mac that never built our app.
 - **Evidence:**
   - **The merge works on the device:** it brought in Flutter's template keys and the app's iPad orientations, and both apps ran on the iPhone (spike D, c).
-  - **Apple's rule names Xcode:** uploads "must be built with Xcode 26 or later using an SDK for iOS 26" (Upcoming Requirements, since April 28, 2026). So the Xcode keys probably matter.
+  - **Apple's rule names Xcode:** uploads "must be built with Xcode 26 or later using an SDK for iOS 26" (Upcoming Requirements, since April 28, 2026). So the Xcode keys probably matter. C1 passed without the four Xcode keys at upload and processing, but App Review has not been tested.
   - **C1 had none of the four Xcode keys:** it carried the five SDK keys only, and Apple processed it as `VALID` with no errors, warnings or infos (spike C, 2026-10-23). TestFlight lists build 1 as Ready to Submit in the Internal group and the tester installed it on an iPhone; no Apple warning email reached the uploader's inbox in the first hour; the account holder's inbox is not checked yet.
 - **Reverse if:**
   - **Spike C shows Apple requires the Xcode keys:** a refusal, or an error, warning or email that names them. The pure-Windows lane then can't meet the rule honestly, and the cloud Mac lane stays the only store lane (ADR-0008).
+  - **App Review refuses a build without the Xcode keys:** this also reverses the decision, with the same result.
   - **An Xcode reference shows `DTPlatformBuild` different from `DTSDKBuild`:** the platform build is then read from the platform's own version file, which the SDK build must keep.
 
 ### 3. Runner
@@ -171,6 +172,15 @@ The quotes from both Apple pages were checked again on 2026-10-24.
   - **flutter_tools starts compiling shaders for the target platform:** the recompile step is dropped.
   - **impellerc's output stops matching Xcode's:** the builder follows that Flutter release's arguments.
 
+### 6. App entitlements
+
+- **Decision:** the app's executable is signed with its own `.entitlements` file merged with `application-identifier`, `com.apple.developer.team-identifier`, `get-task-allow` = false and its own keychain group.
+  - **Checked:** every key and value is checked against the provisioning profile, and signing stops if the profile doesn't allow one.
+  - **Frameworks:** they get none (rule 4).
+- **Evidence:** C1's four keys were accepted (spike C, 2026-10-23).
+- **Open:** an app with Sign in with Apple, tested in the hybrid lane (Xcode builds the unsigned app on a hosted Mac runner; the app is signed and uploaded as in C1).
+- **Reverse if:** Apple or iOS flags an entitlement.
+
 ## Known gaps, and how spike C tests each
 
 | Gap | C1 (uploaded 2026-10-23) | C2 |
@@ -185,7 +195,7 @@ C1 so far: processed `VALID`, with no errors, warnings or infos. TestFlight list
 
 | Question | Who answers |
 | --- | --- |
-| Does C1 reach "Ready to Test" with no ITMS warning in Apple's email, and install and run from TestFlight? | Spike C, steps 9 to 11 |
+| Does C1 reach "Ready to Submit (Apple's label for a build testers can install)" with no ITMS warning in Apple's email, and install and run from TestFlight? | Spike C, steps 9 to 11 |
 | Are the Xcode keys required at any stage spike C reaches? | Spike C, C1 and the "with" control |
 | Does a storyboard-free bundle with winCode's `Assets.car` pass the same way and start on the iPhone? | Spike C, C2 |
 | May builds made with the SDK on a PC be uploaded, and what must winCode tell its users? Until this is answered, the cloud Mac lane stays the default store lane (ADR-0008) | The legal review (`docs/PLAN.md`, "Licence and account risk") |
