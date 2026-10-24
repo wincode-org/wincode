@@ -14,3 +14,4 @@ Architecture Decision Records. Copy `0000-template.md` for each new decision.
 | [0008](0008-two-release-lanes.md) | Two release lanes: pure Windows and cloud Mac | Proposed |
 | [0009](0009-store-signing-in-wincode.md) | winCode owns store signing and never revokes certificates on its own | Proposed |
 | [0010](0010-native-build-hooks.md) | Run Dart build hooks ourselves, with an xcrun shim for the Darwin SDK | Proposed |
+| [0011](0011-store-bundle-rules.md) | Store bundle rules: what a Windows-built store bundle matches in Xcode's, and what it never fakes | Proposed |
