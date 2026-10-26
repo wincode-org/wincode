@@ -1,0 +1,161 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 54;
+	objects = {
+
+/* Begin PBXFileReference section */
+		A00000000000000000000001 /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Release.xcconfig; sourceTree = "<group>"; };
+		A00000000000000000000002 /* alpha.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = alpha.xcconfig; sourceTree = "<group>"; };
+		A00000000000000000000003 /* beta.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = beta.xcconfig; sourceTree = "<group>"; };
+		A00000000000000000000004 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		B00000000000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				B00000000000000000000002 /* Flutter */,
+				B00000000000000000000003 /* Runner */,
+			);
+			sourceTree = "<group>";
+		};
+		B00000000000000000000002 /* Flutter */ = {
+			isa = PBXGroup;
+			children = (
+				A00000000000000000000001 /* Release.xcconfig */,
+				A00000000000000000000002 /* alpha.xcconfig */,
+				A00000000000000000000003 /* beta.xcconfig */,
+			);
+			path = Flutter;
+			sourceTree = "<group>";
+		};
+		B00000000000000000000003 /* Runner */ = {
+			isa = PBXGroup;
+			children = (
+				A00000000000000000000004 /* Info.plist */,
+			);
+			path = Runner;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		C00000000000000000000001 /* Runner */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D00000000000000000000002 /* Build configuration list for PBXNativeTarget "Runner" */;
+			buildPhases = (
+			);
+			name = Runner;
+			productName = Runner;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		E00000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			buildConfigurationList = D00000000000000000000001 /* Build configuration list for PBXProject "Runner" */;
+			mainGroup = B00000000000000000000001;
+			targets = (
+				C00000000000000000000001 /* Runner */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin XCBuildConfiguration section */
+		F00000000000000000000001 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		F00000000000000000000002 /* Release-alpha */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = "Release-alpha";
+		};
+		F00000000000000000000003 /* Release-beta */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = "Release-beta";
+		};
+		F00000000000000000000004 /* Release (Runner) */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = A00000000000000000000001 /* Release.xcconfig */;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Runner/Runner.entitlements;
+				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Developer";
+				INFOPLIST_FILE = Runner/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = org.example.demo;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+			};
+			name = Release;
+		};
+		F00000000000000000000005 /* Release-alpha (Runner) */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = A00000000000000000000002 /* alpha.xcconfig */;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Runner/Runner.entitlements;
+				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Developer";
+				"CODE_SIGN_IDENTITY[sdk=iphonesimulator*]" = "-";
+				INFOPLIST_FILE = Runner/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_NAME = "$(TARGET_NAME)";
+			};
+			name = "Release-alpha";
+		};
+		F00000000000000000000006 /* Release-beta (Runner) */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = A00000000000000000000003 /* beta.xcconfig */;
+			buildSettings = {
+				INFOPLIST_FILE = Runner/Info.plist;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+			};
+			name = "Release-beta";
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		D00000000000000000000001 /* Build configuration list for PBXProject "Runner" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F00000000000000000000001 /* Release */,
+				F00000000000000000000002 /* Release-alpha */,
+				F00000000000000000000003 /* Release-beta */,
+			);
+			defaultConfigurationName = Release;
+		};
+		D00000000000000000000002 /* Build configuration list for PBXNativeTarget "Runner" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F00000000000000000000004 /* Release */,
+				F00000000000000000000005 /* Release-alpha */,
+				F00000000000000000000006 /* Release-beta */,
+			);
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = E00000000000000000000001 /* Project object */;
+}

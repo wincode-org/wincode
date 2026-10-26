@@ -1,0 +1,6 @@
+// The beta flavor of the sample app.
+#include "Generated.xcconfig"
+
+PRODUCT_BUNDLE_IDENTIFIER = org.example.demo.beta
+APP_DISPLAY_NAME = Demo Beta
+URL_SCHEME = demo-beta

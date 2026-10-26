@@ -1,0 +1,6 @@
+// The alpha flavor of the sample app.
+#include "Generated.xcconfig"
+
+PRODUCT_BUNDLE_IDENTIFIER = org.example.demo.alpha
+APP_DISPLAY_NAME = Demo Alpha
+URL_SCHEME = demo-alpha
