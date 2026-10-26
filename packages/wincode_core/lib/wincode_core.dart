@@ -23,7 +23,14 @@ export 'src/ios_flavor.dart'
     show IosFlavorInputs, flutterGeneratedSettings, readIosFlavor;
 export 'src/openstep.dart' show parseOpenStep;
 export 'src/process.dart' show RunProcess, runProcess;
-export 'src/plist.dart' show PlistMap, parsePlist, parsePlistBytes, writePlist;
+export 'src/plist.dart'
+    show PlistMap, parsePlist, parsePlistBytes, writePlist, writePlistBinary;
+export 'src/resource_bundle.dart'
+    show
+        declaredIosTarget,
+        normalizeResourceBundle,
+        resourceBundleIdentifier,
+        resourceBundleInfo;
 export 'src/swift_build.dart'
     show SwiftBuild, buildSwiftPackage, swiftBuildCommand;
 export 'src/wsl.dart' show toWslPath, wslRunner;
