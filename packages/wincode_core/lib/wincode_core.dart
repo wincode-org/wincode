@@ -21,6 +21,13 @@ export 'src/flutter_assets.dart'
 export 'src/info_plist.dart' show SdkKeys, buildInfoPlist;
 export 'src/ios_flavor.dart'
     show IosFlavorInputs, flutterGeneratedSettings, readIosFlavor;
+export 'src/macho_edit.dart' show setInstallName;
+export 'src/native_assets.dart'
+    show
+        buildNativeAssetFramework,
+        nativeAssetFrameworkInfoPlist,
+        nativeAssetFrameworkName,
+        nativeAssetsManifest;
 export 'src/openstep.dart' show parseOpenStep;
 export 'src/process.dart' show RunProcess, runProcess;
 export 'src/plist.dart'
