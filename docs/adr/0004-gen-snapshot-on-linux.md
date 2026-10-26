@@ -52,6 +52,22 @@ Spike B (`docs/spikes/spike-b-device.md`) then ran that `App.framework` with the
   - The engine finds and loads it at runtime (spike B).
 - A Windows-host gen_snapshot remains possible later. Linux in WSL2 is enough for v1 (ADR-0001).
 
+## Evidence
+
+Check 2 of the decision, run for Flutter 3.47.5 (`.github/workflows/gen-snapshot-oracle.yml`, run 40328202302, 2026-10-26, `macos-26`: macOS 26.6.2 on arm64, Xcode 26.6). The sample is the stock counter app, so no client code is in the workflow. Its kernel is made on the runner by `flutter assemble kernel_snapshot_program` for iOS release (23,201,752 bytes, SHA-256 `868a321d…4c9d`). The official `gen_snapshot_arm64` of Flutter's artifacts (Dart 3.13.4) runs on it with the arguments flutter_tools uses. winCode's tool, built by `engine/` from the Dart revision that 3.47.5 pins (`b530c21f…`), runs on the same kernel under WSL2 (glibc 2.39).
+
+| Run | `App.framework/App` (4,362,672 bytes) | SHA-256 |
+| --- | --- | --- |
+| (a) official, as it is | reference | `d0821148…9072` |
+| (c) official, thin ad-hoc re-signed copy (control) | byte-identical to (a) | `d0821148…9072` |
+| (b) official copy with `qsort` replaced by a stable merge sort with glibc's tie-breaking, through `DYLD_INSERT_LIBRARIES` (45,432 calls) | differs from (a) in 3,268,259 bytes (74.9%), same size | `12212f79…2339` |
+| winCode's `gen_snapshot` on Linux | **byte-identical to (b)**, differs from (a) like (b) does | `12212f79…2339` |
+
+- **The interposition works.** The official tool is copied, thinned and re-signed ad hoc without the hardened runtime, so that macOS keeps `DYLD_INSERT_LIBRARIES`. The control (c) shows that the copy behaves like the original, and the run stops if the interposer logs no calls. It logged 45,432, the same number as spike A's run on Flutter 3.47.7, and (b) has the same digest as spike A's.
+- **The only host difference is the `qsort` tie-breaking.** With the same sort the official tool and winCode's give the same `App`, byte for byte. With macOS's own sort the layout differs.
+- **`app.o` differs, and is not shipped.** Its code and data sections are identical to (b)'s; only `__DWARF,__debug_info` differs, because the producer string names the host (`linux_simarm64` or `macos_arm64`) and shifts the offsets.
+- **Not proven for a real app.** The proof uses a small stock app. For a larger production app built outside this repository, the Mach-O layout, the two symbols and their addresses were the same, and 13.4% of the code and data bytes were identical at the same position, as expected without the Mac's `qsort`. Running the official tool on a real app's kernel would put that app's code into a workflow, so it is not done.
+
 ## Alternatives considered
 
 - **Build inside the Flutter engine tree:** a 20–30+ GB checkout and more GN patches. The engine's iOS toolchains assert a Mac host, and `tools/gn` expects Apple SDKs.
