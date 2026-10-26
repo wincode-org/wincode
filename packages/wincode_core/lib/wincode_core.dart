@@ -21,7 +21,7 @@ export 'src/flutter_assets.dart'
 export 'src/info_plist.dart' show SdkKeys, buildInfoPlist;
 export 'src/ios_flavor.dart'
     show IosFlavorInputs, flutterGeneratedSettings, readIosFlavor;
-export 'src/macho_edit.dart' show setInstallName;
+export 'src/macho_edit.dart' show removeRpaths, setInstallName;
 export 'src/native_assets.dart'
     show
         buildNativeAssetFramework,
@@ -38,6 +38,16 @@ export 'src/resource_bundle.dart'
         normalizeResourceBundle,
         resourceBundleIdentifier,
         resourceBundleInfo;
+export 'src/runner.dart'
+    show
+        SwiftPlugin,
+        buildRunner,
+        generatedPluginPackageManifest,
+        generatedPluginRegistrant,
+        runnerPackageManifest,
+        sceneDelegateBase,
+        sdkVersion,
+        writeRunnerPackage;
 export 'src/swift_build.dart'
     show SwiftBuild, buildSwiftPackage, swiftBuildCommand;
 export 'src/wsl.dart' show toWslPath, wslRunner;

@@ -13,7 +13,7 @@ class SwiftBuild {
     required this.log,
   });
 
-  /// The static library, `lib<product>.a`.
+  /// What the build wrote for the product: the static library `lib<product>.a`, or the executable if the product is one.
   final String library;
 
   /// The resource bundles (`<package>_<target>.bundle`) the build wrote next to it.
@@ -34,6 +34,8 @@ class SwiftBuild {
 /// - [swift]: the `swift` program, and [path] the rest of `PATH` (after the SDK's `toolset/bin`, which holds `dsymutil`).
 /// - [flutterFrameworkFolder]: the folder that holds `Flutter.framework`. A plugin's `import Flutter` needs its headers
 ///   and module map; the engine binary is not used until the app is linked.
+/// - [linkerFlags]: flags for the linker, each passed with `-Xlinker`. They only matter for a product that is linked,
+///   an executable: a static library is not.
 List<String> swiftBuildCommand({
   required String packagePath,
   required String product,
@@ -42,6 +44,7 @@ List<String> swiftBuildCommand({
   String swift = 'swift',
   String path = '/usr/local/bin:/usr/bin:/bin',
   String? flutterFrameworkFolder,
+  List<String> linkerFlags = const [],
   String triple = 'arm64-apple-ios',
   String configuration = 'release',
 }) => [
@@ -72,10 +75,12 @@ List<String> swiftBuildCommand({
     '-Xcc',
     '-F$flutterFrameworkFolder',
   ],
+  for (final flag in linkerFlags) ...['-Xlinker', flag],
 ];
 
 /// Builds [product] of the SwiftPM package at [packagePath] (a path on the build host) into [scratchPath] and finds what
-/// it wrote: `lib<product>.a` and the resource bundles. Nothing is linked into an app.
+/// it wrote: `lib<product>.a` (or the file [artifact] names, for an executable product) and the resource bundles. A
+/// static library is not linked into anything here.
 Future<SwiftBuild> buildSwiftPackage({
   required String packagePath,
   required String product,
@@ -84,6 +89,8 @@ Future<SwiftBuild> buildSwiftPackage({
   String swift = 'swift',
   String path = '/usr/local/bin:/usr/bin:/bin',
   String? flutterFrameworkFolder,
+  List<String> linkerFlags = const [],
+  String? artifact,
   String triple = 'arm64-apple-ios',
   required RunProcess run,
 }) async {
@@ -95,6 +102,7 @@ Future<SwiftBuild> buildSwiftPackage({
     swift: swift,
     path: path,
     flutterFrameworkFolder: flutterFrameworkFolder,
+    linkerFlags: linkerFlags,
     triple: triple,
   );
   final started = DateTime.now();
@@ -110,7 +118,7 @@ Future<SwiftBuild> buildSwiftPackage({
       .split(RegExp(r'\r?\n'))
       .where((n) => n.isNotEmpty)
       .toList();
-  final library = 'lib$product.a';
+  final library = artifact ?? 'lib$product.a';
   if (!names.contains(library)) {
     throw FormatException(
       'the build wrote no $library in $products (found: ${names.join(', ')})',

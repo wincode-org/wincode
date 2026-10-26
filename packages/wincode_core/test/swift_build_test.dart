@@ -61,6 +61,19 @@ void main() {
         '-Xcc',
         '-F/work/fw',
       ]);
+      final linked = swiftBuildCommand(
+        packagePath: '/p',
+        product: 'x',
+        scratchPath: '/s',
+        darwinSdkBundle: '/b',
+        linkerFlags: ['-rpath', '@executable_path/Frameworks'],
+      );
+      expect(linked.sublist(linked.length - 4), [
+        '-Xlinker',
+        '-rpath',
+        '-Xlinker',
+        '@executable_path/Frameworks',
+      ]);
       final without = swiftBuildCommand(
         packagePath: '/p',
         product: 'x',
