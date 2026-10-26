@@ -44,14 +44,16 @@ let package = Package(
     ],
     dependencies: [
         .package(name: "flutter_secure_storage_darwin", path: "../.packages/flutter_secure_storage_darwin-0.4.1"),
-        .package(name: "shared_preferences_foundation", path: "../.packages/shared_preferences_foundation-2.5.7")
+        .package(name: "shared_preferences_foundation", path: "../.packages/shared_preferences_foundation-2.5.7"),
+        .package(name: "FlutterFramework", path: "../.packages/FlutterFramework")
     ],
     targets: [
         .target(
             name: "FlutterGeneratedPluginSwiftPackage",
             dependencies: [
                 .product(name: "flutter-secure-storage-darwin", package: "flutter_secure_storage_darwin"),
-                .product(name: "shared-preferences-foundation", package: "shared_preferences_foundation")
+                .product(name: "shared-preferences-foundation", package: "shared_preferences_foundation"),
+                .product(name: "FlutterFramework", package: "FlutterFramework")
             ]
         )
     ]
@@ -60,19 +62,58 @@ let package = Package(
       );
     });
 
+    test('with no plugins it still depends on FlutterFramework', () {
+      final text = generatedPluginPackageManifest(
+        const [],
+        deploymentTarget: '15.0',
+      );
+      expect(
+        text,
+        contains(
+          '    dependencies: [\n'
+          '        .package(name: "FlutterFramework", path: "../.packages/FlutterFramework")\n'
+          '    ],',
+        ),
+      );
+      expect(
+        text,
+        contains(
+          '            dependencies: [\n'
+          '                .product(name: "FlutterFramework", package: "FlutterFramework")\n'
+          '            ]',
+        ),
+      );
+    });
+  });
+
+  group('flutterFrameworkPackageManifest', () {
     test(
-      'with no plugins it is the package flutter pub get writes on Windows',
+      'is the empty package flutter_tools writes: one target, one library',
       () {
-        final text = generatedPluginPackageManifest(
-          const [],
-          deploymentTarget: '15.0',
-        );
-        expect(text, contains('dependencies: [\n        \n    ]'));
         expect(
-          text,
-          contains(
-            '.target(\n            name: "FlutterGeneratedPluginSwiftPackage"\n        )',
-          ),
+          flutterFrameworkPackageManifest(),
+          '// swift-tools-version: 5.9\n'
+          '// The swift-tools-version declares the minimum version of Swift required to build this package.\n'
+          '//\n'
+          '// Generated file. Do not edit.\n'
+          '//\n'
+          '\n'
+          'import PackageDescription\n'
+          '\n'
+          'let package = Package(\n'
+          '    name: "FlutterFramework",\n'
+          '    products: [\n'
+          '        .library(name: "FlutterFramework", targets: ["FlutterFramework"])\n'
+          '    ],\n'
+          '    dependencies: [\n'
+          '        \n'
+          '    ],\n'
+          '    targets: [\n'
+          '        .target(\n'
+          '            name: "FlutterFramework"\n'
+          '        )\n'
+          '    ]\n'
+          ')\n',
         );
       },
     );
@@ -180,6 +221,17 @@ enum GeneratedPluginRegistrant {
         File(
           '$generated/Sources/FlutterGeneratedPluginSwiftPackage/FlutterGeneratedPluginSwiftPackage.swift',
         ).existsSync(),
+        isTrue,
+      );
+      final framework =
+          '${root.path}/work/ios/Flutter/ephemeral/Packages/.packages/FlutterFramework';
+      expect(
+        File('$framework/Package.swift').readAsStringSync(),
+        flutterFrameworkPackageManifest(),
+      );
+      expect(
+        File('$framework/Sources/FlutterFramework/FlutterFramework.swift')
+            .existsSync(),
         isTrue,
       );
       expect(links.map((l) => l.take(3).toList()), [
