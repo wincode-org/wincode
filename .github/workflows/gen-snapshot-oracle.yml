@@ -1,0 +1,142 @@
+name: gen-snapshot-oracle
+
+# The proof that winCode's Linux-built gen_snapshot matches Apple's (ADR-0004, check 2), for one Flutter release.
+# It builds the iOS kernel of a generic sample app (the stock `flutter create` counter app, no client code) and runs
+# the OFFICIAL gen_snapshot from Flutter's artifacts on it with flutter_tools' iOS release arguments:
+#   a) as it is;
+#   b) with qsort replaced by a stable merge sort with glibc's tie-breaking, interposed with DYLD_INSERT_LIBRARIES
+#      (the binary is copied, thinned and re-signed ad hoc first, so that the hardened runtime does not drop the variable);
+#   c) the same thin copy without the interposer, as the control that the copy behaves like the original.
+# It uploads the kernel and the outputs. The comparison with winCode's own gen_snapshot (the same kernel, on Linux)
+# is made from that artifact. No secrets, no Apple account.
+# Runs once when this file is pushed to its branch, or by hand: gh workflow run gen-snapshot-oracle.yml --ref <branch>
+
+on:
+  push:
+    branches: [ci/r1-proof]
+    paths: [.github/workflows/gen-snapshot-oracle.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  oracle:
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      FLUTTER_TAG: "3.47.5"
+      CI: "true"
+      FLUTTER_SUPPRESS_ANALYTICS: "true"
+    steps:
+      - name: Flutter
+        run: |
+          git clone -q --depth 1 --branch "$FLUTTER_TAG" https://github.com/flutter/flutter.git "$RUNNER_TEMP/flutter"
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/flutter/bin/flutter" --version
+          "$RUNNER_TEMP/flutter/bin/flutter" precache --ios
+
+      - name: Sample app (the stock counter app, as spike E's make_apps.sh makes it)
+        run: |
+          cd "$RUNNER_TEMP"
+          flutter create --org dev.wincode.spike --project-name counter --platforms ios counter >/dev/null
+          cd counter && flutter pub get
+
+      - name: Kernel (flutter assemble kernel_snapshot_program, as winCode's buildKernel runs it)
+        run: |
+          set -euo pipefail
+          O="$RUNNER_TEMP/oracle"; mkdir -p "$O/assemble"
+          cd "$RUNNER_TEMP/counter"
+          flutter assemble --no-version-check --output="$O/assemble" \
+            -dTargetPlatform=ios -dTargetFile=lib/main.dart -dBuildMode=release -dIosArchs=arm64 \
+            -dTreeShakeIcons=true -dTrackWidgetCreation=false -dDartObfuscation=false \
+            kernel_snapshot_program
+          dill=$(find .dart_tool/flutter_build -name app.dill | head -1)
+          [ -n "$dill" ] || { echo "no app.dill"; exit 1; }
+          cp "$dill" "$O/app.dill"
+          shasum -a 256 "$O/app.dill"
+
+      - name: gen_snapshot, three ways
+        run: |
+          set -uo pipefail
+          O="$RUNNER_TEMP/oracle"; D="$O/runs"; mkdir -p "$D"
+          GS="$RUNNER_TEMP/flutter/bin/cache/artifacts/engine/ios-release/gen_snapshot_arm64"
+          "$GS" --version 2>&1 | tee "$O/gen-snapshot-version.txt" || true
+
+          # Same merge sort as glibc's qsort (stable; the left element wins ties).
+          cat > "$D/stable_qsort.c" <<'C'
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <string.h>
+          static unsigned long calls;
+          static void msort(char *b, size_t n, size_t s, int (*c)(const void *, const void *), char *t) {
+            if (n < 2) return;
+            size_t h = n / 2;
+            msort(b, h, s, c, t); msort(b + h * s, n - h, s, c, t);
+            size_t i = 0, j = h, k = 0;
+            while (i < h && j < n) {
+              if (c(b + j * s, b + i * s) < 0) { memcpy(t + k * s, b + j * s, s); j++; }
+              else { memcpy(t + k * s, b + i * s, s); i++; }
+              k++;
+            }
+            while (i < h) { memcpy(t + k * s, b + i * s, s); i++; k++; }
+            while (j < n) { memcpy(t + k * s, b + j * s, s); j++; k++; }
+            memcpy(b, t, n * s);
+          }
+          static void stable_qsort(void *base, size_t n, size_t size, int (*cmp)(const void *, const void *)) {
+            calls++;
+            if (n < 2) return;
+            char *tmp = malloc(n * size);
+            msort(base, n, size, cmp, tmp);
+            free(tmp);
+          }
+          __attribute__((destructor)) static void report(void) { fprintf(stderr, "stable_qsort: %lu calls\n", calls); }
+          typedef struct { const void *replacement; const void *replacee; } interpose_t;
+          __attribute__((used)) static const interpose_t interposers[]
+              __attribute__((section("__DATA,__interpose"))) = {{(const void *)stable_qsort, (const void *)qsort}};
+          C
+          clang -O2 -dynamiclib -o "$D/stable_qsort.dylib" "$D/stable_qsort.c"
+          lipo -thin arm64 "$GS" -output "$D/gen_snapshot_arm64_thin"
+          codesign -f -s - "$D/gen_snapshot_arm64_thin"
+
+          run() { local name=$1; shift
+            rm -rf "$D/$name"; mkdir -p "$D/$name/arm64/App.framework"; cp "$O/app.dill" "$D/$name/"
+            ( cd "$D/$name" && "$@" --deterministic --snapshot_kind=app-aot-macho-dylib \
+                --macho=arm64/App.framework/App --macho-object=arm64/app.o \
+                --macho-min-os-version=15.0 \
+                --macho-rpath=@executable_path/Frameworks,@loader_path/Frameworks \
+                --macho-install-name=@rpath/App.framework/App app.dill ) > "$D/$name.log" 2>&1
+            local status=$?
+            echo "$name exit=$status"; cat "$D/$name.log"; rm -f "$D/$name/app.dill"
+            return $status; }
+          run a-official "$GS" || exit 1
+          run c-thin-plain "$D/gen_snapshot_arm64_thin" || exit 1
+          run b-stable-qsort env DYLD_INSERT_LIBRARIES="$D/stable_qsort.dylib" "$D/gen_snapshot_arm64_thin" || exit 1
+          # A run where the interposer was not used proves nothing: stop.
+          grep -Eq '^stable_qsort: [1-9][0-9]* calls' "$D/b-stable-qsort.log" || { echo "the interposer was not called"; exit 1; }
+
+          echo "== sha256"
+          shasum -a 256 "$D"/*/arm64/App.framework/App "$D"/*/arm64/app.o | sed "s#$D/##" | tee "$O/hashes.txt"
+          echo "== byte comparisons"
+          cmpr() { if cmp -s "$D/$1/arm64/App.framework/App" "$D/$2/arm64/App.framework/App"; then echo "App $1 == $2: BYTE-IDENTICAL"
+                   else echo "App $1 vs $2: DIFFERENT, $(cmp -l "$D/$1/arm64/App.framework/App" "$D/$2/arm64/App.framework/App" | wc -l | tr -d ' ') bytes differ"; fi; }
+          { cmpr a-official c-thin-plain; cmpr a-official b-stable-qsort; cmpr c-thin-plain b-stable-qsort; } | tee "$O/comparisons.txt"
+
+      - name: Record the environment
+        run: |
+          O="$RUNNER_TEMP/oracle"
+          { sw_vers; echo; uname -m; echo; xcodebuild -version; echo
+            file "$RUNNER_TEMP/flutter/bin/cache/artifacts/engine/ios-release/gen_snapshot_arm64"; echo
+            cat "$RUNNER_TEMP/flutter/bin/internal/engine.version"; echo
+            "$RUNNER_TEMP/flutter/bin/flutter" --version
+          } > "$O/env.txt" 2>&1
+          cat "$O/env.txt"
+
+      - name: Upload the kernel and the outputs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gen-snapshot-oracle
+          path: ${{ runner.temp }}/oracle/
+          retention-days: 7
+          if-no-files-found: error
