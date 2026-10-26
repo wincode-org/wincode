@@ -1,0 +1,14 @@
+name: wincode_core
+description: Shared logic of winCode - plist handling, Xcode flavor settings and the pieces of the iOS bundle.
+version: 0.0.0
+publish_to: none
+
+environment:
+  sdk: ^3.13.0
+
+dependencies:
+  xml: ^7.0.1
+
+dev_dependencies:
+  lints: ^6.0.0
+  test: ^1.25.0
