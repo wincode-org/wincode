@@ -24,4 +24,7 @@ export 'src/ios_flavor.dart'
 export 'src/openstep.dart' show parseOpenStep;
 export 'src/process.dart' show RunProcess, runProcess;
 export 'src/plist.dart' show PlistMap, parsePlist, parsePlistBytes, writePlist;
+export 'src/swift_build.dart'
+    show SwiftBuild, buildSwiftPackage, swiftBuildCommand;
+export 'src/wsl.dart' show toWslPath, wslRunner;
 export 'src/xcconfig.dart' show XcconfigEntry, readXcconfig;
