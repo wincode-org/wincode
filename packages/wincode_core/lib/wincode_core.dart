@@ -3,6 +3,14 @@ library;
 
 export 'src/build_settings.dart' show BuildSettings, resolveBuildSettings;
 export 'src/entitlements.dart' show buildEntitlements;
+export 'src/flutter_assets.dart'
+    show
+        PackageRoots,
+        RunProcess,
+        buildFlutterAssets,
+        impellercArguments,
+        impellercPath,
+        shaderSource;
 export 'src/info_plist.dart' show SdkKeys, buildInfoPlist;
 export 'src/ios_flavor.dart'
     show IosFlavorInputs, flutterGeneratedSettings, readIosFlavor;
