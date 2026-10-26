@@ -1,18 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
-/// Starts a process and waits for it. Tests pass a fake one.
-typedef RunProcess = Future<ProcessResult> Function(
-  String executable,
-  List<String> arguments, {
-  String? workingDirectory,
-});
-
-Future<ProcessResult> _run(
-  String executable,
-  List<String> arguments, {
-  String? workingDirectory,
-}) => Process.run(executable, arguments, workingDirectory: workingDirectory);
+import 'process.dart';
 
 /// Builds the `flutter_assets` folder of an iOS release build, on a host that is not a Mac.
 ///
@@ -33,7 +22,7 @@ Future<List<String>> buildFlutterAssets({
   String? flavor,
   String target = 'lib/main.dart',
   List<String> dartDefines = const [],
-  RunProcess run = _run,
+  RunProcess run = runProcess,
 }) async {
   outputDir.createSync(recursive: true);
   final flutter =
