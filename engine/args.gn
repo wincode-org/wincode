@@ -1,0 +1,33 @@
+# gen_snapshot for iOS arm64, built on a Linux x64 host (ADR-0004). A real iOS target configuration; only the
+# host-toolchain gen_snapshot is built. build.sh patches BUILDCONFIG.gn so that, on a Linux host, the iOS configuration
+# uses the Linux clang toolchains and never loads //build/toolchain/mac (which asserts host_os == "mac").
+# build.sh replaces @DART_SDK_VERIFICATION_HASH@ with the first 10 characters of the pinned Dart revision.
+
+# Target: what the generated code runs on (same as the engine's iOS release build).
+target_os = "ios"
+target_cpu = "arm64"
+dart_target_arch = "arm64"
+use_simulator = false
+
+# Unused: set only so build/config/ios/ios_sdk.gni skips find_sdk.py (macOS-only). Nothing is compiled for iOS.
+ios_sdk_path = "/nonexistent/iPhoneOS.sdk"
+
+# Product (= Flutter "release") gen_snapshot. Dart's own product mode sets these four.
+is_debug = false
+is_release = false
+is_product = true
+dart_debug = false
+dart_runtime_mode = "release"
+
+# Mirrors engine/src/flutter/tools/gn for an iOS release build.
+dart_use_compressed_pointers = false
+dart_default_optimization_level = "2"
+dart_component_kind = "static_library"
+dart_lib_export_symbols = false
+dart_dynamic_modules = false
+# The engine uses dart_version[:10]; it must equal the kernel SDK hash in app.dill.
+dart_sdk_verification_hash = "@DART_SDK_VERIFICATION_HASH@"
+dart_version_git_info = true
+exclude_kernel_service = false
+
+is_clang = true

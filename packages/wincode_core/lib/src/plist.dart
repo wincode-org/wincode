@@ -225,3 +225,170 @@ String _escape(String text) => text
     .replaceAll('&', '&amp;')
     .replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;');
+
+/// Writes [value] as a binary property list (`bplist00`), laid out the way Core Foundation lays it out, so that the same
+/// data gives the bytes Xcode writes: the root first, then all the keys of a dictionary in sorted order, then its values,
+/// each container followed by its own contents; a string, number or other plain value that occurs again is written once
+/// and referenced.
+Uint8List writePlistBinary(Object? value) => _BinaryWriter().write(value);
+
+/// An object of the binary table: a plain value, or a container that holds the table indexes of its contents.
+class _Container {
+  _Container(this.keys, this.values);
+  final List<int>? keys;
+  final List<int> values;
+}
+
+class _BinaryWriter {
+  final _objects = <Object?>[];
+  final _unique = <String, int>{};
+
+  Uint8List write(Object? value) {
+    _add(value);
+    final out = BytesBuilder()..add(ascii.encode('bplist00'));
+    final refSize = _width(_objects.length);
+    final offsets = <int>[];
+    for (final object in _objects) {
+      offsets.add(out.length);
+      _writeObject(out, object, refSize);
+    }
+    final table = out.length;
+    final offsetSize = _width(table);
+    for (final offset in offsets) {
+      _writeUint(out, offset, offsetSize);
+    }
+    out
+      ..add(Uint8List(6))
+      ..addByte(offsetSize)
+      ..addByte(refSize);
+    _writeUint(out, _objects.length, 8);
+    _writeUint(out, 0, 8);
+    _writeUint(out, table, 8);
+    return out.toBytes();
+  }
+
+  int _add(Object? value) {
+    switch (value) {
+      case final Map<Object?, Object?> map:
+        final index = _reserve();
+        final keys = map.keys.cast<String>().toList()..sort();
+        final keyRefs = [for (final key in keys) _add(key)];
+        final valueRefs = [for (final key in keys) _add(map[key])];
+        _objects[index] = _Container(keyRefs, valueRefs);
+        return index;
+      case final Uint8List bytes:
+        return _plain('data:${base64.encode(bytes)}', bytes);
+      case final List<Object?> list:
+        final index = _reserve();
+        _objects[index] = _Container(null, [
+          for (final item in list) _add(item),
+        ]);
+        return index;
+      case final String _ || final int _ || final bool _ || final double _:
+        return _plain('${value.runtimeType}:$value', value);
+      case final DateTime date:
+        return _plain('date:${date.toUtc()}', date);
+      default:
+        throw ArgumentError(
+          'cannot write ${value.runtimeType} to a property list',
+        );
+    }
+  }
+
+  int _reserve() {
+    _objects.add(null);
+    return _objects.length - 1;
+  }
+
+  int _plain(String key, Object? value) => _unique.putIfAbsent(key, () {
+    _objects.add(value);
+    return _objects.length - 1;
+  });
+
+  void _writeObject(BytesBuilder out, Object? object, int refSize) {
+    switch (object) {
+      case final _Container c:
+        final keys = c.keys;
+        _writeMarker(out, keys == null ? 0xA0 : 0xD0, c.values.length);
+        for (final ref in [...?keys, ...c.values]) {
+          _writeUint(out, ref, refSize);
+        }
+      case final bool flag:
+        out.addByte(flag ? 0x09 : 0x08);
+      case final int number:
+        _writeInt(out, number);
+      case final double number:
+        out.addByte(0x23);
+        _writeFloat(out, number);
+      case final DateTime date:
+        out.addByte(0x33);
+        _writeFloat(
+          out,
+          date.toUtc().millisecondsSinceEpoch / 1000 - 978307200,
+        );
+      case final Uint8List bytes:
+        _writeMarker(out, 0x40, bytes.length);
+        out.add(bytes);
+      case final String text:
+        if (text.codeUnits.every((unit) => unit < 0x80)) {
+          _writeMarker(out, 0x50, text.length);
+          out.add(ascii.encode(text));
+        } else {
+          _writeMarker(out, 0x60, text.length);
+          for (final unit in text.codeUnits) {
+            out
+              ..addByte(unit >> 8)
+              ..addByte(unit & 0xFF);
+          }
+        }
+    }
+  }
+
+  /// The marker byte of an object that has a length: the length itself when it fits in 4 bits, else `0xF` and the length
+  /// as an integer object.
+  void _writeMarker(BytesBuilder out, int type, int length) {
+    if (length < 15) {
+      out.addByte(type | length);
+    } else {
+      out.addByte(type | 0xF);
+      _writeInt(out, length);
+    }
+  }
+
+  void _writeInt(BytesBuilder out, int number) {
+    final size = number < 0 ? 8 : _width(number);
+    out.addByte(
+      0x10 |
+          (size == 1
+              ? 0
+              : size == 2
+              ? 1
+              : size == 4
+              ? 2
+              : 3),
+    );
+    _writeUint(out, number, size);
+  }
+
+  void _writeFloat(BytesBuilder out, double number) {
+    out.add(
+      (ByteData(8)..setFloat64(0, number, Endian.big)).buffer.asUint8List(),
+    );
+  }
+
+  /// The smallest of 1, 2, 4 and 8 bytes that holds [value]. It sizes integers, object references (by the number of
+  /// objects) and offsets (by the offset table's position).
+  int _width(int value) => value > 0xFFFFFFFF
+      ? 8
+      : value > 0xFFFF
+      ? 4
+      : value > 0xFF
+      ? 2
+      : 1;
+
+  void _writeUint(BytesBuilder out, int number, int size) {
+    for (var shift = (size - 1) * 8; shift >= 0; shift -= 8) {
+      out.addByte((number >> shift) & 0xFF);
+    }
+  }
+}
