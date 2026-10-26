@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'process.dart';
 
@@ -144,4 +145,70 @@ Future<File> buildAppBinary({
     throw const FormatException('gen_snapshot wrote no App.framework/App');
   }
   return binary;
+}
+
+/// Wraps a thin arm64 Mach-O file in the universal container that `lipo -create` makes for one architecture, as
+/// flutter_tools does after `strip` (`lipo` is also run for a single architecture). The container is a big-endian header
+/// (magic `0xcafebabe`, one entry with the file's CPU type and subtype, the slice's offset 16384 and size, and the
+/// alignment 2^14), zeros up to the offset, and the slice.
+Uint8List wrapInFat(Uint8List thin) {
+  const offset = 16384;
+  final thinHeader = ByteData.sublistView(thin);
+  if (thin.length < 32 ||
+      thinHeader.getUint32(0, Endian.little) != 0xfeedfacf) {
+    throw const FormatException('not a 64-bit Mach-O file');
+  }
+  final fat = Uint8List(offset + thin.length);
+  ByteData.sublistView(fat)
+    ..setUint32(0, 0xcafebabe)
+    ..setUint32(4, 1)
+    ..setUint32(8, thinHeader.getUint32(4, Endian.little))
+    ..setUint32(12, thinHeader.getUint32(8, Endian.little))
+    ..setUint32(16, offset)
+    ..setUint32(20, thin.length)
+    ..setUint32(24, 14);
+  fat.setRange(offset, fat.length, thin);
+  return fat;
+}
+
+/// The steps flutter_tools runs after gen_snapshot for a release build (`AOTSnapshotter.build`): the debug symbols go to
+/// a dSYM with [dsymutil], the local symbols are removed with [objcopy] (`llvm-objcopy --discard-all`, which is
+/// `strip -x`), and the binary is wrapped as `lipo` would. Run it in the [workDir] that [buildAppBinary] used.
+///
+/// Returns `App.framework/App` in [workDir]; the dSYM is `arm64/App.framework.dSYM` there. The code signature is not
+/// valid after stripping and is made again when the bundle is signed.
+Future<File> finishAppBinary({
+  required Directory workDir,
+  required String dsymutil,
+  required String objcopy,
+  RunProcess run = runProcess,
+}) async {
+  Future<void> step(String tool, List<String> arguments) async {
+    final result = await run(tool, arguments, workingDirectory: workDir.path);
+    if (result.exitCode != 0) {
+      throw ProcessException(
+        tool,
+        arguments,
+        '${result.stdout}\n${result.stderr}'.trim(),
+        result.exitCode,
+      );
+    }
+  }
+
+  await step(dsymutil, [
+    '-o',
+    'arm64/App.framework.dSYM',
+    'arm64/App.framework/App',
+  ]);
+  await step(objcopy, [
+    '--discard-all',
+    'arm64/App.framework/App',
+    'arm64/App.stripped',
+  ]);
+  final output = File('${workDir.path}/App.framework/App')
+    ..parent.createSync(recursive: true);
+  output.writeAsBytesSync(
+    wrapInFat(File('${workDir.path}/arm64/App.stripped').readAsBytesSync()),
+  );
+  return output;
 }

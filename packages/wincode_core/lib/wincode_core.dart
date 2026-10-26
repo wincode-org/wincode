@@ -2,7 +2,12 @@
 library;
 
 export 'src/app_snapshot.dart'
-    show buildAppBinary, buildKernel, genSnapshotArguments;
+    show
+        buildAppBinary,
+        buildKernel,
+        finishAppBinary,
+        genSnapshotArguments,
+        wrapInFat;
 export 'src/build_settings.dart' show BuildSettings, resolveBuildSettings;
 export 'src/doctor.dart' show DoctorFinding, checkFlutterSdkLineEndings;
 export 'src/entitlements.dart' show buildEntitlements;
