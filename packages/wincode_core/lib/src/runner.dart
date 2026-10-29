@@ -143,6 +143,12 @@ ${[for (final p in plugins) '    ${p.pluginClass}.register(with: registry.regist
 /// own `class SceneDelegate: FlutterSceneDelegate` inherits it unchanged, and the scene setup in `Info.plist` stays as
 /// the app has it. A `FlutterViewController` made with `init()` has an implicit engine, and its creation calls the app
 /// delegate's `didInitializeImplicitFlutterEngine`, as the storyboard's does.
+///
+/// The view controller is made the way a storyboard makes it: `init(coder:)` and then `awakeFromNib()` (spike F,
+/// `docs/spikes/spike-f-launch-events.md`). Flutter sends the plugins the application launch events
+/// (`willFinishLaunching` and `didFinishLaunching`) from `awakeFromNib`, once the plugins are registered, because UIKit
+/// sent them before there was anything to receive them. A view controller made with `init()` never sends them. The text is
+/// kept equal to `spikes/f-launch-events/variants/C.swift` by a test.
 const sceneDelegateBase = '''
 //
 //  Generated file. Do not edit.
@@ -159,11 +165,25 @@ class FlutterSceneDelegate: Flutter.FlutterSceneDelegate {
   ) {
     if window == nil, let windowScene = scene as? UIWindowScene {
       let window = UIWindow(windowScene: windowScene)
-      window.rootViewController = FlutterViewController()
+      window.rootViewController = makeFlutterViewController()
       self.window = window
       window.makeKeyAndVisible()
     }
     super.scene(scene, willConnectTo: session, options: connectionOptions)
+  }
+
+  /// A storyboard makes its view controller by decoding it (`init(coder:)`) and then sends it `awakeFromNib`. Flutter's
+  /// view controller sets up its engine in `awakeFromNib`, and only a view controller set up there tells the plugins that
+  /// the app has launched (`willFinishLaunching` and `didFinishLaunching`, which UIKit did not send them because they
+  /// were not registered yet). `init()` skips both, so make the view controller the way a storyboard does.
+  private func makeFlutterViewController() -> FlutterViewController {
+    let archiver = NSKeyedArchiver(requiringSecureCoding: false)
+    archiver.finishEncoding()
+    let coder = try! NSKeyedUnarchiver(forReadingFrom: archiver.encodedData)
+    coder.requiresSecureCoding = false
+    let controller = FlutterViewController(coder: coder)
+    controller.awakeFromNib()
+    return controller
   }
 }
 ''';

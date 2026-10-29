@@ -174,6 +174,25 @@ enum GeneratedPluginRegistrant {
         );
       },
     );
+
+    test('makes the view controller the way a storyboard does', () {
+      expect(
+        sceneDelegateBase,
+        contains('FlutterViewController(coder: coder)'),
+      );
+      expect(sceneDelegateBase, contains('controller.awakeFromNib()'));
+      expect(
+        sceneDelegateBase,
+        isNot(contains('rootViewController = FlutterViewController()')),
+      );
+    });
+
+    test('is the file spike F ran in the simulator (variant C)', () {
+      final spike = File('../../spikes/f-launch-events/variants/C.swift')
+          .readAsStringSync()
+          .replaceAll('\r\n', '\n');
+      expect(sceneDelegateBase, spike);
+    });
   });
 
   group('writeRunnerPackage', () {
