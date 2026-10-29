@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Spike C: sign the C1 bundle for the App Store with zsign (ADR-0009).
 
-  sign.py [--dry-run] <unsigned .app> <out .ipa>
+  sign.py [--dry-run] [--entitlements <app .entitlements>] <unsigned .app> <out .ipa>
   sign.py --self-test        offline: check the rule that compares entitlements with the profile's
 
 Reads from the folder WINCODE_SPIKE_C_DIR names: the Apple Distribution certificate (one .cer) and the App Store
@@ -11,7 +11,9 @@ stays in WSL: WINCODE_DIST_KEY names it, and a path under /mnt/ (a Windows drive
 The app is signed with a minimal set of entitlements built at run time from the profile's team ID and the config's
 bundle ID: application-identifier, com.apple.developer.team-identifier, get-task-allow false and
 keychain-access-groups with the app's own group. This set is not checked against what Xcode signs. Each key and
-value must be allowed by the profile, or the script stops. zsign gives these to the main executable and every
+value must be allowed by the profile, or the script stops. With --entitlements, the keys of the app's own
+.entitlements file (Sign in with Apple, for one) are added to the four and checked the same way; the four keep their
+values. zsign gives these to the main executable and every
 framework none (its archo.cpp signs only MH_EXECUTE files with entitlements); the script then reads every signature
 back and checks exactly that, and that the IPA holds only Payload/.
 --dry-run checks the inputs that are there, then prints the zsign command instead of running it. IDs are masked in
@@ -59,12 +61,15 @@ def permits(allowed, value):
     return type(allowed) is type(value) and allowed == value
 
 
-def minimal_entitlements(profile, bundle_id):
-    """(entitlements, problems): the minimal set for the app, each key and value checked against the profile."""
+def minimal_entitlements(profile, bundle_id, extra=None):
+    """(entitlements, problems): the minimal set for the app, each key and value checked against the profile.
+
+    extra: the app's own entitlements (its .entitlements file). Its keys are added to the four of the minimal set
+    (ADR-0011 rule 6) and checked the same way; the four keep the values built here."""
     team = profile["TeamIdentifier"][0]
     app_id = f"{team}.{bundle_id}"
-    want = {"application-identifier": app_id, "com.apple.developer.team-identifier": team, "get-task-allow": False,
-            "keychain-access-groups": [app_id]}
+    want = {**(extra or {}), "application-identifier": app_id, "com.apple.developer.team-identifier": team,
+            "get-task-allow": False, "keychain-access-groups": [app_id]}
     allowed = profile["Entitlements"]
     problems = [f"the profile does not allow {key}" if key not in allowed else f"the profile does not allow this {key}"
                 for key, value in want.items() if key not in allowed or not permits(allowed[key], value)]
@@ -75,7 +80,7 @@ def show(entitlements):
     return masked(", ".join(f"{k}={v}" for k, v in sorted(entitlements.items()))) or "none"
 
 
-def check_inputs(folder, config, app):
+def check_inputs(folder, config, app, extra=None):
     """The key, certificate and profile, checked against each other and the bundle. Returns (inputs, problems)."""
     now = datetime.datetime.now(datetime.timezone.utc)
     if not os.environ.get("WINCODE_DIST_KEY"):
@@ -123,7 +128,7 @@ def check_inputs(folder, config, app):
             problems.append("the profile has expired")
         if der is not None and der not in p["DeveloperCertificates"]:
             problems.append("the profile does not include this certificate")
-        entitlements, refused = minimal_entitlements(p, config["bundle_id"])
+        entitlements, refused = minimal_entitlements(p, config["bundle_id"], extra)
         problems += refused
         print(f"app entitlements: {show(entitlements)}")
     return (key, cert, profile, entitlements), problems
@@ -154,11 +159,12 @@ def size(*paths):
                if f.is_file() and not f.is_symlink())
 
 
-def main(app, ipa, dry_run):
+def main(app, ipa, dry_run, app_entitlements=None):
     folder, config = spike_config()
     if app == ipa.parent or app in ipa.parents:
         sys.exit("the IPA must go outside the .app")
-    (key, cert, profile, entitlements), problems = check_inputs(folder, config, app)
+    extra = plistlib.loads(app_entitlements.read_bytes()) if app_entitlements else None
+    (key, cert, profile, entitlements), problems = check_inputs(folder, config, app, extra)
     command = [ZSIGN, "-k", key, "-c", cert or "<certificate .cer>", "-m", profile or "<profile .mobileprovision>",
                "-e", "<entitlements.plist: the app entitlements above>", "-o", ipa, "-z", "9", "<Payload/ copy of the .app>"]
     if dry_run:
@@ -206,6 +212,12 @@ def self_test():
                    {"application-identifier": "TEAM000000.org.example.other"}):
         assert minimal_entitlements({**profile, "Entitlements": {**profile["Entitlements"], **change}},
                                     "org.example.app")[1], change
+    # The app's own entitlements are signed too, when the profile allows them (Sign in with Apple), and never replace the four.
+    siwa = {"com.apple.developer.applesignin": ["Default"]}
+    allowing = {**profile, "Entitlements": {**profile["Entitlements"], **siwa}}
+    want, problems = minimal_entitlements(allowing, "org.example.app", {**siwa, "get-task-allow": True})
+    assert not problems and want["com.apple.developer.applesignin"] == ["Default"] and want["get-task-allow"] is False, problems
+    assert minimal_entitlements(profile, "org.example.app", siwa)[1] == ["the profile does not allow com.apple.developer.applesignin"]
     del profile["Entitlements"]["keychain-access-groups"]
     assert minimal_entitlements(profile, "org.example.app")[1] == ["the profile does not allow keychain-access-groups"]
     print("self-test OK: the minimal entitlements are built from the profile and refused when it doesn't allow them")
@@ -215,12 +227,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Sign the C1 bundle for the App Store with zsign.")
     parser.add_argument("app", type=Path, nargs="?")
     parser.add_argument("ipa", type=Path, nargs="?")
+    parser.add_argument("--entitlements", type=Path, metavar="FILE",
+                        help="the app's own .entitlements file: its keys are signed too, each checked against the profile")
     parser.add_argument("--dry-run", action="store_true", help="check the inputs and print the zsign command")
     parser.add_argument("--self-test", action="store_true", help="check the entitlement rule offline, then exit")
     args = parser.parse_args()
     if args.self_test:
         self_test()
     elif args.app and args.ipa:
-        main(args.app.resolve(), args.ipa.resolve(), args.dry_run)
+        main(args.app.resolve(), args.ipa.resolve(), args.dry_run, args.entitlements)
     else:
         parser.error("give the unsigned .app and the output .ipa")
