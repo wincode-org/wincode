@@ -34,10 +34,12 @@ class SwiftPlugin {
 }
 
 const _generatedPackage = 'FlutterGeneratedPluginSwiftPackage';
+const _flutterFramework = 'FlutterFramework';
 
 /// The `Package.swift` of `FlutterGeneratedPluginSwiftPackage`, as flutter_tools writes it on a Mac (3.47.5): a static
-/// library whose target depends on the product of each plugin, for the project's [deploymentTarget]. The plugins are
-/// the entries of `.packages` next to it. On Windows `flutter pub get` writes only the version of it that has no plugins.
+/// library whose target depends on the product of each plugin and, last, on the `FlutterFramework` package, for the
+/// project's [deploymentTarget]. The plugins and `FlutterFramework` are the entries of `.packages` next to it. On Windows
+/// `flutter pub get` writes only a version of it that has none of them.
 String generatedPluginPackageManifest(
   List<SwiftPlugin> plugins, {
   required String deploymentTarget,
@@ -45,15 +47,20 @@ String generatedPluginPackageManifest(
   final packages = [
     for (final p in plugins)
       '.package(name: "${p.name}", path: "../.packages/${p.basename}")',
+    '.package(name: "$_flutterFramework", path: "../.packages/$_flutterFramework")',
   ].join(',\n        ');
-  final target = plugins.isEmpty
-      ? '.target(\n            name: "$_generatedPackage"\n        )'
-      : '.target(\n'
-            '            name: "$_generatedPackage",\n'
-            '            dependencies: [\n'
-            '${[for (final p in plugins) '                .product(name: "${p.product}", package: "${p.name}")'].join(',\n')}\n'
-            '            ]\n'
-            '        )';
+  final products = [
+    for (final p in plugins)
+      '                .product(name: "${p.product}", package: "${p.name}")',
+    '                .product(name: "$_flutterFramework", package: "$_flutterFramework")',
+  ].join(',\n');
+  final target =
+      '.target(\n'
+      '            name: "$_generatedPackage",\n'
+      '            dependencies: [\n'
+      '$products\n'
+      '            ]\n'
+      '        )';
   return '''
 // swift-tools-version: 5.9
 // The swift-tools-version declares the minimum version of Swift required to build this package.
@@ -80,6 +87,34 @@ let package = Package(
 )
 ''';
 }
+
+/// The `Package.swift` of the `FlutterFramework` package in `.packages`, which some plugins depend on
+/// (`.package(name: "FlutterFramework", path: "../FlutterFramework")`). flutter_tools writes it with one target that has no
+/// code and one library product; the Flutter framework itself reaches the plugins through the framework search path, as
+/// it does in an Xcode build.
+String flutterFrameworkPackageManifest() =>
+    '// swift-tools-version: 5.9\n'
+    '// The swift-tools-version declares the minimum version of Swift required to build this package.\n'
+    '//\n'
+    '// Generated file. Do not edit.\n'
+    '//\n'
+    '\n'
+    'import PackageDescription\n'
+    '\n'
+    'let package = Package(\n'
+    '    name: "$_flutterFramework",\n'
+    '    products: [\n'
+    '        .library(name: "$_flutterFramework", targets: ["$_flutterFramework"])\n'
+    '    ],\n'
+    '    dependencies: [\n'
+    '        \n'
+    '    ],\n'
+    '    targets: [\n'
+    '        .target(\n'
+    '            name: "$_flutterFramework"\n'
+    '        )\n'
+    '    ]\n'
+    ')\n';
 
 /// `GeneratedPluginRegistrant` in Swift, registering only [plugins]. flutter_tools writes it in Objective-C and for every
 /// plugin of the app; a runner that links part of them needs one that names only those. The app's `AppDelegate` calls it
@@ -108,6 +143,12 @@ ${[for (final p in plugins) '    ${p.pluginClass}.register(with: registry.regist
 /// own `class SceneDelegate: FlutterSceneDelegate` inherits it unchanged, and the scene setup in `Info.plist` stays as
 /// the app has it. A `FlutterViewController` made with `init()` has an implicit engine, and its creation calls the app
 /// delegate's `didInitializeImplicitFlutterEngine`, as the storyboard's does.
+///
+/// The view controller is made the way a storyboard makes it: `init(coder:)` and then `awakeFromNib()` (spike F,
+/// `docs/spikes/spike-f-launch-events.md`). Flutter sends the plugins the application launch events
+/// (`willFinishLaunching` and `didFinishLaunching`) from `awakeFromNib`, once the plugins are registered, because UIKit
+/// sent them before there was anything to receive them. A view controller made with `init()` never sends them. The text is
+/// kept equal to `spikes/f-launch-events/variants/C.swift` by a test.
 const sceneDelegateBase = '''
 //
 //  Generated file. Do not edit.
@@ -124,11 +165,25 @@ class FlutterSceneDelegate: Flutter.FlutterSceneDelegate {
   ) {
     if window == nil, let windowScene = scene as? UIWindowScene {
       let window = UIWindow(windowScene: windowScene)
-      window.rootViewController = FlutterViewController()
+      window.rootViewController = makeFlutterViewController()
       self.window = window
       window.makeKeyAndVisible()
     }
     super.scene(scene, willConnectTo: session, options: connectionOptions)
+  }
+
+  /// A storyboard makes its view controller by decoding it (`init(coder:)`) and then sends it `awakeFromNib`. Flutter's
+  /// view controller sets up its engine in `awakeFromNib`, and only a view controller set up there tells the plugins that
+  /// the app has launched (`willFinishLaunching` and `didFinishLaunching`, which UIKit did not send them because they
+  /// were not registered yet). `init()` skips both, so make the view controller the way a storyboard does.
+  private func makeFlutterViewController() -> FlutterViewController {
+    let archiver = NSKeyedArchiver(requiringSecureCoding: false)
+    archiver.finishEncoding()
+    let coder = try! NSKeyedUnarchiver(forReadingFrom: archiver.encodedData)
+    coder.requiresSecureCoding = false
+    let controller = FlutterViewController(coder: coder)
+    controller.awakeFromNib()
+    return controller
   }
 }
 ''';
@@ -183,7 +238,8 @@ String sdkVersion(Directory sdk) {
 /// - `ios/Runner/Package.swift`, with `Sources/<productName>/` holding the [appSources] unchanged, the registrant and
 ///   the window code;
 /// - `ios/Flutter/ephemeral/Packages/FlutterGeneratedPluginSwiftPackage/`, with a link in `.packages` for each of
-///   [plugins]. The links are made with [run], so under WSL2 they are made by Linux (`ln -sfn`).
+///   [plugins] and the `FlutterFramework` package that some plugins depend on, next to them. The links are made with
+///   [run], so under WSL2 they are made by Linux (`ln -sfn`).
 ///
 /// Returns the runner package's folder.
 Future<Directory> writeRunnerPackage({
@@ -220,7 +276,13 @@ Future<Directory> writeRunnerPackage({
   );
   File('${generated.path}/Sources/$_generatedPackage/$_generatedPackage.swift')
       .writeAsStringSync('//\n// Generated file. Do not edit.\n//\n');
-  Directory('${packages.path}/.packages').createSync(recursive: true);
+  final framework = Directory('${packages.path}/.packages/$_flutterFramework');
+  Directory('${framework.path}/Sources/$_flutterFramework')
+      .createSync(recursive: true);
+  File('${framework.path}/Package.swift')
+      .writeAsStringSync(flutterFrameworkPackageManifest());
+  File('${framework.path}/Sources/$_flutterFramework/$_flutterFramework.swift')
+      .writeAsStringSync('//\n// Generated file. Do not edit.\n//\n');
   for (final plugin in plugins) {
     final link = toWslPath('${packages.path}/.packages/${plugin.basename}');
     final result = await run('ln', ['-sfn', plugin.packagePath, link]);

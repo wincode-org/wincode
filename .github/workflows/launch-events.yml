@@ -1,0 +1,49 @@
+name: launch-events
+
+# Spike F: what does a storyboard launch give a plugin that a window made in code does not? A generic sample app (the stock
+# `flutter create` app plus a plugin that records the lifecycle events it receives) is built for the simulator with a
+# storyboard and three ways of making the window in code, and the events each gets are compared (spikes/f-launch-events/).
+# No secrets, no signing, no Apple account, no client code.
+# Runs once when this file is pushed to its branch, or by hand: gh workflow run launch-events.yml --ref <branch>
+
+on:
+  push:
+    branches: [feat/launch-events]
+    paths: [.github/workflows/launch-events.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  events:
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      FLUTTER_TAG: "3.47.5"
+      CI: "true"
+      FLUTTER_SUPPRESS_ANALYTICS: "true"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Flutter
+        run: |
+          git clone -q --depth 1 --branch "$FLUTTER_TAG" https://github.com/flutter/flutter.git "$RUNNER_TEMP/flutter"
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/flutter/bin/flutter" --version
+          "$RUNNER_TEMP/flutter/bin/flutter" precache --ios
+
+      - name: Build the four variants, run them in the simulator, compare
+        run: bash spikes/f-launch-events/run.sh
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: launch-events
+          path: |
+            ${{ runner.temp }}/launch-events-out/summary.md
+            ${{ runner.temp }}/launch-events-out/environment.txt
+            ${{ runner.temp }}/launch-events-out/logs
+          retention-days: 7

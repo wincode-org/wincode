@@ -1,0 +1,18 @@
+name: launch_events_recorder
+description: Generic sample plugin for winCode spike F. It writes down the application and scene lifecycle events Flutter forwards to it.
+version: 0.0.1
+publish_to: none
+
+environment:
+  sdk: ^3.9.0
+  flutter: ">=3.35.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+flutter:
+  plugin:
+    platforms:
+      ios:
+        pluginClass: LaunchEventsRecorderPlugin

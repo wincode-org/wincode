@@ -42,6 +42,7 @@ export 'src/runner.dart'
     show
         SwiftPlugin,
         buildRunner,
+        flutterFrameworkPackageManifest,
         generatedPluginPackageManifest,
         generatedPluginRegistrant,
         runnerPackageManifest,
