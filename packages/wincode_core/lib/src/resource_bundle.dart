@@ -26,9 +26,13 @@ String resourceBundleIdentifier({
 String _identifierPart(String name) =>
     name.replaceAll(RegExp(r'[^A-Za-z0-9.-]'), '-');
 
-/// The iOS version a SwiftPM package declares for itself, from the output of `swift package dump-package`, or null if
-/// it declares none. Xcode builds the package's targets for this version, so it is the `MinimumOSVersion` of their
-/// resource bundles, whatever the app's own deployment target is.
+/// The lowest iOS version Xcode 26.6 builds a target for. A package that declares an older one (a few widely used
+/// packages still declare iOS 9 or 10) is built for this version instead, and its resource bundle says so.
+const _lowestXcodeIosTarget = 12;
+
+/// The iOS version Xcode builds a SwiftPM package's targets for, from the output of `swift package dump-package`, or
+/// null if it declares none. It is the version the package declares, raised to [_lowestXcodeIosTarget] if lower, and it
+/// is the `MinimumOSVersion` of the targets' resource bundles, whatever the app's own deployment target is.
 String? declaredIosTarget(String dumpPackageJson) {
   final platforms =
       (jsonDecode(dumpPackageJson) as Map<String, Object?>)['platforms'];
@@ -37,7 +41,10 @@ String? declaredIosTarget(String dumpPackageJson) {
       'platformName': 'ios',
       'version': final String version,
     }) {
-      return version;
+      final major = int.tryParse(version.split('.').first);
+      return major != null && major < _lowestXcodeIosTarget
+          ? '$_lowestXcodeIosTarget.0'
+          : version;
     }
   }
   return null;
@@ -48,8 +55,8 @@ String? declaredIosTarget(String dumpPackageJson) {
 ///
 /// - **Taken out:** Xcode's four keys (`DTXcode`, `DTXcodeBuild`, `DTCompiler` and `BuildMachineOSBuild`). Swift Build
 ///   on Linux fills the first two with placeholders and copies the third.
-/// - **Set:** the five SDK keys from the user's own SDK; `MinimumOSVersion`, the iOS version the package declares
-///   ([minimumOsVersion]); `UIDeviceFamily`, from the app's `TARGETED_DEVICE_FAMILY` ([deviceFamily]); and the bundle
+/// - **Set:** the five SDK keys from the user's own SDK; `MinimumOSVersion`, the iOS version Xcode builds the package for
+///   ([minimumOsVersion], see [declaredIosTarget]); `UIDeviceFamily`, from the app's `TARGETED_DEVICE_FAMILY` ([deviceFamily]); and the bundle
 ///   identifier with the package's version (see [resourceBundleIdentifier]), which Swift Build only writes when the
 ///   package folder it builds carries the version.
 /// - **Kept:** everything else, as Swift Build wrote it.

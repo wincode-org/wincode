@@ -78,6 +78,22 @@ void main() {
       expect(declaredIosTarget(dump), '13.0');
     });
 
+    test('raises a version below iOS 12 to 12.0, as Xcode 26.6 does', () {
+      String dump(String version) =>
+          '{"name":"p","platforms":[{"platformName":"ios","version":"$version","options":[]}]}';
+      expect(declaredIosTarget(dump('9.0')), '12.0');
+      expect(declaredIosTarget(dump('10.0')), '12.0');
+      expect(declaredIosTarget(dump('11.4')), '12.0');
+    });
+
+    test('keeps iOS 12 and later as declared', () {
+      String dump(String version) =>
+          '{"name":"p","platforms":[{"platformName":"ios","version":"$version","options":[]}]}';
+      expect(declaredIosTarget(dump('12.0')), '12.0');
+      expect(declaredIosTarget(dump('12.2')), '12.2');
+      expect(declaredIosTarget(dump('15.0')), '15.0');
+    });
+
     test('is null when the package declares no iOS version', () {
       expect(declaredIosTarget('{"name":"p","platforms":[]}'), isNull);
       expect(declaredIosTarget('{"name":"p"}'), isNull);
