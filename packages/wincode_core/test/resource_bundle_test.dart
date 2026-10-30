@@ -68,6 +68,34 @@ void main() {
         'flutter-secure-storage-darwin-0.4.1.flutter-secure-storage-darwin.resources',
       );
     });
+
+    test('is the identity of a remote package, with no version, and keeps the '
+        'target\'s case', () {
+      expect(
+        resourceBundleIdentifier(
+          packageDirectory: swiftPackageIdentity(
+            'https://example.com/org/Example-SDK.git',
+          ),
+          target: 'ExampleCore',
+        ),
+        'example-sdk.ExampleCore.resources',
+      );
+    });
+  });
+
+  group('swiftPackageIdentity', () {
+    test('is the last component of the URL, without .git, in lower case', () {
+      expect(
+        swiftPackageIdentity('https://example.com/org/Example-SDK.git'),
+        'example-sdk',
+      );
+      expect(swiftPackageIdentity('https://example.com/org/Core'), 'core');
+    });
+
+    test('ignores a trailing slash and reads an scp-style address', () {
+      expect(swiftPackageIdentity('https://example.com/org/Core.git/'), 'core');
+      expect(swiftPackageIdentity('git@example.com:org/Tools.git'), 'tools');
+    });
   });
 
   group('declaredIosTarget', () {

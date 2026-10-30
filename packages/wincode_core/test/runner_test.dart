@@ -266,6 +266,49 @@ enum GeneratedPluginRegistrant {
     });
   });
 
+  group('writeRunnerPackage and Package.resolved', () {
+    Future<Directory> write(Directory root, {File? packageResolved}) =>
+        writeRunnerPackage(
+          root: Directory('${root.path}/work'),
+          appSources: [],
+          plugins: [],
+          deploymentTarget: '15.0',
+          packageResolved: packageResolved,
+          run: (exe, args, {workingDirectory}) async =>
+              ProcessResult(1, 0, '', ''),
+        );
+
+    test(
+      'copies the given Package.resolved next to the runner\'s Package.swift',
+      () async {
+        final root = Directory.systemTemp.createTempSync(
+          'runner_resolved_test',
+        );
+        addTearDown(() => root.deleteSync(recursive: true));
+        final resolved = File('${root.path}/Package.resolved')
+          ..writeAsStringSync(
+            '{"pins":[{"identity":"example-sdk","kind":"remoteSourceControl",'
+            '"location":"https://example.com/org/Example-SDK.git",'
+            '"state":{"revision":"0123456789abcdef","version":"1.2.3"}}],'
+            '"version":2}',
+          );
+        final runner = await write(root, packageResolved: resolved);
+        expect(
+          File('${runner.path}/Package.resolved').readAsStringSync(),
+          resolved.readAsStringSync(),
+        );
+        expect(File('${runner.path}/Package.swift').existsSync(), isTrue);
+      },
+    );
+
+    test('writes none when it is not given one', () async {
+      final root = Directory.systemTemp.createTempSync('runner_resolved_test');
+      addTearDown(() => root.deleteSync(recursive: true));
+      final runner = await write(root);
+      expect(File('${runner.path}/Package.resolved').existsSync(), isFalse);
+    });
+  });
+
   group('buildRunner', () {
     test('links with the SDK stamp, then takes the build machine\'s rpaths out', () async {
       final dir = Directory.systemTemp.createTempSync('runner_build_test');
