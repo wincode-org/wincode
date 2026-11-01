@@ -37,7 +37,8 @@ export 'src/resource_bundle.dart'
         declaredIosTarget,
         normalizeResourceBundle,
         resourceBundleIdentifier,
-        resourceBundleInfo;
+        resourceBundleInfo,
+        swiftPackageIdentity;
 export 'src/runner.dart'
     show
         SwiftPlugin,

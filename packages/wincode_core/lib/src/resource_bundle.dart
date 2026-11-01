@@ -13,10 +13,21 @@ const _xcodeKeys = [
   'DTXcodeBuild',
 ];
 
-/// The bundle identifier Xcode gives the resource bundle of a SwiftPM package target: the package folder's name (for a
-/// Flutter plugin, `<name>-<version>`, the name of its entry in `.packages`), a dot, the target's name, and `.resources`.
-/// Characters other than letters, digits, dots and hyphens become hyphens, so `url_launcher_ios-6.4.2` and the target
-/// `url_launcher_ios` give `url-launcher-ios-6.4.2.url-launcher-ios.resources`.
+/// The identity SwiftPM gives a package fetched from a git [location]: the last component of the URL, without a `.git`
+/// suffix, in lower case. It is what `Package.resolved` lists as `identity`, so `https://example.com/org/Example-SDK.git`
+/// is `example-sdk`.
+String swiftPackageIdentity(String location) {
+  final last = location.split(RegExp('[/:]')).where((s) => s.isNotEmpty).last;
+  return (last.endsWith('.git') ? last.substring(0, last.length - 4) : last)
+      .toLowerCase();
+}
+
+/// The bundle identifier Xcode gives the resource bundle of a SwiftPM package target: the package's name, a dot, the
+/// target's name, and `.resources`. The package's name is its folder's name for a package on disk (for a Flutter plugin,
+/// `<name>-<version>`, the name of its entry in `.packages`) and its identity, with no version, for a package fetched
+/// from a git URL (see [swiftPackageIdentity]). Characters other than letters, digits, dots and hyphens become hyphens, so
+/// `url_launcher_ios-6.4.2` and the target `url_launcher_ios` give `url-launcher-ios-6.4.2.url-launcher-ios.resources`,
+/// and `example-sdk` and the target `ExampleCore` give `example-sdk.ExampleCore.resources`.
 String resourceBundleIdentifier({
   required String packageDirectory,
   required String target,

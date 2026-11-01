@@ -241,6 +241,10 @@ String sdkVersion(Directory sdk) {
 ///   [plugins] and the `FlutterFramework` package that some plugins depend on, next to them. The links are made with
 ///   [run], so under WSL2 they are made by Linux (`ln -sfn`).
 ///
+/// A plugin whose package depends on a package fetched from a git URL has SwiftPM resolve it when it builds, to the newest
+/// version its requirement allows. To build the versions Xcode built, pass the app's `Package.resolved` as
+/// [packageResolved]: it is copied next to the runner's `Package.swift`, where SwiftPM reads it.
+///
 /// Returns the runner package's folder.
 Future<Directory> writeRunnerPackage({
   required Directory root,
@@ -248,6 +252,7 @@ Future<Directory> writeRunnerPackage({
   required List<SwiftPlugin> plugins,
   required String deploymentTarget,
   String productName = 'Runner',
+  File? packageResolved,
   required RunProcess run,
 }) async {
   final runner = Directory('${root.path}/ios/Runner');
@@ -259,6 +264,7 @@ Future<Directory> writeRunnerPackage({
       productName: productName,
     ),
   );
+  packageResolved?.copySync('${runner.path}/Package.resolved');
   for (final source in appSources) {
     source.copySync('${sources.path}/${source.uri.pathSegments.last}');
   }
