@@ -309,6 +309,10 @@ Future<Directory> writeRunnerPackage({
 /// - It is linked with the SDK stamp of ADR-0011 rule 1 (`-platform_version ios <deployment target> <SDK version>`) and
 ///   the rpath `@executable_path/Frameworks`, against the `Flutter.framework` in [flutterFrameworkFolder] (headers, module
 ///   map and the engine binary).
+/// - It is linked with `-ObjC`. The plugins' packages reach the link as static libraries, and the linker takes a member of
+///   a static library only when something refers to it by name. An Objective-C class or category has no such reference
+///   (the SDK calls it through the runtime), so without `-ObjC` it is left out of the app, and the call fails at run
+///   time with an unrecognized selector.
 /// - Then the rpaths other than `/usr/lib/swift` and `@executable_path/Frameworks` are removed (rule 3).
 ///
 /// The result's [SwiftBuild.library] is the executable in the scratch folder; [output] is its copy with the rpaths removed.
@@ -342,6 +346,7 @@ Future<({SwiftBuild build, List<String> removedRpaths})> buildRunner({
       sdkVersion,
       '-rpath',
       '@executable_path/Frameworks',
+      '-ObjC',
     ],
     run: run,
   );

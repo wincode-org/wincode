@@ -310,7 +310,7 @@ enum GeneratedPluginRegistrant {
   });
 
   group('buildRunner', () {
-    test('links with the SDK stamp, then takes the build machine\'s rpaths out', () async {
+    test('links with the SDK stamp and -ObjC, then takes the build machine\'s rpaths out', () async {
       final dir = Directory.systemTemp.createTempSync('runner_build_test');
       addTearDown(() => dir.deleteSync(recursive: true));
       final output = File('${dir.path}/Runner');
@@ -361,6 +361,8 @@ enum GeneratedPluginRegistrant {
           '-rpath',
           '-Xlinker',
           '@executable_path/Frameworks',
+          '-Xlinker',
+          '-ObjC',
         ]),
       );
       expect(
