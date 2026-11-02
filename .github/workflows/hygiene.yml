@@ -1,0 +1,42 @@
+name: hygiene
+
+# Fails a pull request that adds a personal path, a key, a team-ID-shaped bundle ID, a certificate or profile file, or (with the
+# secret below) a name that must not be public. tools/scan-hygiene.sh says what each rule is. It prints where a problem is,
+# never what it found.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: names, paths and keys
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Self-test of the scan
+        run: bash tools/scan-hygiene.sh --self-test
+
+      - name: Scan the tree and the commits
+        env:
+          # Passed through the environment, never interpolated into the script: titles, bodies and branch names are attacker-controlled.
+          BASE_REF: ${{ github.base_ref }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          # A regular expression of names that must not appear. Empty for pull requests from forks, so the name rule is skipped there.
+          HYGIENE_FORBIDDEN_TERMS: ${{ secrets.HYGIENE_FORBIDDEN_TERMS }}
+        run: |
+          if [ -n "${BASE_REF:-}" ]; then
+            bash tools/scan-hygiene.sh --base "origin/${BASE_REF}"
+          else
+            bash tools/scan-hygiene.sh
+          fi
