@@ -17,6 +17,8 @@ permissions:
 
 jobs:
   events:
+    # macOS minutes are the scarce resource: this job never runs for a pull request, whoever opens it.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: macos-26
     timeout-minutes: 60
     env:
