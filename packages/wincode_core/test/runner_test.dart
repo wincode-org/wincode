@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:test/test.dart';
 import 'package:wincode_core/wincode_core.dart';
 
+import 'fake_sdk.dart';
 import 'macho_builder.dart';
 
 const _plugins = [
@@ -320,7 +321,7 @@ enum GeneratedPluginRegistrant {
         runnerPackage: Directory('${dir.path}/ios/Runner'),
         scratchPath: '/scratch',
         darwinSdkBundle: '/sdk',
-        sdkVersion: '26.5',
+        sdk: fakeSdk(),
         deploymentTarget: '15.0',
         flutterFrameworkFolder: '/fw',
         output: output,
@@ -331,12 +332,17 @@ enum GeneratedPluginRegistrant {
           }
           if (exe == 'cp') {
             output.writeAsBytesSync(
-              withRpaths([
-                '/usr/lib/swift',
-                '@loader_path',
-                '/home/me/.swiftly/toolchains/6.4.0/usr/lib/swift-6.2/iphoneos',
-                '@executable_path/Frameworks',
-              ]),
+              withLibraries(
+                [(systemLibrary, 0xC)],
+                bindOrdinals: [1],
+                minOS: '15.0',
+                rpaths: [
+                  '/usr/lib/swift',
+                  '@loader_path',
+                  '/home/me/.swiftly/toolchains/6.4.0/usr/lib/swift-6.2/iphoneos',
+                  '@executable_path/Frameworks',
+                ],
+              ),
             );
           }
           return ProcessResult(1, 0, 'Build complete!', '');
@@ -387,7 +393,7 @@ enum GeneratedPluginRegistrant {
         runnerPackage: Directory('${dir.path}/ios/Runner'),
         scratchPath: '/scratch',
         darwinSdkBundle: '/sdk',
-        sdkVersion: '26.5',
+        sdk: fakeSdk(),
         deploymentTarget: '15.0',
         flutterFrameworkFolder: '/fw',
         output: output,
@@ -404,42 +410,50 @@ enum GeneratedPluginRegistrant {
       return output;
     }
 
-    const swiftUI = '/System/Library/Frameworks/SwiftUI.framework/SwiftUI';
-    const swiftUICore =
-        '/System/Library/Frameworks/SwiftUICore.framework/SwiftUICore';
-
-    test('a Runner that binds SwiftUI and never SwiftUICore has no load command and no binding for it', () async {
+    test('the Runner built with the SwiftUICore autolink disabled passes, and is written', () async {
       final output = await build(
-        withLibraries([(swiftUI, 0xC)], bindOrdinals: [1, 1, 1]),
+        withLibraries(
+          [(systemLibrary, 0xC), (swiftUI, 0xC)],
+          bindOrdinals: [1, 2, 2, 2],
+          symbols: [
+            '_example_function',
+            r'_$s7Example4ViewMp',
+            movedSymbol,
+            plainSymbol,
+          ],
+          minOS: '15.0',
+        ),
       );
-      final core = libraryUse(output.readAsBytesSync(), 'SwiftUICore');
-      expect(core.loadCommands, 0);
-      expect(core.bindings, 0);
+      expect(readMachO(output.readAsBytesSync()).dylibs, hasLength(2));
     });
 
-    test(
-      'a Runner that refers to SwiftUICore is an error that gives the counts',
-      () async {
-        await expectLater(
-          build(
-            withLibraries(
-              [(swiftUI, 0xC), (swiftUICore, 0xC)],
-              bindOrdinals: [1, 2, 2],
+    test('a Runner that links SwiftUICore strongly with a minimum of iOS 15 fails the build, with the violations', () async {
+      await expectLater(
+        build(
+          withLibraries(
+            [(systemLibrary, 0xC), (swiftUI, 0xC), (swiftUICore, 0xC)],
+            bindOrdinals: [1, 2, 3, 3],
+            symbols: [
+              '_example_function',
+              r'_$s7Example4ViewMp',
+              movedSymbol,
+              plainSymbol,
+            ],
+            minOS: '15.0',
+          ),
+        ),
+        throwsA(
+          isA<FormatException>().having(
+            (e) => e.message,
+            'message',
+            allOf(
+              contains('$swiftUICore: its stub restricts it to listed clients'),
+              contains('(2 bound here); it needs 18.0, the minimum is 15.0'),
+              contains('$movedSymbol (bound to $swiftUICore)'),
             ),
           ),
-          throwsA(
-            isA<FormatException>().having(
-              (e) => e.message,
-              'message',
-              allOf(
-                contains('SwiftUICore'),
-                contains('1 load command'),
-                contains('2 bound symbol'),
-              ),
-            ),
-          ),
-        );
-      },
-    );
+        ),
+      );
+    });
   });
 }
