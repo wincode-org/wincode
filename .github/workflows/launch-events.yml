@@ -4,12 +4,9 @@ name: launch-events
 # `flutter create` app plus a plugin that records the lifecycle events it receives) is built for the simulator with a
 # storyboard and three ways of making the window in code, and the events each gets are compared (spikes/f-launch-events/).
 # No secrets, no signing, no Apple account, no client code.
-# Runs once when this file is pushed to its branch, or by hand: gh workflow run launch-events.yml --ref <branch>
+# Manual only: gh workflow run launch-events.yml --ref <branch>
 
 on:
-  push:
-    branches: [feat/launch-events]
-    paths: [.github/workflows/launch-events.yml]
   workflow_dispatch:
 
 permissions:
