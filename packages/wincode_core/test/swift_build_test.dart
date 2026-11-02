@@ -32,6 +32,22 @@ void main() {
       expect(command[10], 'swiftbuild');
     });
 
+    test('tells the compiler not to autolink SwiftUICore', () {
+      final at = command.indexOf('-disable-autolink-framework');
+      expect(at, greaterThan(2));
+      expect(command.sublist(at - 3, at + 5), [
+        '-Xswiftc',
+        '-Xfrontend',
+        '-Xswiftc',
+        '-disable-autolink-framework',
+        '-Xswiftc',
+        '-Xfrontend',
+        '-Xswiftc',
+        'SwiftUICore',
+      ]);
+      expect(command.where((a) => a == 'SwiftUICore'), hasLength(1));
+    });
+
     test('builds one product for iOS arm64 with the Darwin SDK\'s toolset', () {
       expect(
         command,
