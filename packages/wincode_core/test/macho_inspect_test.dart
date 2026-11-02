@@ -11,6 +11,75 @@ void main() {
   const swiftUICore =
       '/System/Library/Frameworks/SwiftUICore.framework/SwiftUICore';
 
+  group('readMachO', () {
+    test('reads the build version, the libraries and their kind, the rpaths and the kind of every command', () {
+      final file = readMachO(
+        withLibraries(
+          [(system, 0xC), (swiftUI, 0x80000018)],
+          minOS: '15.0',
+          sdk: '26.5.1',
+          rpaths: ['/usr/lib/swift', '@executable_path/Frameworks'],
+          bindOrdinals: [],
+        ),
+      );
+      expect(file.buildVersion, (platform: 2, minOS: '15.0', sdk: '26.5.1'));
+      expect(file.dylibs, [
+        (installName: system, kind: DylibKind.strong),
+        (installName: swiftUI, kind: DylibKind.weak),
+      ]);
+      expect(file.rpaths, ['/usr/lib/swift', '@executable_path/Frameworks']);
+      expect(file.commands, [
+        0x32,
+        0xC,
+        0x80000018,
+        0x8000001C,
+        0x8000001C,
+        0x80000034,
+      ]);
+      expect(file.imports, isEmpty);
+    });
+
+    test('reads each import: its name, the library it is bound to and its weak bit, in the three formats', () {
+      for (final format in [1, 2, 3]) {
+        final file = readMachO(
+          withLibraries(
+            [(system, 0xC), (swiftUI, 0xC)],
+            bindOrdinals: [1, 2, 0, 0xFE],
+            symbols: ['_one', r'_$s4Test3TwoV', '_self', '_flat'],
+            weakImports: {1},
+            importFormat: format,
+          ),
+        );
+        expect(file.imports, [
+          (symbol: '_one', library: system, weak: false),
+          (symbol: r'_$s4Test3TwoV', library: swiftUI, weak: true),
+          (symbol: '_self', library: null, weak: false),
+          (symbol: '_flat', library: null, weak: false),
+        ], reason: 'format $format');
+      }
+    });
+
+    test('without chained fixups or a build version, those are null', () {
+      final file = readMachO(withLibraries([(system, 0xC)]));
+      expect(file.imports, isNull);
+      expect(file.buildVersion, isNull);
+    });
+
+    test('rejects a truncated file and compressed symbol names', () {
+      final macho = withLibraries([(system, 0xC)], bindOrdinals: [1]);
+      expect(
+        () => readMachO(Uint8List.sublistView(macho, 0, 60)),
+        throwsFormatException,
+      );
+      // symbols_format is the 7th word of the chained fixups header, which follows the load commands.
+      final compressed = Uint8List.fromList(macho);
+      final header =
+          32 + ByteData.sublistView(macho).getUint32(20, Endian.little);
+      ByteData.sublistView(compressed).setUint32(header + 24, 1, Endian.little);
+      expect(() => readMachO(compressed), throwsFormatException);
+    });
+  });
+
   group('libraryUse', () {
     test('counts the load commands and the symbols bound to the framework', () {
       final macho = withLibraries(
