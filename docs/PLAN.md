@@ -1,8 +1,8 @@
 # winCode — Build Flutter iOS apps on Windows
 
-Status: v2 proposed 2026-10-18. v1 was approved by Alpha on 2026-10-12.
+Status: v3, 2026-11-02. v2 was proposed on 2026-10-18, and v1 was approved by Alpha on 2026-10-12.
 
-Gate G0 is met: a Flutter app built on Windows runs on an iPhone. What still stands between winCode and the App Store is Apple accepting a Windows-built IPA, and Apple's licence. Plan v2 tests store acceptance within three weeks (spike C), moves shipping ahead of hot reload, and adds a cloud-Mac release lane so shipping never blocks.
+Gate G0 is met: a Flutter app built on Windows runs on an iPhone. Since v2, spike C has passed (App Store Connect processed a build that winCode signed and uploaded from Windows as valid), spikes D, E and F are done, and builds of real apps have reached App Store Connect through the hybrid lane: a Mac builds the unsigned IPA, and winCode signs and uploads it from Windows. What still stands between winCode and a one-command, pure-Windows store build is a short list of gaps (section "Gaps found by real apps"): winCode cannot compile asset catalogs, the Linux toolchain differs from Xcode in a few ways, and App Review has not yet judged a pure-Windows build. There is no `wincode` command yet. The repository becomes public on about 2026-11-08, as source and documentation.
 
 ## Phase 0 results (2026-10-16)
 
@@ -29,18 +29,28 @@ Gate G0 is met: a Flutter app built on Windows runs on an iPhone. What still sta
 | Development signing and install | Proven | xtool 1.22.2 via Apple's device service on Windows (ADR-0005) |
 | Apple ID login | Works again | xtool 1.22.2 fixed -80045; SMS-only 2FA still fails (xtool#345) |
 | Launch from Windows | Open | xtool launch untested; iOS 17+ needs the personalized developer disk image |
-| App Store signing | Not started | xtool only makes development certificates/profiles |
-| Assets.car (app icon) | Not started | Required by the App Store |
-| Upload | Not started | Official routes: Build Uploads API, Transporter for Windows |
-| Apple accepting a non-Xcode build | Unknown | The remaining kill switch |
-| Real-app readiness | Audited 2026-10-18 | The reference app's plugins are all SwiftPM; five gaps found (see the audit section) |
-| Native build hooks | Open | The `path_provider` chain runs a hook that calls `xcrun`, which fails off macOS; spike E |
+| App Store signing | Done in scripts, not in a CLI | `spikes/c-store-acceptance` (certificate, profile, zsign), ADR-0009; xtool only makes development certificates and profiles |
+| Assets.car | Not done | Two A-side observation notes exist (`docs/formats`: an app icon, and a launch colour and image, PNG only); nothing is implemented. Required by the App Store |
+| Upload | Done in scripts | Build Uploads API, `spikes/c-store-acceptance/asc_upload.py`; Apple processed the builds as `VALID` |
+| Apple accepting a non-Xcode build | Processing yes, App Review untested | Spike C (C1, 2026-10-23) and the builds after it; none has been through external TestFlight or App Review |
+| Hybrid lane | Used for real apps | A hosted macOS runner builds the unsigned IPA with Xcode; winCode signs and uploads it from Windows (ADR-0008, ADR-0011) |
+| Real-app readiness | Audited 2026-10-18, built since | The reference app's plugins are all SwiftPM, and its runner builds with nine plugins, a payments SDK among them; the gaps found are in "Gaps found by real apps" and ADR-0012 |
+| Native build hooks | Answered yes | Spike E (2026-10-19): the hooks run on Linux with an `xcrun` shim; ADR-0010 is still Proposed |
+| The `wincode` command | Not started | `packages/wincode_cli` and `packages/wincode_asc` hold only a README; `packages/wincode_core` is the tested library |
 | Debugging and hot reload | Not started | xcross is a candidate but unproven: it auto-revokes certificates and ignores flavors |
 | Toolchain on this PC | Rebuilt 2026-10-18 | The WSL disk on D: vanished on 2026-10-17; Ubuntu is back on C:, rebuilt by `tools/setup-wsl-toolchain.sh` (Swift 6.4, xtool 1.22.2, Darwin SDK) and snapshotted with `wsl --export` |
 
-Repo: PRs #9 (xtool teardown) and #10 (xtool source copy) are merged; issue #7 tracks phase 1.
+Repo: the core library, the spikes through F and ADRs 0008 to 0012 are on `main` or in open pull requests; issue #7 tracks phase 1.
 
-## What changes in v2
+## What changed since v2
+
+- **The hybrid lane exists and carries real apps.** ADR-0008's cloud Mac lane is used with winCode's own store signing and upload, so an app whose packages cannot be built on Linux yet still ships from Windows.
+- **Spike C passed.** The licence review and App Review are still open, so the cloud Mac lane stays the default for store builds (ADR-0008).
+- **The real-app track is the priority.** Building a real app, and a payments SDK from stock sources, showed the Linux gaps in "Gaps found by real apps". They are recorded in ADR-0012 and drive the next steps.
+- **The `Assets.car` track is split in two.** Catalogs that the app owns (icon, image sets, colour sets) are the clean-room compiler's target; catalogs that third-party packages ship go through the hybrid lane for now.
+- **Nothing is public yet.** The first public release is source and documentation (version 0.1.0); it promises no command that does not exist.
+
+## What changed in v2
 
 1. Spike C now, not in phase 4: prove a Windows-built IPA passes App Store Connect processing and installs from TestFlight, within three weeks, alongside phase 1.
 2. Shipping moves ahead of hot reload. New order: release builds → ship to Apple → preview and Studio → debugging and hot reload → hardening.
@@ -64,6 +74,8 @@ Repo: PRs #9 (xtool teardown) and #10 (xtool source copy) are merged; issue #7 t
 | 5 Hardening | ongoing | installer, docs, stable + beta CI, more plugins | — |
 
 Parallel tracks from week 1: spike C (gate GC, weeks 1–3), cloud Mac lane v0 (weeks 1–2), Assets.car compiler (clean-room, needed for G2). Gate GC decides which lane the Ship phase builds first.
+
+**Where each phase stands (2026-11-02).** Phase 0 is done. Phase 1 is under way as a library: the core pieces exist and are tested in CI, but the `wincode` command does not, and G1 (five sample apps with plugins running on a device) has not been run. Phase 2 has its signing and upload pieces as scripts and has passed gate GC (spike C), but not G2; `Assets.car` is not done. Phases 3 to 5 have not started. The first public release (0.1.0) is source and documentation, not one of these gates.
 
 - **Scope of v1:** Flutter apps whose plugins support Swift Package Manager (the default since Flutter 3.44), iPhones on iOS 17.4 or later, release and profile builds first, hot reload after shipping.
 - **Positioning:** don't sell it as an "Xcode replacement" or use Apple marks in the name or logo. Sell it as "Flutter iOS without a Mac: build, run on your iPhone, ship to TestFlight".
@@ -129,9 +141,11 @@ Decision record: ADR-0008.
 | Builder | winCode toolchain | Xcode via `flutter build ipa` |
 | Upload | Transporter for Windows / Build Uploads API | same, from the runner |
 | Licence | conflicts with the Apple-hardware clause | inside the agreement |
-| Toolchain rejection risk | unknown until spike C | none |
+| Toolchain rejection risk | App Store Connect processing: accepted (spike C). App Review: untested | none |
 | Cost | free | free on public repos (standard runners); paid minutes on private |
-| Default for store builds | after spike C + legal review | until then |
+| Default for store builds | after one build has passed App Review + legal review | until then |
+
+**The hybrid lane** is the cloud Mac lane with signing and upload done on Windows, and it is the one real apps use today. A hosted macOS runner in the user's GitHub repo builds the unsigned IPA with Xcode. winCode then signs it with the user's Apple Distribution certificate and App Store profile (ADR-0009), checks it against Apple's requirements, and uploads it through the Build Uploads API. The Apple SDK runs only on the Mac, inside the agreement, and Windows touches no SDK file. It is also the lane for apps whose packages ship compiled asset catalogs, until winCode can produce those (ADR-0012).
 
 ## Signing and upload
 
@@ -189,6 +203,20 @@ Everything else is clean: nine of the ten native plugins ship a `Package.swift` 
 - **Windows Defender blocked it.** Right after setup, Defender stopped `xcross.exe` (the official v2.0.6 binary, checksum verified) with a behaviour-based detection, `Behavior:Win32/DefenseEvasion.A!ml`, until the maintainer allowed it. Other Windows users may hit the same.
 - **Licence and maturity.** The licence file is AGPL-3.0, so winCode only runs it as a separate tool; one maintainer. CocoaPods-only plugins are skipped with a warning, and the reference app has none.
 - **Verdict: unproven.** xcross has what winCode lacks (native Windows, iOS 17+ launch, hot reload, debugging), but it can only be used with a throwaway free Apple ID, or where signing stays out of its hands. The trial continues on the stock counter app.
+
+## Gaps found by real apps
+
+Building a real production app, with a payments SDK built from stock sources as its heaviest dependency, showed where the Linux toolchain is not Xcode. The evidence is in ADR-0012. Each row is a position, not yet a finished piece of work.
+
+| Gap | Position | State |
+| --- | --- | --- |
+| `Assets.car` | Split it. Catalogs the app owns (icon, PNG image sets, colour sets): the clean-room compiler, PNG only. Catalogs that third-party packages ship (the payments SDK has four, about 1.46 MB, with SVG, PDF and PNG sets): the hybrid lane for now. No SVG or PDF compiler. A catalog cache built in winCode's macOS CI is possible later, after the legal review. "Exact" means equal renditions, checked by a dump from Apple's tools on macOS CI and a device smoke test, not equal bytes | Proposed |
+| `#Preview` macros | Previews leave nothing in a release binary, so macro fidelity does not matter. First test a newer OpenAppleMacros; the fallback is to remove `#Preview` blocks from scratch copies of dependency sources, logged | Proposed, untested |
+| Cross-import overlays | The SDK declares them, but the `swiftbuild` toolset leaves them off. Pass `-Xfrontend -enable-cross-import-overlays`; a build of the payments SDK without any source change is byte-identical to the one that adds the import by hand | Decided, in a pull request |
+| `SwiftUICore` link | The compile step must not autolink it (`-disable-autolink-framework SwiftUICore`), and `buildRunner` fails if the linked runner refers to it. Weak-linking or a higher minimum OS do not fix it | Decided, in a pull request |
+| `lld` and `ld` | The linker tag, `LC_SOURCE_VERSION` and the section layout are cosmetic. The behavioural differences (binding, weak links, autolinks) are caught by post-link checks. Gate: one pure-Windows build through App Review before that lane is the default | Proposed |
+| `wincode build ipa` | Not ready as a store command. It can start as a thin slice once the points above are settled. It needs the CLI package, a published `gen_snapshot` per Flutter release, the app-owned `Assets.car` compiler and the legal review | Proposed |
+| Public release | Source and documentation only (0.1.0), nothing that promises a command that does not exist | Decided |
 
 ## Hardening from the xtool teardown
 
@@ -322,7 +350,9 @@ The first kill switch (`gen_snapshot` on a non-Mac host) was retired on 2026-10-
 | Apple breaks Apple ID login for third-party tools (it did: `-80045`, fixed in xtool 1.22.2 within days) | Track xtool releases; recommend API key login for paid accounts | API key login only |
 | The device link breaks (Apple Devices or WSL networking changes) | `wincode setup` checks it (ADR-0005); NAT + port proxy as fallback | Install from Windows with pymobiledevice3 |
 | Apple rejects non-Xcode builds | Spike C within three weeks; zero-rejection checks; IPA diff against an Xcode-built copy | The cloud Mac lane becomes the store lane for good (ADR-0008) |
-| `Assets.car` too hard | Clean-room spec in `docs/formats/`; a parallel track from week 1 | Cloud Mac lane for store builds only |
+| `Assets.car` too hard | Clean-room spec in `docs/formats/`; PNG sets only (icon, image sets, colour sets); catalogs shipped by packages go through the hybrid lane | Cloud Mac lane for store builds only |
+| The Linux toolchain differs from Xcode (macro server, cross-import overlays, linker behaviour) | Compiler options and post-link checks, and a comparison with an Xcode-built copy of the same app (ADR-0012) | The hybrid lane for the affected app |
+| App Review rejects a build linked by `lld` | One pure-Windows build through App Review before that lane is the default | The hybrid lane stays the store lane |
 | Licence enforcement / bans / takedowns | No SDK redistribution; BYO Xcode.xip; the account holder's written OK for spike C; lawyer review before the pure lane becomes a default | Cloud Mac lane only; drop App Store upload from Windows |
 | Native build hooks can't run off macOS | Spike E: run them ourselves with an `xcrun` shim (ADR-0010) | Pin the last plugin-based `path_provider_foundation` (2.5.1); ship such apps through the cloud Mac lane |
 | A tool revokes the team's certificates (xcross does) | winCode never revokes on its own (ADR-0009); xcross only with a throwaway free Apple ID | — |
@@ -331,31 +361,42 @@ The first kill switch (`gen_snapshot` on a non-Mac host) was retired on 2026-10-
 | New iOS breaks device protocols | Lean on pymobiledevice3/xtool upstream | — |
 | Solo burnout | Narrow v1; two co-maintainers by v0.1; Sponsors | — |
 
-## Next three weeks
+## Next steps
 
-- [x] Maintainer: merge PRs #9 and #10.
-- [ ] Maintainer: get the developer-account holder's written OK for spike C (test app record, distribution certificate, TestFlight uploads).
-- [ ] Maintainer: create a throwaway free Apple ID for the xcross trial and run `xcross auth` yourself, so the maintainer's main Apple ID and the test developer team stay out of it.
-- [x] Dev: read-only plugin audit of the reference app (done 2026-10-18; results above).
-- [x] Dev: rebuild the WSL toolchain on C: from one script (Swift 6.4, xtool 1.22.2, Darwin SDK), then snapshot it with `wsl --export` (done 2026-10-18).
-- [ ] Maintainer: run `xtool auth` with the API key; the Issuer ID was on the lost disk, so read it again in App Store Connect.
-- [ ] Dev: xcross trial on the stock counter app only, after the toolchain, with a resumable Swift download (setup done 2026-10-18).
-- [ ] Dev: spike E, native build hooks: an `xcrun` shim and the `objective_c` hook on iOS arm64.
-- [ ] Dev: update docs/PLAN.md to v2; ADR-0008 (two release lanes), ADR-0009 (winCode owns store signing), ADR-0010 (native build hooks).
-- [ ] Dev: cloud Mac lane v0 (also spike C's reference IPA).
-- [ ] Dev: store signing in the CLI via the API, never revoking anything on its own.
-- [ ] Dev: spike C1, once the OK and the toolchain are in.
-- [ ] Dev: Assets.car track (document Xcode's output for an app icon; evaluate xcbuild's BSD asset-catalog code).
-- [ ] Maintainer: before G2, a legal review, or at least the account holder's informed OK.
-- [ ] Phase 1 continues from issue #7, now including the flavor reader and per-engine `gen_snapshot` builds.
+Done since v2:
+
+- [x] Maintainer: merge the xtool teardown and the xtool source copy.
+- [x] Maintainer: the developer-account holder's written OK for spike C (`docs/spikes/spike-c-store-acceptance.md`).
+- [x] Dev: read-only plugin audit of the reference app (2026-10-18), and the WSL toolchain rebuilt from one script and snapshotted.
+- [x] Dev: spike E, native build hooks (2026-10-19): the `xcrun` shim and the hooks on iOS arm64. ADR-0010 stays Proposed.
+- [x] Dev: ADR-0008 (two release lanes), ADR-0009 (store signing) and ADR-0010 (native build hooks), all Proposed.
+- [x] Dev: cloud Mac lane v0, and spike C1 (uploaded 2026-10-23; Apple processed it as valid).
+- [x] Dev: spikes D and F; the core library for flavors, `Info.plist`, `gen_snapshot`, runner and plugin builds, and resource bundles.
+
+Still open from v2, unchanged:
+
+- [ ] Maintainer: a throwaway free Apple ID for the xcross trial, and `xtool auth` with the API key.
+- [ ] Dev: the xcross trial on the stock counter app only.
+- [ ] Maintainer: before the pure-Windows lane is the default, a legal review, or at least the account holder's informed OK.
+
+New, in order (the maintainer decides what moves):
+
+1. **Now, in pull requests:** the two compiler options (cross-import overlays, no `SwiftUICore` autolink), the README status, ADR-0012, this plan, the CI scan for names, paths and key shapes, the release-please start at 0.1.0, and the macOS-jobs guard.
+2. **About 2026-11-08, the maintainer:** decide whether to rewrite the history first (a script and a dry run are prepared; nothing is pushed without a go), then make the repository public and turn on branch protection and private vulnerability reporting.
+3. **Dev:** a post-link check that no library or binding in the runner is newer than the app's minimum OS, beyond the `SwiftUICore` case.
+4. **Dev:** the `wincode_cli` package: `doctor` first, then the hybrid `ship` pieces ported from the spike scripts, then `build ipa` as a thin slice for simple apps. `wincode_asc` for the App Store Connect calls.
+5. **CI and Dev:** the macOS oracle for the `Assets.car` image-set and colour-set notes in `docs/formats/` (the A side), then the compiler in a separate session that reads only those notes (the B side).
+6. **Maintainer:** one pure-Windows build through Beta App Review or App Review, and the legal review. Only then is the pure lane a candidate for the default.
+7. **Dev, with the maintainer's OK to change the SDK setup:** test a newer OpenAppleMacros for the missing `#Preview` macro.
+8. Phase 1 continues from issue #7, including per-engine `gen_snapshot` builds.
 
 ## Decisions for the maintainer
 
-1. Spike C on a test developer team. Decided: no own account for now. Next: the account holder's written OK.
-2. Cloud Mac as default store lane until spike C passes and the risk is accepted (recommended: yes).
+1. Spike C on a test developer team. Done: the account holder agreed in writing, and C1 was processed as valid.
+2. Cloud Mac as the default store lane until one pure-Windows build has passed App Review and the risk is accepted (recommended: yes). In practice the hybrid lane is the store lane today.
 3. New phase order, shipping before hot reload (recommended: yes).
-4. ADR-0002 (Dart CLI) and ADR-0003 (SwiftPM-only plugins v1): the audit supports accepting ADR-0003, since every native plugin in the reference app is SwiftPM.
-5. When the repo goes public: reminder set for 2026-11-08.
+4. ADR-0002 (Dart CLI) and ADR-0003 (SwiftPM-only plugins v1): the audit and the real-app builds support accepting ADR-0003, since every native plugin in the reference app is SwiftPM.
+5. When the repo goes public: about 2026-11-08, as source and documentation (version 0.1.0).
 6. Hot-reload phase: build it, or integrate xcross. Undecided: xcross auto-revokes certificates and ignores flavors, so it only runs with a throwaway Apple ID until the trial and a workaround settle it.
 7. Spike E (native build hooks) before the rest of phase 1 (recommended: yes, because almost every Flutter app depends on path_provider).
 
@@ -369,6 +410,7 @@ The first kill switch (`gen_snapshot` on a non-Mac host) was retired on 2026-10-
 - xtool: https://github.com/xtool-org/xtool · announcement: https://forums.swift.org/t/xtool-cross-platform-xcode-replacement-build-ios-apps-on-linux-and-more/79803 · coverage: https://www.osnews.com/story/142331/xtool-cross-platform-xcode-replacement-for-linux-windows-and-macos/
 - xtool login fix (`-80045`): https://github.com/xtool-org/xtool/issues/329 · xtool device link on WSL: https://github.com/xtool-org/xtool/issues/19 · usbipd-win: https://github.com/dorssel/usbipd-win/issues/959
 - xcross: https://xcross.sh and https://github.com/arxdeus/xcross (LICENSE: AGPL-3.0)
+- OpenAppleMacros (the macro server in xtool's Darwin SDK): https://github.com/xtool-org/OpenAppleMacros/releases
 - xcbuild: https://github.com/facebook/xcbuild
 - Dart build hooks (`hooks`, `hooks_runner`, `code_assets`): https://github.com/dart-lang/native
 - Flutter SwiftPM: https://docs.flutter.dev/packages-and-plugins/swift-package-manager/for-app-developers
