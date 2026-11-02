@@ -10,6 +10,8 @@ What exists today:
 - **Spikes with recorded results,** in [docs/spikes](docs/spikes): a Flutter counter app built on Windows ran on an iPhone (spike B), and a build signed and uploaded from Windows was processed as valid by App Store Connect (spike C, with an `Assets.car` made by Xcode on a Mac).
 - **What is missing:** winCode cannot compile asset catalogs (`Assets.car`) yet, packages that ship their own compiled catalogs still need a Mac build, and there is no hot reload, debugging or GUI.
 
+The history in this repository was imported from an earlier private repository: pull request numbers in older merge-commit messages (for example "Merge pull request #37") refer to that private archive, not to this repository.
+
 ## What it will do
 
 winCode is a Dart CLI and a Flutter GUI (winCode Studio) that take a Flutter project on Windows to a signed IPA, onto a real iPhone, and up to App Store Connect. The compile step runs in a Linux toolchain inside WSL2. The iPhone and Apple's servers are reached from the Windows side.
