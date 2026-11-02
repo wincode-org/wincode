@@ -3,12 +3,10 @@ name: spike-a-oracle
 # Spike A oracle: build App.framework/App for the counter app with the OFFICIAL
 # iOS gen_snapshot on macOS, using the exact flutter_tools iOS release steps,
 # so the Linux-built gen_snapshot can be byte-compared against it.
-# Runs only on pushes that touch this file, on the spike branch.
+# Manual only: gh workflow run spike-a-oracle.yml --ref <branch>
 
 on:
-  push:
-    branches: [spike/a-gen-snapshot-recon]
-    paths: [.github/workflows/spike-a-oracle.yml]
+  workflow_dispatch:
 
 permissions:
   contents: read

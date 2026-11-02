@@ -9,12 +9,9 @@ name: gen-snapshot-oracle
 #   c) the same thin copy without the interposer, as the control that the copy behaves like the original.
 # It uploads the kernel and the outputs. The comparison with winCode's own gen_snapshot (the same kernel, on Linux)
 # is made from that artifact. No secrets, no Apple account.
-# Runs once when this file is pushed to its branch, or by hand: gh workflow run gen-snapshot-oracle.yml --ref <branch>
+# Manual only: gh workflow run gen-snapshot-oracle.yml --ref <branch>
 
 on:
-  push:
-    branches: [ci/r1-proof]
-    paths: [.github/workflows/gen-snapshot-oracle.yml]
   workflow_dispatch:
 
 permissions:
