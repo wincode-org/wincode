@@ -54,6 +54,24 @@ void main() {
       expect(command, containsAllInOrder(['--product', 'my-plugin']));
     });
 
+    test(
+      'turns cross-import overlays on for every Swift module it compiles',
+      () {
+        final at = command.indexOf('-enable-cross-import-overlays');
+        expect(at, greaterThan(2));
+        expect(command.sublist(at - 3, at + 1), [
+          '-Xswiftc',
+          '-Xfrontend',
+          '-Xswiftc',
+          '-enable-cross-import-overlays',
+        ]);
+        expect(
+          command.where((a) => a == '-enable-cross-import-overlays'),
+          hasLength(1),
+        );
+      },
+    );
+
     test('lets the plugin import Flutter from the framework folder, for Swift and for C', () {
       expect(command.sublist(command.length - 4), [
         '-Xswiftc',
@@ -80,7 +98,8 @@ void main() {
         scratchPath: '/s',
         darwinSdkBundle: '/b',
       );
-      expect(without, isNot(contains('-Xswiftc')));
+      expect(without, isNot(contains('-Xcc')));
+      expect(without.any((a) => a.startsWith('-F')), isFalse);
     });
   });
 

@@ -30,6 +30,11 @@ class SwiftBuild {
 /// `XCODE_EXTRA_PLATFORM_FOLDERS`. It starts with `env`, which sets the environment, so the same [RunProcess] can run it on
 /// the host or inside WSL2 without a shell. `SDKROOT` is removed, because it would override the SDK configuration.
 ///
+/// The compiler is told to load cross-import overlays. The SDK declares them (for example `PassKit.swiftcrossimport`), and
+/// Xcode loads the overlay module when a file imports both modules. The `swiftbuild` system does not turn this on by
+/// itself here, although xtool's native toolset does, so `PayWithApplePayButton` is not found after `import SwiftUI` and
+/// `import PassKit`.
+///
 /// - [darwinSdkBundle]: the folder of `darwin.artifactbundle`.
 /// - [swift]: the `swift` program, and [path] the rest of `PATH` (after the SDK's `toolset/bin`, which holds `dsymutil`).
 /// - [flutterFrameworkFolder]: the folder that holds `Flutter.framework`. A plugin's `import Flutter` needs its headers
@@ -67,6 +72,10 @@ List<String> swiftBuildCommand({
   triple,
   '--toolset',
   '$darwinSdkBundle/toolset-swb.json',
+  '-Xswiftc',
+  '-Xfrontend',
+  '-Xswiftc',
+  '-enable-cross-import-overlays',
   '--product',
   product,
   if (flutterFrameworkFolder != null) ...[
