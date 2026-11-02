@@ -36,6 +36,11 @@ class SwiftBuild {
 ///   and module map; the engine binary is not used until the app is linked.
 /// - [linkerFlags]: flags for the linker, each passed with `-Xlinker`. They only matter for a product that is linked,
 ///   an executable: a static library is not.
+///
+/// The compiler is told not to autolink `SwiftUICore`. SwiftUI's modules ask for it, and with that request `lld` links the
+/// private framework directly and binds a few symbols to it, where Xcode's linker binds them to `SwiftUI`, which
+/// re-exports it. `SwiftUICore` exists only from iOS 18, so such an app does not start on an older iOS, and Xcode's own
+/// app never links it.
 List<String> swiftBuildCommand({
   required String packagePath,
   required String product,
@@ -69,6 +74,14 @@ List<String> swiftBuildCommand({
   '$darwinSdkBundle/toolset-swb.json',
   '--product',
   product,
+  '-Xswiftc',
+  '-Xfrontend',
+  '-Xswiftc',
+  '-disable-autolink-framework',
+  '-Xswiftc',
+  '-Xfrontend',
+  '-Xswiftc',
+  'SwiftUICore',
   if (flutterFrameworkFolder != null) ...[
     '-Xswiftc',
     '-F$flutterFrameworkFolder',

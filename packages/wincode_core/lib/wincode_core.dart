@@ -22,6 +22,7 @@ export 'src/info_plist.dart' show SdkKeys, buildInfoPlist;
 export 'src/ios_flavor.dart'
     show IosFlavorInputs, flutterGeneratedSettings, readIosFlavor;
 export 'src/macho_edit.dart' show removeRpaths, setInstallName;
+export 'src/macho_inspect.dart' show LibraryUse, libraryUse;
 export 'src/native_assets.dart'
     show
         buildNativeAssetFramework,

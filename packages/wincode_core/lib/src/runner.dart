@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'macho_edit.dart';
+import 'macho_inspect.dart';
 import 'process.dart';
 import 'swift_build.dart';
 import 'wsl.dart';
@@ -312,6 +313,10 @@ Future<Directory> writeRunnerPackage({
 /// - Then the rpaths other than `/usr/lib/swift` and `@executable_path/Frameworks` are removed (rule 3).
 ///
 /// The result's [SwiftBuild.library] is the executable in the scratch folder; [output] is its copy with the rpaths removed.
+///
+/// The linked executable must not refer to `SwiftUICore`, by a load command or by a bound symbol. Xcode's runner never
+/// does, and `SwiftUICore` exists only from iOS 18, so the app would not start on an older iOS. The compile step does not
+/// autolink it ([swiftBuildCommand]); if something still does, this throws a [FormatException] instead of returning the file.
 Future<({SwiftBuild build, List<String> removedRpaths})> buildRunner({
   required Directory runnerPackage,
   required String scratchPath,
@@ -358,6 +363,14 @@ Future<({SwiftBuild build, List<String> removedRpaths})> buildRunner({
     '/usr/lib/swift',
     '@executable_path/Frameworks',
   });
+  final core = libraryUse(edited.macho, 'SwiftUICore');
+  if (core.isUsed) {
+    throw FormatException(
+      'the linked $productName refers to SwiftUICore (${core.loadCommands} load command(s), '
+      '${core.bindings ?? 'unknown number of'} bound symbol(s)). Xcode links SwiftUI instead, and SwiftUICore does not '
+      'exist before iOS 18, so the app would not start there.',
+    );
+  }
   output.writeAsBytesSync(edited.macho);
   return (build: build, removedRpaths: edited.removed);
 }

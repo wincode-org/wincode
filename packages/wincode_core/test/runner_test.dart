@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:test/test.dart';
 import 'package:wincode_core/wincode_core.dart';
@@ -374,5 +375,69 @@ enum GeneratedPluginRegistrant {
       final left = removeRpaths(output.readAsBytesSync(), const {});
       expect(left.removed, ['/usr/lib/swift', '@executable_path/Frameworks']);
     });
+
+    // buildRunner on a fake build whose linked Runner is [linked]. Returns the output file.
+    Future<File> build(Uint8List linked) async {
+      final dir = Directory.systemTemp.createTempSync('runner_build_test');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final output = File('${dir.path}/Runner');
+      await buildRunner(
+        runnerPackage: Directory('${dir.path}/ios/Runner'),
+        scratchPath: '/scratch',
+        darwinSdkBundle: '/sdk',
+        sdkVersion: '26.5',
+        deploymentTarget: '15.0',
+        flutterFrameworkFolder: '/fw',
+        output: output,
+        run: (exe, args, {workingDirectory}) async {
+          if (exe == 'ls') {
+            return ProcessResult(1, 0, 'Runner\n', '');
+          }
+          if (exe == 'cp') {
+            output.writeAsBytesSync(linked);
+          }
+          return ProcessResult(1, 0, 'Build complete!', '');
+        },
+      );
+      return output;
+    }
+
+    const swiftUI = '/System/Library/Frameworks/SwiftUI.framework/SwiftUI';
+    const swiftUICore =
+        '/System/Library/Frameworks/SwiftUICore.framework/SwiftUICore';
+
+    test('a Runner that binds SwiftUI and never SwiftUICore has no load command and no binding for it', () async {
+      final output = await build(
+        withLibraries([(swiftUI, 0xC)], bindOrdinals: [1, 1, 1]),
+      );
+      final core = libraryUse(output.readAsBytesSync(), 'SwiftUICore');
+      expect(core.loadCommands, 0);
+      expect(core.bindings, 0);
+    });
+
+    test(
+      'a Runner that refers to SwiftUICore is an error that gives the counts',
+      () async {
+        await expectLater(
+          build(
+            withLibraries(
+              [(swiftUI, 0xC), (swiftUICore, 0xC)],
+              bindOrdinals: [1, 2, 2],
+            ),
+          ),
+          throwsA(
+            isA<FormatException>().having(
+              (e) => e.message,
+              'message',
+              allOf(
+                contains('SwiftUICore'),
+                contains('1 load command'),
+                contains('2 bound symbol'),
+              ),
+            ),
+          ),
+        );
+      },
+    );
   });
 }
