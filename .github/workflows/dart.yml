@@ -10,27 +10,31 @@ permissions:
 
 jobs:
   core:
-    name: format, analyze, test (wincode_core)
+    name: format, analyze, test (${{ matrix.package }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [wincode_core, wincode_cli]
     steps:
       # A short path: Dart's test compiler cannot start from a very long one.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: wc
           persist-credentials: false
-      # packages/wincode_core pins a range (^3.13.0), so this is the version the package was developed with.
+      # The packages pin a range (^3.13.0), so this is the version they were developed with.
       - uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1.8.1
         with:
           sdk: 3.13.4
       - name: pub get
-        working-directory: wc/packages/wincode_core
+        working-directory: wc/packages/${{ matrix.package }}
         run: dart pub get
       - name: dart format
-        working-directory: wc/packages/wincode_core
+        working-directory: wc/packages/${{ matrix.package }}
         run: dart format --output=none --set-exit-if-changed .
       - name: dart analyze
-        working-directory: wc/packages/wincode_core
+        working-directory: wc/packages/${{ matrix.package }}
         run: dart analyze --fatal-infos
       - name: dart test
-        working-directory: wc/packages/wincode_core
+        working-directory: wc/packages/${{ matrix.package }}
         run: dart test
