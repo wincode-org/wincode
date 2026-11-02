@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'macho_check.dart';
 import 'macho_edit.dart';
 import 'macho_inspect.dart';
 import 'process.dart';
@@ -307,7 +308,8 @@ Future<Directory> writeRunnerPackage({
 
 /// Builds the runner package written by [writeRunnerPackage] into the executable [output]:
 ///
-/// - It is linked with the SDK stamp of ADR-0011 rule 1 (`-platform_version ios <deployment target> <SDK version>`) and
+/// - It is linked with the SDK stamp of ADR-0011 rule 1 (`-platform_version ios <deployment target> <SDK version>`, the
+///   version from [sdkVersion] of [sdk]) and
 ///   the rpath `@executable_path/Frameworks`, against the `Flutter.framework` in [flutterFrameworkFolder] (headers, module
 ///   map and the engine binary).
 /// - It is linked with `-ObjC`. The plugins' packages reach the link as static libraries, and the linker takes a member of
@@ -318,14 +320,15 @@ Future<Directory> writeRunnerPackage({
 ///
 /// The result's [SwiftBuild.library] is the executable in the scratch folder; [output] is its copy with the rpaths removed.
 ///
-/// The linked executable must not refer to `SwiftUICore`, by a load command or by a bound symbol. Xcode's runner never
-/// does, and `SwiftUICore` exists only from iOS 18, so the app would not start on an older iOS. The compile step does not
-/// autolink it ([swiftBuildCommand]); if something still does, this throws a [FormatException] instead of returning the file.
+/// The linked executable must conform to its minimum OS ([checkAgainstSdk] with the text stubs of [sdk], the
+/// `iPhoneOS.sdk` folder of [darwinSdkBundle] as Windows reads it). If it does not, this throws a [FormatException] that
+/// lists the violations instead of returning the file. That catches a `SwiftUICore` link, for example, which Xcode's
+/// runner never has and which the compile step does not autolink ([swiftBuildCommand]).
 Future<({SwiftBuild build, List<String> removedRpaths})> buildRunner({
   required Directory runnerPackage,
   required String scratchPath,
   required String darwinSdkBundle,
-  required String sdkVersion,
+  required Directory sdk,
   required String deploymentTarget,
   required String flutterFrameworkFolder,
   required File output,
@@ -348,7 +351,7 @@ Future<({SwiftBuild build, List<String> removedRpaths})> buildRunner({
       '-platform_version',
       'ios',
       deploymentTarget,
-      sdkVersion,
+      sdkVersion(sdk),
       '-rpath',
       '@executable_path/Frameworks',
       '-ObjC',
@@ -368,12 +371,10 @@ Future<({SwiftBuild build, List<String> removedRpaths})> buildRunner({
     '/usr/lib/swift',
     '@executable_path/Frameworks',
   });
-  final core = libraryUse(edited.macho, 'SwiftUICore');
-  if (core.isUsed) {
+  final violations = checkAgainstSdk(readMachO(edited.macho), sdk);
+  if (violations.isNotEmpty) {
     throw FormatException(
-      'the linked $productName refers to SwiftUICore (${core.loadCommands} load command(s), '
-      '${core.bindings ?? 'unknown number of'} bound symbol(s)). Xcode links SwiftUI instead, and SwiftUICore does not '
-      'exist before iOS 18, so the app would not start there.',
+      'the linked $productName uses what its minimum OS does not have:\n${violations.join('\n')}',
     );
   }
   output.writeAsBytesSync(edited.macho);
