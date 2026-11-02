@@ -29,7 +29,7 @@ Its stub restricts its clients (an app is not one of them), and `SwiftUI` re-exp
 
 ## Not covered
 
-- A framework that is new but neither moved, renamed nor restricted, loaded strongly below its first OS. Stubs have no first-OS mark. The compiler weak-links references to APIs newer than the minimum, from the annotations in headers and Swift interfaces, and the check trusts those weak bits. See the decision below.
+- A framework that is new but neither moved, renamed nor restricted, loaded strongly below its first OS. Stubs have no first-OS mark. The compiler weak-links references to APIs newer than the minimum, from the annotations in headers and Swift interfaces, and the check trusts those weak bits (see "Decision").
 - A symbol bound to a library that re-exports others is looked up in that library's stub only.
 - `$ld$add$` (it only adds symbols), and binaries with `LC_VERSION_MIN_IPHONEOS` instead of `LC_BUILD_VERSION`.
 
@@ -47,6 +47,6 @@ Ours against a reference (an Xcode-built copy): libraries and their kind, rpaths
 
 Each is a draft from `main`; one that needs another is opened after that one is merged. 1. This note. 2. The Mach-O reader. 3. The SDK stub reader. 4. The check, with `buildRunner` failing on a violation. 5. The diff. 6. `wincode doctor` in `packages/wincode_cli`.
 
-## Decision for the maintainer
+## Decision
 
-New frameworks (first item under "Not covered"): stubs only, which is exact (recommended), or stubs plus a first-OS estimate per framework, the lowest iOS version among the annotations in its headers and Swift interfaces. The second covers more, but it is a heuristic that can fail a good build, and it is more code.
+Stubs only (the maintainer, 2026-11-02). A first-OS estimate per framework, from the lowest iOS version among the annotations in its headers and Swift interfaces, would cover the first item under "Not covered", but it is a heuristic that can fail a good build. Headers and Swift interfaces are not read.
