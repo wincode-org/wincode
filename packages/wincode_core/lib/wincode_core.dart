@@ -51,6 +51,7 @@ export 'src/runner.dart'
         sceneDelegateBase,
         sdkVersion,
         writeRunnerPackage;
+export 'src/sdk_stubs.dart' show Hidden, LibraryStub, Previous, readLibraryStub;
 export 'src/swift_build.dart'
     show SwiftBuild, buildSwiftPackage, swiftBuildCommand;
 export 'src/wsl.dart' show toWslPath, wslRunner;
