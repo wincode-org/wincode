@@ -2,7 +2,13 @@
 
 Build, run and ship Flutter iOS apps from Windows.
 
-**Status: pre-alpha.** Nothing here builds an app yet. The plan of record is in [docs/PLAN.md](docs/PLAN.md).
+**Status: pre-alpha.** There is no `wincode` command yet (`packages/wincode_cli` is a placeholder), so nothing here takes a Flutter project to an IPA in one step. The plan of record is in [docs/PLAN.md](docs/PLAN.md).
+
+What exists today:
+
+- **A tested Dart library,** `packages/wincode_core`: it reads an app's Xcode flavors and builds its `Info.plist` and entitlements, drives `gen_snapshot` for iOS (built on Linux) the way `flutter_tools` does, builds the Swift runner and the plugin packages, writes plugin resource bundles the way Xcode does, and makes the small Mach-O edits a release bundle needs.
+- **Spikes with recorded results,** in [docs/spikes](docs/spikes): a Flutter counter app built on Windows ran on an iPhone (spike B), and a build signed and uploaded from Windows was processed as valid by App Store Connect (spike C, with an `Assets.car` made by Xcode on a Mac).
+- **What is missing:** winCode cannot compile asset catalogs (`Assets.car`) yet, packages that ship their own compiled catalogs still need a Mac build, and there is no hot reload, debugging or GUI.
 
 ## What it will do
 
