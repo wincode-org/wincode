@@ -7,7 +7,7 @@ Thanks for helping. winCode is pre-alpha, so expect things to move.
 - Every change goes through a branch and a pull request, including the maintainer's. Nobody pushes to `main`.
 - Keep PRs small and focused. One concern per PR.
 - Fill in the PR template, including test evidence and, for device-related changes, the device and iOS version.
-- CI must be green and `main` keeps a linear history.
+- CI must be green and `main` keeps a linear history: pull requests are squash-merged, one commit per PR.
 
 ## Commits and PR titles
 
@@ -31,6 +31,13 @@ git rebase --signoff origin/main     # several commits are unsigned
 git push --force-with-lease          # then force-push your branch
 ```
 
+## Hygiene check
+
+The **names, paths and keys** check (`.github/workflows/hygiene.yml`, `tools/scan-hygiene.sh`) fails a PR that adds a personal path, a key, a team-ID-shaped bundle ID, a certificate, a provisioning profile, an IPA, an Xcode archive, a `.dSYM` bundle or a `Payload/` folder. It also checks names that must not be public. That list is a repository secret, because the list itself would name them, and the check prints where a problem is, never what it found.
+
+- **Your PR comes from a fork:** GitHub gives forks no secrets, so the name rule cannot run and is skipped with a warning. A maintainer runs it before merging. You can run the other rules yourself: `HYGIENE_FORK_PR=true tools/scan-hygiene.sh --base origin/main`.
+- **Any other run** (a push to `main`, a branch in this repository) **fails if the list is empty**, so a deleted or renamed secret cannot turn the check green. The same applies to Dependabot PRs, which read Dependabot secrets, not Actions secrets: the secret must be set in both places.
+
 ## Clean-room rule for Apple file formats
 
 Some parts of winCode (for example the `Assets.car` compiler) must produce Apple file formats that Apple does not document. To keep the project legally clean:
@@ -42,7 +49,7 @@ Some parts of winCode (for example the `Assets.car` compiler) must produce Apple
 
 ## Never commit
 
-Xcode or Apple SDK files, `.xip` archives, certificates, `.p8`, `.p12`, `.mobileprovision` files, or any credentials. See `.gitignore`.
+Xcode or Apple SDK files, `.xip` archives, certificates, `.p8`, `.p12`, `.mobileprovision` files, built apps (`.ipa`, `.xcarchive`, `.dSYM`, `Payload/`), or any credentials. See `.gitignore`; the hygiene check fails on them.
 
 ## Decisions
 

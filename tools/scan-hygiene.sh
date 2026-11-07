@@ -13,7 +13,8 @@
 #   local-path      a personal Windows, macOS or Linux home path (placeholders like /home/me are fine)
 #   key-shape       a private key block, or the shape of a Stripe, Google, AWS, GitHub or Slack key
 #   team-id-shape   a team-ID-prefixed bundle ID, or a device UDID (placeholders like TEAM000000.org.example.app are fine)
-#   secret-file     a tracked certificate, key, profile or Xcode archive
+#   secret-file     a tracked certificate, key, profile, IPA, Xcode archive (*.xcarchive), debug-symbol bundle (*.dSYM) or
+#                   Payload/ directory (a signed IPA carries a provisioning profile with a team ID and a certificate)
 #   commit-text     a commit message, or the pull request title or body, with a "Generated with" line
 #
 # Rule that needs a list, kept out of the repository on purpose because the list itself would name what must not be named:
@@ -21,14 +22,19 @@
 #                   file's text or path, a commit message, or the pull request title or body. Put client and app names,
 #                   bundle-ID prefixes, local folder names and tool names there. A path that matches is reported by its line
 #                   number in the list printed by: git ls-files -- . ':!third_party' ':!tools/scan-hygiene.sh'
-#                   Unset, the rule is skipped with a notice. That is the case for pull requests from forks, which cannot
-#                   read secrets, so run the script with the variable set before merging one.
+#                   Fails closed: if the list is empty, the scan FAILS (rule terms-missing), so that a deleted or renamed secret
+#                   cannot turn the check green. The one exception is HYGIENE_FORK_PR=true, which the workflow sets only for a
+#                   pull request from a fork (forks cannot read secrets): the rule is then skipped with a warning, and a
+#                   maintainer runs the script with the list set before merging it. A contributor without the list can run the
+#                   other rules with HYGIENE_FORK_PR=true.
 #
 # Skipped: third_party/ (an exact copy of upstream) and this script. Environment: PR_TITLE, PR_BODY and PR_AUTHOR are
-# checked when set (a bot author is skipped, as in the DCO check).
+# checked when set (a pull request whose verified author is a bot is skipped). A commit is skipped only if its author email
+# is exactly the Actions bot's (release-please commits) and PR_AUTHOR is empty (a push) or is that bot.
 set -u
 
 EXCLUDES=(':!third_party' ':!tools/scan-hygiene.sh')
+BOT_EMAIL='41898282+github-actions[bot]@users.noreply.github.com'
 found=0
 
 report() { printf '%s\n' "$*"; found=1; }
@@ -64,13 +70,22 @@ scan_files() {
   local f
   while IFS= read -r f; do
     report "secret-file $(safe_path "$f")"
-  done < <(git ls-files -- . "${EXCLUDES[@]}" | grep -E -i '\.(p8|p12|pfx|mobileprovision|cer|pem|key|xip|keystore|jks)$|(^|/)AuthKey_|(^|/)\.env($|\.)')
+  done < <({
+    git ls-files -- . "${EXCLUDES[@]}" | grep -E -i '\.(p8|p12|pfx|mobileprovision|cer|pem|key|xip|keystore|jks|ipa)$|\.(xcarchive|dSYM)(/|$)|(^|/)AuthKey_|(^|/)\.env($|\.)'
+    git ls-files -- . "${EXCLUDES[@]}" | grep -E '(^|/)Payload/'   # case-sensitive: an IPA's folder is exactly Payload
+  })
 }
 
 scan_terms() {
   local terms=${HYGIENE_FORBIDDEN_TERMS:-}
   if [ -z "$terms" ]; then
-    echo "note: forbidden-term rule skipped (HYGIENE_FORBIDDEN_TERMS is not set)"
+    if [ "${HYGIENE_FORK_PR:-}" = true ]; then
+      echo "::warning title=hygiene::The forbidden-term rule was skipped: this pull request comes from a fork, which cannot read the repository secret. A maintainer runs it before merging."
+      return
+    fi
+    report "terms-missing HYGIENE_FORBIDDEN_TERMS"
+    echo "The list of forbidden terms is empty, so that rule cannot run. In CI it is the repository secret HYGIENE_FORBIDDEN_TERMS; check that it exists and is not empty."
+    echo "Only a pull request from a fork may skip the rule (the workflow sets HYGIENE_FORK_PR=true there)."
     return
   fi
   local f n rest
@@ -90,10 +105,13 @@ check_text() {
 }
 
 scan_commits() {
-  local range=$1 sha author
+  local range=$1 sha email
   for sha in $(git rev-list --no-merges $range); do
-    author=$(git log -1 --format=%an "$sha")
-    case "$author" in *"[bot]") continue ;; esac
+    # A name that ends in [bot] proves nothing, because whoever makes a commit sets its author. Skip only release-please's
+    # commits: the Actions bot's exact email, in a pull request that is the bot's (or on a push, where PR_AUTHOR is empty and
+    # the pull request was checked before it was merged).
+    email=$(git log -1 --format=%ae "$sha")
+    if [ "$email" = "$BOT_EMAIL" ] && { [ -z "${PR_AUTHOR:-}" ] || [ "${PR_AUTHOR:-}" = "github-actions[bot]" ]; }; then continue; fi
     check_text "commit:$(git rev-parse --short "$sha")" "$(git log -1 --format=%B "$sha")"
   done
   case "${PR_AUTHOR:-}" in *"[bot]") return 0 ;; esac
@@ -111,16 +129,19 @@ self_test() {
   local win='C:\Users\'"alice" nix="/home/""bob/work"
   local team="ABCDE""FGHIJ"".com.acme.app" udid="0000""8110-001A2B3C4D5E6F70" term="acmecorp"
   planted="alice|bob|ABCDEFGHIJ|8110-001A|abcdefghij0123456789|acmecorp"
-  # run_case <name> <expected rule, or none> <setup command, run inside the new repository> [<terms>]
+  # run_case <name> <expected rule, or none> <setup command, run inside the new repository> [<terms>] [<VAR=value ...>]
+  # The scan runs as a fork pull request would (HYGIENE_FORK_PR=true) unless the last argument says otherwise.
   run_case() {
-    local name=$1 expect=$2 setup=$3 terms=${4:-} out
+    local name=$1 expect=$2 setup=$3 terms=${4:-} extra=${5:-} out
     rm -rf "$tmp/r" && mkdir "$tmp/r" && (
       cd "$tmp/r" && git init -q && git config user.name tester && git config user.email t@example.org && git config core.autocrlf false &&
       echo clean > ok.txt && eval "$setup" && git add -A && git commit -q -m "test: $name"
     ) || { echo "FAIL $name: could not set up"; failures=$((failures + 1)); return; }
-    out=$(cd "$tmp/r" && HYGIENE_FORBIDDEN_TERMS=$terms bash "$here" 2>&1)
+    # $extra is deliberately unquoted: it is a list of VAR=value words, and it comes after the defaults so that it wins.
+    # shellcheck disable=SC2086
+    out=$(cd "$tmp/r" && env HYGIENE_FORBIDDEN_TERMS="$terms" HYGIENE_FORK_PR=true PR_AUTHOR= PR_TITLE= PR_BODY= $extra bash "$here" 2>&1)
     if [ "$expect" = none ]; then
-      if printf '%s\n' "$out" | grep -q -E '^(local-path|key-shape|team-id-shape|secret-file|commit-text|forbidden-term) '; then
+      if printf '%s\n' "$out" | grep -q -E '^(local-path|key-shape|team-id-shape|secret-file|commit-text|forbidden-term|terms-missing) '; then
         echo "FAIL $name: expected a clean result, got: $out"; failures=$((failures + 1)); return
       fi
     elif ! printf '%s\n' "$out" | grep -q "^$expect "; then
@@ -140,10 +161,28 @@ self_test() {
   run_case "a team-ID bundle ID" team-id-shape "printf '%s\n' '$team' > a.txt"
   run_case "a device UDID" team-id-shape "printf '%s\n' '$udid' > a.txt"
   run_case "a key file" secret-file "touch AuthKey_ABCDE12345.p8"
+  run_case "an IPA file" secret-file "touch App.ipa"
+  run_case "an Xcode archive" secret-file "mkdir MyApp.xcarchive && touch MyApp.xcarchive/Info.plist"
+  run_case "a debug-symbol bundle" secret-file "mkdir App.dSYM && touch App.dSYM/Info.plist"
+  run_case "a Payload directory" secret-file "mkdir -p Payload/App.app && touch Payload/App.app/Info.plist"
+  run_case "a source folder called payload passes" none "mkdir -p lib/payload && touch lib/payload/a.dart"
   run_case "a commit text: Generated with a tool" commit-text 'true'
+  # The bot exemption: the Actions bot's exact email, in a pull request that is the bot's (or on a push). A name proves nothing.
+  local bot='41898282+github-actions[bot]@users.noreply.github.com'
+  run_case "Generated with, from an author named like a bot" commit-text \
+    "export GIT_AUTHOR_NAME='github-actions[bot]' GIT_AUTHOR_EMAIL=evil@example.org"
+  run_case "Generated with, from the Actions bot's email on a push" none "export GIT_AUTHOR_EMAIL='$bot'"
+  run_case "Generated with, from the Actions bot's email in the bot's own pull request" none \
+    "export GIT_AUTHOR_EMAIL='$bot'" "" "PR_AUTHOR=github-actions[bot]"
+  run_case "Generated with, from the Actions bot's email in someone else's pull request" commit-text \
+    "export GIT_AUTHOR_EMAIL='$bot'" "" "PR_AUTHOR=somebody"
   run_case "a forbidden term in a file" forbidden-term "printf '%s\n' 'see $term for details' > a.txt" "$term"
   run_case "a forbidden term in a path" forbidden-term "touch notes-$term.md" "$term"
   run_case "a forbidden term in a commit" forbidden-term 'true' "test"
+  # The list is empty: a failure, unless the pull request comes from a fork.
+  run_case "an empty term list fails" terms-missing 'true' "" "HYGIENE_FORK_PR=false"
+  run_case "an empty term list fails when the fork flag is unset" terms-missing 'true' "" "HYGIENE_FORK_PR="
+  run_case "an empty term list is skipped for a fork pull request" none 'true' "" "HYGIENE_FORK_PR=true"
   rm -rf "$tmp"
   if [ "$failures" -eq 0 ]; then echo "self-test passed"; else echo "self-test: $failures failure(s)"; return 1; fi
 }

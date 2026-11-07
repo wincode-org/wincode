@@ -1,8 +1,11 @@
 name: hygiene
 
-# Fails a pull request that adds a personal path, a key, a team-ID-shaped bundle ID, a certificate or profile file, or (with the
-# secret below) a name that must not be public. tools/scan-hygiene.sh says what each rule is. It prints where a problem is,
+# Fails a pull request that adds a personal path, a key, a team-ID-shaped bundle ID, a certificate, profile or IPA file, or (with
+# the secret below) a name that must not be public. tools/scan-hygiene.sh says what each rule is. It prints where a problem is,
 # never what it found.
+#
+# The name rule fails closed: if the secret is empty, the job FAILS, so a deleted or renamed secret cannot turn the check green.
+# The one exception is a pull request from a fork, which cannot read secrets: there the rule is skipped with a visible warning.
 
 on:
   pull_request:
@@ -33,8 +36,11 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
-          # A regular expression of names that must not appear. Empty for pull requests from forks, so the name rule is skipped there.
+          # A regular expression of names that must not appear. Empty for pull requests from forks (GitHub withholds secrets).
           HYGIENE_FORBIDDEN_TERMS: ${{ secrets.HYGIENE_FORBIDDEN_TERMS }}
+          # "true" only for a pull request whose head is another repository. The script may skip the name rule only then; for
+          # every other run, an empty list is a failure. This holds a comparison result, never text from the pull request.
+          HYGIENE_FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
         run: |
           if [ -n "${BASE_REF:-}" ]; then
             bash tools/scan-hygiene.sh --base "origin/${BASE_REF}"
