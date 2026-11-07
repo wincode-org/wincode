@@ -11,6 +11,10 @@ name: gen-snapshot-oracle
 # is made from that artifact. No secrets, no Apple account.
 # Manual only: gh workflow run gen-snapshot-oracle.yml --ref <branch>
 
+# Public repositories: anyone who can read one can download its artifacts, and these workflows produce output of Apple tools (Xcode, actool,
+# gen_snapshot) that must not be public. So every upload step runs only while the repository is private
+# (github.event.repository.private == true) and keeps its files for 1 day. In a public repository the job still runs but uploads
+# nothing: run it from a private repository to keep the files. workflow_dispatch only, so no pull request or push can start it.
 on:
   workflow_dispatch:
 
@@ -132,10 +136,10 @@ jobs:
           cat "$O/env.txt"
 
       - name: Upload the kernel and the outputs
-        if: always()
+        if: always() && github.event.repository.private == true
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: gen-snapshot-oracle
           path: ${{ runner.temp }}/oracle/
-          retention-days: 7
+          retention-days: 1
           if-no-files-found: error

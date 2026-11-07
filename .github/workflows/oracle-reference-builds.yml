@@ -7,6 +7,10 @@ name: oracle-reference-builds
 # Outputs only: no signing, no Apple account, no secrets. Compare with the Windows-built bundles
 # using tools/ipa-diff. Manual only: gh workflow run oracle-reference-builds.yml --ref <branch>
 
+# Public repositories: anyone who can read one can download its artifacts, and these workflows produce output of Apple tools (Xcode, actool,
+# gen_snapshot) that must not be public. So every upload step runs only while the repository is private
+# (github.event.repository.private == true) and keeps its files for 1 day. In a public repository the job still runs but uploads
+# nothing: run it from a private repository to keep the files. workflow_dispatch only, so no pull request or push can start it.
 on:
   workflow_dispatch:
 
@@ -26,6 +30,8 @@ jobs:
       FLUTTER_SUPPRESS_ANALYTICS: "true"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Select Xcode, print versions
         run: |
@@ -116,37 +122,37 @@ jobs:
           (cd "$O" && find . -type f -exec stat -f '%z %N' {} + | sort -k2) >"$S/compiled-files.txt"
 
       - name: Upload counter Runner.app
-        if: always()
+        if: always() && github.event.repository.private == true
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: xcode-counter-app
           path: ${{ runner.temp }}/app-counter/
           include-hidden-files: true   # flutter_assets holds dotfiles (.last_build_id)
-          retention-days: 7
+          retention-days: 1
 
       - name: Upload hooks_app Runner.app
-        if: always()
+        if: always() && github.event.repository.private == true
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: xcode-hooks_app-app
           path: ${{ runner.temp }}/app-hooks_app/
           include-hidden-files: true
-          retention-days: 7
+          retention-days: 1
 
       - name: Upload dumps and build logs
-        if: always()
+        if: always() && github.event.repository.private == true
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: xcode-dumps
           include-hidden-files: true
           path: ${{ runner.temp }}/dumps/
-          retention-days: 7
+          retention-days: 1
 
       - name: Upload icon sample
-        if: always()
+        if: always() && github.event.repository.private == true
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: icon-sample
           include-hidden-files: true
           path: ${{ runner.temp }}/icon-sample/
-          retention-days: 7
+          retention-days: 1
