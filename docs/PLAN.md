@@ -2,7 +2,7 @@
 
 Status: v3, 2026-11-02. v2 was proposed on 2026-10-18, and v1 was approved by Alpha on 2026-10-12.
 
-Gate G0 is met: a Flutter app built on Windows runs on an iPhone. Since v2, spike C has passed (App Store Connect processed a build that winCode signed and uploaded from Windows as valid), spikes D, E and F are done, and builds of real apps have reached App Store Connect through the hybrid lane: a Mac builds the unsigned IPA, and winCode signs and uploads it from Windows. What still stands between winCode and a one-command, pure-Windows store build is a short list of gaps (section "Gaps found by real apps"): winCode cannot compile asset catalogs, the Linux toolchain differs from Xcode in a few ways, and App Review has not yet judged a pure-Windows build. There is no `wincode` command yet. The repository becomes public on about 2026-11-08, as source and documentation.
+Gate G0 is met: a Flutter app built on Windows runs on an iPhone. Since v2, spike C has passed (App Store Connect processed a build that winCode signed and uploaded from Windows as valid), spikes D, E and F are done, and builds of real apps have reached App Store Connect through the hybrid lane: a Mac builds the unsigned IPA, and winCode signs and uploads it from Windows. What still stands between winCode and a one-command, pure-Windows store build is a short list of gaps (section "Gaps found by real apps"): winCode cannot compile asset catalogs, the Linux toolchain differs from Xcode in a few ways, and App Review has not yet judged a pure-Windows build. The only `wincode` command so far is `wincode doctor`; nothing takes a project to an IPA in one step. The repository becomes public on about 2026-11-08, as source and documentation.
 
 ## Phase 0 results (2026-10-16)
 
@@ -34,7 +34,7 @@ Gate G0 is met: a Flutter app built on Windows runs on an iPhone. Since v2, spik
 | Upload | Done in scripts | Build Uploads API, `spikes/c-store-acceptance/asc_upload.py`; Apple processed the builds as `VALID` |
 | Apple accepting a non-Xcode build | Processing yes, App Review untested | Spike C (C1, 2026-10-23) and the builds after it; none has been through external TestFlight or App Review |
 | Hybrid lane | Used for real apps | A hosted macOS runner builds the unsigned IPA with Xcode; winCode signs and uploads it from Windows (ADR-0008, ADR-0011) |
-| Real-app readiness | Audited 2026-10-18, built since | The reference app's plugins are all SwiftPM, and its runner builds with nine plugins, a payments SDK among them; the gaps found are in "Gaps found by real apps" and ADR-0012 |
+| Real-app readiness | Audited 2026-10-18, built since | The reference app (a real-world Flutter app with several native plugins, Stripe, and Google and Apple sign-in) uses only SwiftPM plugins, and its runner builds; the gaps found are in "Gaps found by real apps" and ADR-0012 |
 | Native build hooks | Answered yes | Spike E (2026-10-19): the hooks run on Linux with an `xcrun` shim; ADR-0010 is still Proposed |
 | The `wincode` command | Not started | `packages/wincode_cli` and `packages/wincode_asc` hold only a README; `packages/wincode_core` is the tested library |
 | Debugging and hot reload | Not started | xcross is a candidate but unproven: it auto-revokes certificates and ignores flavors |
@@ -75,10 +75,10 @@ Repo: the core library, the spikes through F and ADRs 0008 to 0012 are on `main`
 
 Parallel tracks from week 1: spike C (gate GC, weeks 1–3), cloud Mac lane v0 (weeks 1–2), Assets.car compiler (clean-room, needed for G2). Gate GC decides which lane the Ship phase builds first.
 
-**Where each phase stands (2026-11-02).** Phase 0 is done. Phase 1 is under way as a library: the core pieces exist and are tested in CI, but the `wincode` command does not, and G1 (five sample apps with plugins running on a device) has not been run. Phase 2 has its signing and upload pieces as scripts and has passed gate GC (spike C), but not G2; `Assets.car` is not done. Phases 3 to 5 have not started. The first public release (0.1.0) is source and documentation, not one of these gates.
+**Where each phase stands (2026-11-02).** Phase 0 is done. Phase 1 is under way as a library: the core pieces exist and are tested in CI, but the `wincode` command is only `wincode doctor` so far, and G1 (five sample apps with plugins running on a device) has not been run. Phase 2 has its signing and upload pieces as scripts and has passed gate GC (spike C), but not G2; `Assets.car` is not done. Phases 3 to 5 have not started. The first public release (0.1.0) is source and documentation, not one of these gates.
 
 - **Scope of v1:** Flutter apps whose plugins support Swift Package Manager (the default since Flutter 3.44), iPhones on iOS 17.4 or later, release and profile builds first, hot reload after shipping.
-- **Positioning:** don't sell it as an "Xcode replacement" or use Apple marks in the name or logo. Sell it as "Flutter iOS without a Mac: build, run on your iPhone, ship to TestFlight".
+- **Positioning:** don't sell it as an "Xcode replacement" or use Apple marks in the name or logo. The goal, not yet a claim: "Flutter iOS without a Mac: build, run on your iPhone, ship to TestFlight". Until the gaps above are closed and verified, say only what is verified (README, "Status").
 
 ## Spike C: prove App Store acceptance
 
@@ -183,17 +183,17 @@ Chrome DevTools device mode only resizes a web page and changes the user agent; 
 
 ## Test apps audit and the xcross review
 
-The reference app (a production white-label Flutter app with several brands) uses only SwiftPM plugins, so ADR-0003 holds, yet it cannot build with winCode today: a read-only audit on 2026-10-18 found five gaps. Client details are deliberately left out of this repo.
+The reference app (a real-world Flutter app with several native plugins, Stripe, and Google and Apple sign-in) uses only SwiftPM plugins, so ADR-0003 holds, yet it cannot build with winCode today: a read-only audit on 2026-10-18 found five gaps. Client details are deliberately left out of this repo.
 
 | Gap | What the audit found | winCode answer |
 | --- | --- | --- |
 | Native build hook | `path_provider_foundation` 2.6.0 calls Dart FFI through `objective_c` 9.5.0. Its build hook compiles Objective-C with clang and runs `xcrun --show-sdk-path`, which fails off macOS. Most Flutter apps use path_provider. | Spike E: run the hooks ourselves with an `xcrun` shim that points at the Darwin SDK, clang for arm64-apple-ios, then bundle the dylib. |
-| Flavors | Three flavors, each with Debug, Release and Profile configurations and an xcconfig that sets bundle ID, name, team, sign-in client IDs and which asset catalogs are included. | winCode reads the Xcode project and xcconfig files itself (phase 1). |
+| Flavors | Several flavors, each with Debug, Release and Profile configurations and an xcconfig that sets bundle ID, name, team, sign-in client IDs and which asset catalogs are included. | winCode reads the Xcode project and xcconfig files itself (phase 1). |
 | Engine version | The app builds with Flutter 3.47.5; spike A's `gen_snapshot` is for 3.47.7. | Build `gen_snapshot` per Flutter engine release in CI; `wincode doctor` matches the app's Flutter to a published build. |
-| Icon and launch screen | One 1024 px icon per brand and a launch colour in the asset catalog; `Main.storyboard` holds only a FlutterViewController. | The `Assets.car` track already planned; replace the storyboard with code. |
+| Icon and launch screen | A 1024 px icon and a launch colour in the asset catalog; `Main.storyboard` holds only a FlutterViewController. | The `Assets.car` track already planned; replace the storyboard with code. |
 | Unchecked | `stripe_ios` pulls stripe-ios-spm 26.3.0, not cached on the PC; whether it ships prebuilt binary targets is unknown. | Test SwiftPM binary targets in the xtool pipeline. |
 
-Everything else is clean: nine of the ten native plugins ship a `Package.swift` (the tenth, `path_provider_foundation`, has no native target), and there is no Podfile, no app extension, one permission string (camera), one entitlement (Sign in with Apple), an iOS 15 target and an icon without alpha. One finding concerns the app, not winCode: both brands declare universal-link hosts and a deep-link scheme, but the iOS project has neither the entitlement nor the URL scheme.
+Everything else is clean: every native plugin with native code ships a `Package.swift`, and there is no Podfile and no app extension. One finding concerns the app, not winCode: it declares universal-link hosts and a deep-link scheme, but the iOS project has neither the entitlement nor the URL scheme.
 
 **xcross review** (source code read, v2.0.6 released 2026-10-16; not yet run on the iPhone):
 
