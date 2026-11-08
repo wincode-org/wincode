@@ -81,13 +81,15 @@ Named by environment variables, outside the repo and OneDrive; the scripts refus
 ```bash
 python3 spikes/c-store-acceptance/asc_preflight.py --self-test
 python3 spikes/c-store-acceptance/asc_preflight.py --dry-run
-python3 spikes/c-store-acceptance/asc_preflight.py
+python3 spikes/c-store-acceptance/asc_preflight.py [--ipa <file>]
 ```
 
 It sends GET requests only, and stops if a request is anything else. It prints PASS or FAIL for three checks, and exits non-zero if one fails:
 - the API key works;
 - the app record is found by the config's bundle ID;
-- the app has no builds and no build uploads yet.
+- the build number is higher than every existing build's. Apple rejects a duplicate or lower number, so a number equal to an existing one fails. The first upload (no builds) passes. The number is the `CFBundleVersion` of `--ipa`, or the config's `build` without it.
+
+It also prints `INFO  N existing builds, highest build number X` (an app that already has builds is the normal case, not a failure).
 
 Then it prints a table of the team's certificates (type, expiry, count per type) and the App ID and profiles that match the bundle ID, without names or identifiers. What decides the next steps:
 - **Distribution certificates** (`DISTRIBUTION`, `IOS_DISTRIBUTION`): Apple caps them per team; third-party docs say three. At the cap: STOP.
@@ -291,6 +293,7 @@ Install the build from the TestFlight app and launch it. The counter must start 
 
 - **`asc_preflight.py`:**
   - `--self-test` checks the token against Apple's documented format, and `openssl dgst -verify` accepts its signature.
+  - `--self-test` also runs the build-number check on fake builds answers (none, all lower, equal, one higher, dotted, not a number) and reads `CFBundleVersion` from a test IPA.
   - `--dry-run` prints the GETs, masks the bundle ID and hides the token.
   - Key folders inside the repo or OneDrive, a renamed or second `.p8`, a bad Issuer ID and an RSA key are refused. No message names the key file or the IDs.
 - **`dist-key.sh`,** with a throwaway key:
