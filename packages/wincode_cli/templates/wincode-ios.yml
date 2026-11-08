@@ -1,0 +1,73 @@
+# The reference workflow for `wincode build` (winCode ADR-0013): it builds the app's unsigned IPA with Xcode on a
+# GitHub-hosted macOS runner. Copy it to .github/workflows/wincode-ios.yml in the app's repository, set the three values
+# under env, and name it in wincode.yaml:
+#   workflow: <owner>/<repository>/.github/workflows/wincode-ios.yml@<branch>
+#
+# What wincode build relies on, so keep these three:
+#   - the request_id input, and the run name that carries it (winCode finds its run by that name);
+#   - one artifact named unsigned-ipa that holds one .ipa with Payload/<name>.app inside;
+#   - no signing: the runner holds no certificate, profile or App Store Connect key. winCode signs on Windows.
+#
+# Artifacts: in a public repository anyone who can read it can download the IPA until it expires, after 1 day.
+name: wincode-ios
+run-name: wincode ${{ inputs.request_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_id:
+        description: Set by wincode build, which finds this run by it
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  unsigned-ipa:
+    # macOS minutes cost the most: only a dispatch starts this job, never a push or a pull request.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      FLUTTER_VERSION: "3.47.7"                 # the app's Flutter release
+      XCODE_APP: /Applications/Xcode_26.6.app   # a final Xcode 26 or later: App Store Connect refuses builds from others
+      FLAVOR: ""                                # the flavor to build, or empty for an app without flavors
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Xcode
+        run: |
+          sudo xcode-select -s "$XCODE_APP"
+          xcodebuild -version
+
+      - name: Flutter
+        run: |
+          git clone -q --depth 1 --branch "$FLUTTER_VERSION" https://github.com/flutter/flutter.git "$RUNNER_TEMP/flutter"
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+
+      - name: Build the archive, unsigned
+        run: |
+          args=(--release --no-codesign)
+          if [ -n "$FLAVOR" ]; then args+=(--flavor "$FLAVOR"); fi
+          flutter build ipa "${args[@]}"
+
+      - name: Package the app as an unsigned IPA
+        run: |
+          apps=(build/ios/archive/*.xcarchive/Products/Applications/*.app)
+          if [ "${#apps[@]}" -ne 1 ] || [ ! -d "${apps[0]}" ]; then
+            echo "expected one .app in the archive, found: ${apps[*]}"
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/ipa/Payload"
+          cp -R "${apps[0]}" "$RUNNER_TEMP/ipa/Payload/"
+          (cd "$RUNNER_TEMP/ipa" && zip -qry ../unsigned.ipa Payload)
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: unsigned-ipa
+          path: ${{ runner.temp }}/unsigned.ipa
+          if-no-files-found: error
+          retention-days: 1
