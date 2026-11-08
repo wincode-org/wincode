@@ -2,13 +2,14 @@
 
 - Status: Proposed
 - Date: 2026-11-08
+- Amended: 2026-11-08, after review: zsign in WSL2 is interim (section 4), the key-location rule (section 2), `--redact` and redaction in CI (sections 1 and 7), the `doctor` changes (Consequences)
 
 ## Context
 
 - **The hybrid lane is how real apps ship today** (ADR-0008, ADR-0012). A hosted macOS runner in the app's own GitHub repository builds an unsigned IPA with Xcode. On Windows the IPA is signed with zsign (ADR-0009, ADR-0011), checked against App Store Connect, and uploaded through the Build Uploads API. Builds of real apps with third-party sign-in and a payments SDK have reached TestFlight this way.
 - **The Windows half is three spike scripts** in `spikes/c-store-acceptance`, in Python:
   - `sign.py` checks the certificate, the profile and the entitlements against each other, signs with zsign, and reads every signature back;
-  - `asc_preflight.py` makes GET-only checks (the key works, the app record exists, the app has no builds yet, which the open PR #11 turns into a build-number comparison) and lists the team's certificates and profiles;
+  - `asc_preflight.py` makes GET-only checks (the key works, the app record exists, the build number is above every existing build's, since PR #11) and lists the team's certificates and profiles;
   - `asc_upload.py` drives the Build Uploads API, from creating the upload to Apple's processing result.
 - **What the scripts need:** Python 3 with the `cryptography` package, `openssl`, zsign built in WSL2, a `config.json` and three environment variables. The macOS half is a workflow file that each app's repository holds, started and downloaded by hand.
 - **`wincode` has one command,** `doctor` (Mach-O checks), with its own argument parsing and exit codes 0, 1 and 64.
@@ -38,6 +39,7 @@
 | --- | --- |
 | `--config <file>` | The settings file (section 2); default `wincode.yaml` in the current folder |
 | `--json` | stdout gets one JSON object when the command ends, and nothing else: `command`, `ok`, `exitCode`, the command's results, and on a failure `error` with `id`, `what`, `why` and `next`. Everything meant for people goes to stderr |
+| `--redact` | Hide the bundle ID and the team ID in everything printed. Always on when the `CI` environment variable is set (not empty, `0` or `false`). Section 7 |
 | `--verbose` | Also print each step, each external command and each HTTP request (method, host, path, status, time), redacted as section 7 says |
 | `--dry-run` | Send nothing, write nothing, start nothing: no request to Apple or GitHub, no file, no zsign run. Print what would be done, with the requests as they would go out |
 
@@ -83,13 +85,23 @@ output: build/wincode
 - **No key for the certificate.** `sign` takes it from the profile, whose `DeveloperCertificates` holds every certificate the profile was made for, by matching its public key with the distribution key. The spike kept a separate `.cer`; this removes a file that had to be downloaded and kept in step with the profile.
 - **The profile is not a secret,** but it names the team, so it is better kept out of a public repository.
 
-**Secrets come only from environment variables,** the ones the spike scripts already use. Each names a file or folder outside the project and outside OneDrive, and the commands refuse both, as the scripts do.
+**Secrets come only from environment variables,** the ones the spike scripts already use. Each names a file or folder outside the project and outside OneDrive, and the commands refuse both, as the scripts do. This holds through phase 5.
 
 | Variable | What it names | Read by |
 | --- | --- | --- |
 | `WINCODE_ASC_KEY_DIR` | A folder with `AuthKey_<Key ID>.p8` as App Store Connect delivers it, and `issuer-id`, a file that holds the Issuer ID | `preflight`, `upload`, `status` |
 | `WINCODE_DIST_KEY` | The distribution private key (PEM) on the WSL2 disk; a path under `/mnt/` is refused | `sign` |
 | `ZSIGN` | Optional: a zsign other than the pinned one (section 4) | `sign` |
+
+**No key or profile lies in a git working tree,** unless git ignores it. The commands refuse every such file (the `.p8`, `issuer-id`, the distribution key, and `profile`) that lies inside a git working tree unless `git check-ignore` reports it as ignored; a file that git tracks is never ignored. `git rev-parse --is-inside-work-tree` tells whether the file is in a tree and `git check-ignore -q` whether it is ignored, both run in the file's folder (inside WSL2 for a file there). When git cannot run, the file is refused too (69, `git-unavailable`). The message names the variable or the key, never the path, and says what to move and where (exit 78, `key-in-git-tree`):
+
+```
+wincode sign: WINCODE_DIST_KEY points inside a git working tree, and git does not ignore the file
+  why: a key or profile there can be committed and pushed with the project, and it stays in the history after it is deleted.
+  next: move the file outside every project folder, such as %USERPROFILE%\.wincode on Windows or ~/.wincode in WSL2, and point WINCODE_DIST_KEY at the new place. A file that has to stay may be listed in the project's .gitignore, but git check-ignore must report it as ignored.
+```
+
+The check is `requireOutsideGit` in `packages/wincode_cli`, tested with a real repository (tracked, ignored, outside) and with a missing or failing git. No command calls it yet: the commands that read these files come in phases 2 and 3.
 
 The OS credential store that ADR-0009 names, Windows Credential Manager, is not used in these phases: files named by variables are what the scripts used for every real upload. Moving the keys there is a later change with its own decision, and it never makes `wincode.yaml` hold a secret.
 
@@ -120,7 +132,27 @@ The OS credential store that ADR-0009 names, Windows Credential Manager, is not 
 
 - **Why zsign:** Apple has processed IPAs signed this way as valid, from spike C to the real apps of the hybrid lane. zsign is MIT-licensed, and it is the signer that xtool already uses (ADR-0001).
 - **Why not Dart:** writing a signature means the whole format: code directories with page hashes, requirements, the entitlements as XML and as DER, a CMS signature with Apple's hash attributes, `_CodeSignature/CodeResources` with the hash of every resource, and room for all of it in each Mach-O's `__LINKEDIT`. That is a large Apple format, so CONTRIBUTING.md asks for a spec in `docs/formats/` first and an oracle on macOS, and the result would replace a signer whose output Apple already accepts. The part winCode does write in Dart is the read-back below, which is also the first half of a signer if one is ever needed.
-- **Where:** zsign runs inside WSL2, as ADR-0001 decided and as the spike ran it. `wincode sign` calls it through `wincode_core`'s `wslRunner`, with the paths converted by `toWslPath`. The distribution key stays on the WSL2 disk.
+- **Where, an interim decision:** zsign runs inside WSL2, as ADR-0001 decided and as the spike ran it. It is the signer that has been verified, not the final answer: a native Windows build is the follow-up F1 (section 10), after phase 4. `wincode sign` calls zsign through `wincode_core`'s `wslRunner`. The distribution key stays on the WSL2 disk.
+  - **Paths** go to WSL2 translated by `wslpath -u`, run in the distribution, not by rewriting the string. `wslpath` knows drive letters, `\\wsl.localhost\<distribution>\…` paths and a changed automount root; `toWslPath` of `wincode_core` knows only `C:\` becoming `/mnt/c/` and refuses the rest. `toWslPath` stays for code that cannot run a process.
+  - **`wincode doctor` checks the setup** (added in phase 3), each failure with its next step:
+
+    ```
+    wincode doctor: WSL2 has no Linux distribution
+      why: wincode sign runs zsign inside WSL2 (ADR-0013, section 4).
+      next: run `wsl --install -d Ubuntu` in an administrator terminal and restart, then run tools/setup-wsl-toolchain.sh in WSL2.
+    ```
+
+    ```
+    wincode doctor: the zsign in WSL2 is not the one winCode pins
+      why: wincode sign signs the app with it, and a changed binary could sign anything. It prints version <found>, not 1.9.0 (f6158be9), or its SHA-256 is not the one tools/setup-wsl-toolchain.sh recorded when it built it.
+      next: run tools/setup-wsl-toolchain.sh in WSL2 to build it again from the checked source.
+    ```
+
+    The first is `wsl-missing` (69) and the second `zsign-changed` (1); `zsign-missing` is in section 6. The setup script checks the SHA-256 of the pinned source archive when it builds, and writes the SHA-256 of the binary it made next to it. A built binary differs between toolchains, so only that local record, not the repository, can pin it.
+- **The key's password never goes on a command line.** Read in the pinned source (`src/zsign.cpp`, `src/openssl.cpp`): zsign takes the password of a private key or `.p12` only as the argument `-p`. It reads no environment variable and no standard input. An argument is visible to every program of the same user, in the Windows process list (the `wsl.exe` command line carries it) and in WSL2's, and a log may keep it. So:
+  - `wincode sign` never passes `-p`. The verified flow needs none: `WINCODE_DIST_KEY` is an unencrypted PEM key on the WSL2 disk and the certificate is a separate file, and `-k` and `-c` take paths. A `.p12`, or a key that needs a password, is refused (78, `key-encrypted`) with the step the spike used: keep the working key unencrypted on the WSL2 disk and the encrypted backup elsewhere.
+  - No password is logged or written to a file (section 7).
+  - **Open risk:** the unencrypted working key sits on the WSL2 disk, where the user's own programs read it and where `wsl --export` snapshots of the distribution copy it. **Proposed mitigation,** to be decided with the maintainer before phase 3 is accepted: keep the key encrypted, and have `wincode sign` ask for the password on the terminal (never as an argument), decrypt the key with `openssl pkey -passin stdin` into a file of mode 0600 in a private folder of the WSL2 tmpfs (`$XDG_RUNTIME_DIR`, else `/dev/shm`), pass that path to zsign, and delete the file when zsign ends. The password then lives only in winCode's memory, and the exposure shrinks to the decrypted file during the run.
 - **Pin policy,** from `build-zsign.sh`, which becomes a step of `tools/setup-wsl-toolchain.sh`:
   - the source is the commit that xtool pins, `xtool-org/zsign` 1.9.0 (`f6158be9`), and the build stops if `third_party/xtool/Package.resolved` pins another one, so zsign moves only with xtool;
   - GitHub's archive of that commit is checked against its SHA-256 (`423ebe2f…`) before anything is built;
@@ -133,7 +165,7 @@ The OS credential store that ADR-0009 names, Windows Credential Manager, is not 
   - **Before:** the profile is an App Store profile (no devices, no `get-task-allow`) for `team_id` and `bundle_id`, and has not expired; one of its certificates is a distribution certificate for the key in `WINCODE_DIST_KEY`, and has not expired; the IPA's bundle ID is `bundle_id`.
   - **Entitlements:** the four keys of ADR-0011 rule 6, plus the keys of `entitlements`, each allowed by the profile: equal, or matched by the profile's trailing `*`.
   - **After:** every Mach-O is signed; the main executable carries exactly those entitlements and every framework none; `embedded.mobileprovision` is there; the IPA holds only `Payload/`; zsign is stopped if its files pass 1 GB.
-- **A native Windows zsign is not chosen for now.** The pinned commit's Windows project links prebuilt OpenSSL libraries kept in zsign's own repository (`build/windows/vs2022/lib/openssl`: `libcrypto.lib` and `libssl.lib`), which winCode cannot trace to a source. Shipping a binary would also make winCode the distributor of a signing tool, with its notices, its provenance, and Windows Defender's view of an unsigned program that rewrites binaries (Defender blocked the xcross binary, `docs/PLAN.md`). If users of the hybrid lane without WSL2 need one, the route is:
+- **A native Windows zsign is not chosen for now,** and is tracked as follow-up F1. The pinned commit's Windows project links prebuilt OpenSSL libraries kept in zsign's own repository (`build/windows/vs2022/lib/openssl`: `libcrypto.lib` and `libssl.lib`), which winCode cannot trace to a source. Shipping a binary would also make winCode the distributor of a signing tool, with its notices, its provenance, and Windows Defender's view of an unsigned program that rewrites binaries (Defender blocked the xcross binary, `docs/PLAN.md`). If users of the hybrid lane without WSL2 need one, the route is:
   1. winCode's CI builds zsign on a Windows runner from the pinned commit, against an OpenSSL that winCode pins;
   2. it publishes the binary with its SHA-256 and a provenance attestation, and `wincode` pins that hash;
   3. the binary is used only after it signs the same bundle with the same code directory hashes as the WSL2 build, and one IPA it signed is processed as valid.
@@ -177,7 +209,7 @@ The ten most likely failures, with `<…>` filled in at run time:
      next: make a new App Store profile for <bundle ID> in the developer portal (Profiles), download it, and point profile in wincode.yaml at it.
    ```
 
-2. **Build number not higher** (`build-number-not-higher`, exit 1; `preflight`, `upload`). As in the script's check of PR #11, the number is compared with every build of the app, not only the builds of the same version: stricter than Apple's rule, and it only ever costs a build number.
+2. **Build number not higher** (`build-number-not-higher`, exit 1; `preflight`, `upload`). As in the script's check (PR #11), the number is compared with every build of the app, not only the builds of the same version: stricter than Apple's rule, and it only ever costs a build number.
 
    ```
    wincode preflight: build <n> is not higher than <highest>, the highest build App Store Connect has for this app
@@ -258,9 +290,15 @@ The ten most likely failures, with `<…>` filled in at run time:
 - **Key material** is read only from the files that the variables name, outside the project and outside OneDrive. winCode never copies, caches or writes it. `--dry-run` checks the key when its variable is set, as the scripts do, and sends nothing.
 - **Never printed, with or without `--verbose`:** the contents of the key files, the token, the Key ID, the Issuer ID, the values of `WINCODE_ASC_KEY_DIR` and `WINCODE_DIST_KEY` (a message names the variable, never the path), the signed URLs of the upload parts, and any `Authorization` header. winCode holds no GitHub token at all.
 - **One redactor** sits in front of stdout and stderr and replaces those values wherever they appear, including inside Apple's error text and inside exception messages. `--verbose` adds lines, and they go through the same redactor. Request bodies are printed: they hold the app record's ID, the version, the build number, and the file's name, size and checksum, nothing secret.
-- **Shown:** the bundle ID and the team ID. Every signed IPA carries both, and the messages of section 6 need them to say what is wrong. The spike scripts masked them because their output went into this repository; the CLI's output goes to the user.
+- **Shown by default:** the bundle ID and the team ID. Every signed IPA carries both, and the messages of section 6 need them to say what is wrong. The spike scripts masked them because their output went into this repository; the CLI's output goes to the user. Three things hide them:
+  - the global option `--redact`;
+  - the `CI` environment variable, when it is set and is not empty, `0` or `false`: a CI service keeps its logs, and more people can read them;
+  - text meant for an issue report, always: the message of an internal error (70), which asks for a report, and the output of any later report command.
+
+  Each command registers every ID it learns (from `wincode.yaml`, the IPA or Apple) with the redactor, which replaces them with `<bundle ID>` and `<team ID>` in everything written to stdout and stderr, `--json` included. It works on whole writes, so commands write whole lines. The skeleton has the option, the `CI` check and the redactor; no command prints an ID yet, so none registers one.
+- **Keys stay out of git working trees** unless git ignores them (section 2).
 - **The token** is ES256 with a lifetime of 10 minutes (Apple refuses more than 20), and a new one is made for each request. It is sent only to `api.appstoreconnect.apple.com`, never after a redirect, and never to the upload URLs.
-- **Temporary files:** zsign's entitlements and the certificate taken from the profile go to a temporary folder that is deleted after the run. The key is passed to zsign by its path, never copied.
+- **Temporary files:** zsign's entitlements and the certificate taken from the profile go to a temporary folder that is deleted after the run. The key is passed to zsign by its path, never copied. No password is passed to a process or written to a file (section 4).
 - **Writes:** only `upload` writes to Apple. As in `asc_upload.py`, nothing is retried after an error, because a repeated request could make a second upload.
 - **Supply chain:** zsign as in section 4; `gh` is the user's own install; the Dart dependencies are the pure-Dart packages of section 5.
 
@@ -273,6 +311,7 @@ The ten most likely failures, with `<…>` filled in at run time:
 - **Golden outputs:** `--help` (phase 1), each command's `--dry-run` requests, the messages of section 6 and the `--json` objects are compared byte for byte with files in `test/goldens`. `UPDATE_GOLDENS=1 dart test` rewrites them, and the pull request shows the diff.
 - **Known answers, not trust:** the ES256 signature is checked against the P-256 and SHA-256 test vectors of RFC 6979 (deterministic signatures), so the test does not rely on the library that signs. The token's header and claims are checked field by field, as the script's self-test does.
 - **No secret in any output:** each test that loads a key checks that its whole output holds no token, Key ID, Issuer ID or key path.
+- **Key location and redaction:** the key-location check runs against a real repository in a temporary folder (outside it, in it, ignored, tracked) and against a fake git that is missing or fails. Redaction is tested on a sample message with `--redact`, with `CI`, and with neither; with every kind of write to the sink; and for the issue-report text.
 - **Parity with the scripts:** before a command replaces its script, both run on the same inputs: the same requests from `--dry-run`, and for `sign` the same entitlements and read-back results with a throwaway identity, as in spike C's offline signing run.
 - **Real runs** are made by hand and recorded in the pull request without IDs; an upload only with the maintainer's yes.
 - **Where:** from phase 2, `dart.yml`'s matrix adds `wincode_asc`, and runs `wincode_cli` on a Windows runner too, because paths and process calls differ there. No macOS job.
@@ -293,11 +332,14 @@ The ten most likely failures, with `<…>` filled in at run time:
 - `wincode.yaml` is loaded and checked as section 2 says, without opening the files it names.
 - `doctor` keeps its checks, uses the error model, and exits 69 for a folder that is not an SDK (it was 1).
 - Tests: the settings file, the `--help` golden, `--json`, and the global options on both sides of the command.
+- Added by the review of this ADR: the global option `--redact`, the redactor and the `CI` check, and `requireOutsideGit`, each with tests and no command calling them yet.
 
 **Phase 2: `preflight` in Dart, and `init`.** Accepted when:
+- `preflight` calls `requireOutsideGit` for each file of the key folder and for `profile` before it reads them, with a test in which a key lies in a temporary repository, tracked or not ignored;
+- every ID the command learns is registered with the redactor, and a test checks that a run with `--redact`, and one with `CI` set, prints neither ID;
 - `packages/wincode_asc` holds the token and the paged GET requests, and the ES256 known-answer test passes;
 - for the same app, `wincode preflight --dry-run` prints the GET requests of its three checks as `asc_preflight.py --dry-run` prints them (golden);
-- against the fake server, the three checks pass and fail where the script's do, including the build-number cases that PR #11 adds to the script's self-test, and each local check of the IPA (bundle ID, version, build number, profile, expiry) has a test;
+- against the fake server, the three checks pass and fail where the script's do, including the build-number cases of the script's self-test (PR #11), and each local check of the IPA (bundle ID, version, build number, profile, expiry) has a test;
 - no test's output holds the key, the token, the Key ID or the Issuer ID;
 - one real run on the test app record, read-only, gives the same PASS and FAIL lines as the script;
 - `wincode init` writes `wincode.yaml` for the flavored sample in `wincode_core`'s test fixtures, and refuses to overwrite one;
@@ -306,7 +348,10 @@ The ten most likely failures, with `<…>` filled in at run time:
 **Phase 3: `sign`.** Accepted when:
 - each check of section 4 has a test, with a throwaway CA, identity and profile, and a fake zsign;
 - the read-back is in Dart (the entitlements blob of the code signature that `LC_CODE_SIGNATURE` points to), with its format notes in `docs/formats/` first;
-- the setup script builds the pinned zsign, and `wincode sign` refuses another one unless `ZSIGN` names it;
+- the setup script builds the pinned zsign and records its SHA-256, and `wincode sign` refuses another one unless `ZSIGN` names it;
+- `wincode doctor` reports a missing WSL2 distribution and a changed or missing zsign with the messages of section 4 (a fake `wsl.exe` in the tests), and every path reaches WSL2 through `wslpath -u`;
+- a test fails if a process is started with `-p`, and no output holds a password; a `.p12` or an encrypted key is refused;
+- the open risk of the working key in section 4 is decided with the maintainer, and the decision is recorded here;
 - with the same unsigned bundle and throwaway identity, `wincode sign` and `sign.py` sign the same entitlements into each binary, and both read-backs pass;
 - a hybrid-lane IPA signed by `wincode sign` is uploaded, with the maintainer's yes, and processed as valid.
 
@@ -321,14 +366,24 @@ The ten most likely failures, with `<…>` filled in at run time:
 - the reference workflow passes actionlint, and `wincode init` writes it byte for byte (golden);
 - on a test app's repository, `wincode build`, `wincode sign` and `wincode upload` in a row end with a build processed as valid, using macOS minutes and an upload that the maintainer says yes to.
 
+**Follow-ups,** not phases, and not started:
+- **F1. A native Windows zsign build,** after phase 4 is accepted, so that signing and uploading work through WSL2 first. It follows the route in section 4 (a CI build against a pinned OpenSSL, a published hash, equal code directory hashes with the WSL2 build, one VALID upload). It is done when `wincode sign` can use it without WSL2, and the WSL2 checks of `doctor` become optional. The interim decision of section 4 ends here.
+
 ## Consequences
 
 - **Windows users need no Python.** `build` needs `gh` and a GitHub repository. `sign` needs WSL2 with the pinned zsign, so a user of the hybrid lane installs WSL2 only to sign, until a native zsign or a Dart signer replaces it.
 - **The spike scripts keep working** until each phase replaces them, and then stay as spike C's record.
-- **`doctor` changes a little:** its errors use the three-line form on stderr, a usage error goes to stderr, and a folder that is not an SDK exits 69 instead of 1.
+- **`doctor` changed in the skeleton,** which matters to a script that calls it:
+  - a usage error (a missing or unknown option, a positional argument) goes to stderr with the usage and exits 64, with nothing on stdout (unless `--json` asks for its object);
+  - `--sdk` naming a folder without `SDKSettings.json` exits 69 (`sdk-missing`) instead of 1;
+  - its other errors use the three-line form on stderr, and with `--json` stdout carries one object.
+
+  The checks and the exit codes 0 (pass) and 1 (a check failed, or a file cannot be read) are as before.
 - **ADR-0008's `wincode ship --lane mac`** becomes `build`, `sign` and `upload`; a `ship` that chains them is still possible later.
 - **ADR-0009's Windows Credential Manager waits:** the variables of section 2 hold until a decision moves the keys.
-- **To revisit:** where zsign runs (WSL2, a native build, or Dart) once hybrid-lane users without WSL2 appear; the credential store; the build-number rule, if Apple's per-version rule is confirmed on a test app.
+- **Where zsign runs is interim.** WSL2 holds until follow-up F1; until then a hybrid-lane user needs WSL2 to sign, and `wincode doctor` says what is missing.
+- **IDs are visible by default, hidden in CI.** A person who runs `wincode` sees the bundle ID and team ID; a CI log does not, and nobody pastes them into an issue by accident (section 7).
+- **To revisit:** the decision on the unencrypted working key (section 4); where zsign runs once F1 is done, or if a Dart signer is wanted; the credential store; the build-number rule, if Apple's per-version rule is confirmed on a test app.
 
 ## Alternatives considered
 

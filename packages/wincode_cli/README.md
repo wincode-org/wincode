@@ -24,6 +24,7 @@ They go before or after the command.
 
 - `--config <file>`: the app's settings, `wincode.yaml` by default (below).
 - `--json`: one JSON object on stdout when the command ends, with `command`, `ok`, `exitCode`, the results, and on a failure `error` with `id`, `what`, `why` and `next`. Messages go to stderr.
+- `--redact`: hide the bundle ID and team ID in everything printed. It is always on when the `CI` environment variable is set (not empty, `0` or `false`). Commands register the IDs they learn with the redactor; none prints an ID yet.
 - `--verbose`: also print each step, external command and HTTP request, with secrets redacted.
 - `--dry-run`: send, write and run nothing, and print what would be done.
 
@@ -64,7 +65,7 @@ output: build/wincode
 
 `bundle_id` and `team_id` are required, and `output` defaults to `build/wincode`. Every value must be text. An unknown key is refused, and so is a key whose name looks like a secret; messages name the key, never its value. `loadConfig` reads and checks the file; no command reads it yet.
 
-Secrets come only from environment variables, which name files outside the project: `WINCODE_ASC_KEY_DIR` (the App Store Connect key folder) and `WINCODE_DIST_KEY` (the distribution key on the WSL2 disk). They are read from phase 2 on (ADR-0013, section 2).
+Secrets come only from environment variables, which name files outside the project: `WINCODE_ASC_KEY_DIR` (the App Store Connect key folder) and `WINCODE_DIST_KEY` (the distribution key on the WSL2 disk). They are read from phase 2 on (ADR-0013, section 2). A key or profile file inside a git working tree is refused unless git ignores it: `requireOutsideGit` does the check, and no command calls it yet.
 
 ## doctor
 
