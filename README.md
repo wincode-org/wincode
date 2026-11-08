@@ -1,8 +1,8 @@
 # winCode
 
-Build, run and ship Flutter iOS apps from Windows.
+Build, sign and ship Flutter iOS apps from Windows. Early stage: a macOS hybrid lane is still needed for asset catalogs and real apps.
 
-**Status: pre-alpha.** There is no `wincode` command yet (`packages/wincode_cli` is a placeholder), so nothing here takes a Flutter project to an IPA in one step. The plan of record is in [docs/PLAN.md](docs/PLAN.md).
+**Status: pre-alpha.** The only `wincode` command so far is `wincode doctor` (`packages/wincode_cli`), so nothing here takes a Flutter project to an IPA in one step. Real apps still go to App Store Connect through a hybrid lane in which a Mac builds the IPA, and a build made without a Mac has been processed by App Store Connect but has not been through App Review. The plan of record is in [docs/PLAN.md](docs/PLAN.md).
 
 What exists today:
 
@@ -20,7 +20,7 @@ It will not ship an iOS Simulator. Instead there is a planned iOS-mode preview o
 
 ## Relationship to xtool
 
-winCode builds on [xtool](https://github.com/xtool-org/xtool) (MIT) instead of reimplementing it. xtool provides the Darwin Swift SDK setup, Apple Developer Services access (XKit) and signing/install for SwiftPM apps. winCode adds everything else: the Flutter project translator, Dart AOT `gen_snapshot` for iOS, the Windows setup and device link, asset catalog compilation, and App Store Connect upload. All of winCode's code lives in this repository. winCode uses xtool's official releases as an external tool and does not send changes upstream to xtool.
+winCode builds on [xtool](https://github.com/xtool-org/xtool) (MIT) instead of reimplementing it. xtool provides the Darwin Swift SDK setup, Apple Developer Services access (XKit) and signing/install for SwiftPM apps. winCode adds everything else: the Flutter project translator, Dart AOT `gen_snapshot` for iOS, the Windows setup and device link, asset catalog compilation, and App Store Connect upload. All of winCode's code lives in this repository. winCode uses xtool's official releases as an external tool and does not send changes upstream to xtool. An exact copy of xtool 1.22.2's source is also kept in [`third_party/xtool`](third_party/README.md) for reading and review ([ADR-0007](docs/adr/0007-vendor-xtool-source.md)); it is xtool's code under xtool's own MIT licence (`third_party/xtool/LICENSE.md`, Copyright (c) 2024 Kabir Oberai).
 
 ## Repository layout
 
@@ -34,6 +34,9 @@ winCode builds on [xtool](https://github.com/xtool-org/xtool) (MIT) instead of r
 | `engine` | `gen_snapshot`-for-iOS build scripts |
 | `docs` | ADRs and format specs |
 | `samples` | Sample Flutter apps |
+| `third_party` | Upstream source kept as an exact copy, with its own licence (xtool, ADR-0007) |
+| `spikes` | Time-boxed experiments and their scripts (results are in `docs/spikes`) |
+| `tools` | Repository scripts: the hygiene scan, WSL toolchain setup, `ipa-diff` |
 
 ## Contributing
 
@@ -43,6 +46,7 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) first. Governance is described in [GOVER
 
 - You download `Xcode.xip` from Apple yourself and accept Apple's licence yourself. winCode never ships, hosts or redistributes Apple SDK files, Xcode binaries, fonts or simulator runtimes.
 - winCode is not affiliated with, endorsed by, or sponsored by Apple Inc. Apple, Xcode, iOS, iPhone, App Store and TestFlight are trademarks of Apple Inc.
+- Flutter is a trademark of Google LLC. winCode is not affiliated with or endorsed by Google.
 - Apple's terms restrict where its SDKs may be used. Whether your use of winCode complies with them is your responsibility.
 - Apple can suspend or terminate developer accounts. Any Apple account you use with winCode is at your own risk.
 - This is not legal advice.

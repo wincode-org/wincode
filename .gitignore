@@ -34,6 +34,12 @@ toolchain/cache/
 engine/out/
 engine/cache/
 
+# Built apps and Xcode build products - never commit (a signed IPA carries a provisioning profile and a certificate)
+*.ipa
+*.xcarchive
+*.dSYM
+Payload/
+
 # Secrets - never commit
 *.p8
 *.p12

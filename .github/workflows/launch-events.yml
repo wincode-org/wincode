@@ -6,6 +6,10 @@ name: launch-events
 # No secrets, no signing, no Apple account, no client code.
 # Manual only: gh workflow run launch-events.yml --ref <branch>
 
+# Public repositories: anyone who can read one can download its artifacts, and these workflows produce output of Apple tools (Xcode, actool,
+# gen_snapshot) that must not be public. So every upload step runs only while the repository is private
+# (github.event.repository.private == true) and keeps its files for 1 day. In a public repository the job still runs but uploads
+# nothing: run it from a private repository to keep the files. workflow_dispatch only, so no pull request or push can start it.
 on:
   workflow_dispatch:
 
@@ -38,11 +42,11 @@ jobs:
         run: bash spikes/f-launch-events/run.sh
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: always()
+        if: always() && github.event.repository.private == true
         with:
           name: launch-events
           path: |
             ${{ runner.temp }}/launch-events-out/summary.md
             ${{ runner.temp }}/launch-events-out/environment.txt
             ${{ runner.temp }}/launch-events-out/logs
-          retention-days: 7
+          retention-days: 1

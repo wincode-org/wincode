@@ -12,11 +12,11 @@ The goal is two co-maintainers by v0.1. A contributor can be invited when they h
 - reviewed other people's PRs constructively,
 - shown they understand and follow the clean-room rule for Apple formats and the no-SDK-redistribution rule.
 
-The maintainer invites them (or a contributor can ask in a GitHub Discussion). Co-maintainers get write access and are added to `CODEOWNERS`. Maintainers may step down at any time, and inactive maintainers (about 6 months) can be moved to emeritus.
+The maintainer invites them (or a contributor can ask in a GitHub Discussion, once Discussions are enabled at launch). Co-maintainers get write access and are added to `CODEOWNERS`. Maintainers may step down at any time, and inactive maintainers (about 6 months) can be moved to emeritus.
 
 ## Decisions
 
-Day-to-day: PR review, one approval required. Larger changes: open an ADR PR and allow at least a week for comment. Once there is more than one maintainer, decisions are by consensus, falling back to a simple majority of maintainers.
+Day-to-day: with a single maintainer, the maintainer may merge their own PRs once CI is green. A PR from anyone else needs one maintainer's approval as well as green CI. Larger changes: open an ADR PR and allow at least a week for comment. Once there is more than one maintainer, decisions are by consensus, falling back to a simple majority of maintainers.
 
 ## Code of Conduct
 
