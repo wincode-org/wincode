@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Spike C: read-only App Store Connect preflight for the test app. It sends GET requests only.
 
-  asc_preflight.py [--dry-run] [<bundle id>] PASS or FAIL for: the key works, the app record is found by bundle ID
-                                             (default: from WINCODE_SPIKE_C_DIR's config.json), the app has no
-                                             builds yet; then the team's certificates and the App ID and profiles
-                                             that match, as one table without names or identifiers
+  asc_preflight.py [--dry-run] [--ipa FILE] [<bundle id>]
+                                             PASS or FAIL for: the key works, the app record is found by bundle ID
+                                             (default: from WINCODE_SPIKE_C_DIR's config.json), the build number
+                                             is higher than every existing build's (INFO shows how many builds
+                                             exist and the highest number; the number is the IPA's CFBundleVersion,
+                                             else config.json's "build"); then the team's certificates and the
+                                             App ID and profiles that match, as one table without names or
+                                             identifiers
   asc_preflight.py --self-test               offline: sign a token with a throwaway key and check it against
                                              Apple's documented format
 
@@ -17,6 +21,7 @@ import argparse
 import base64
 import json
 import os
+import plistlib
 import re
 import subprocess
 import sys
@@ -25,6 +30,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 from collections import Counter
 from pathlib import Path
 
@@ -134,6 +140,32 @@ def get_all(path, params, bearer, dry_run):
     return rows
 
 
+def build_number(text):
+    """'13' -> (13,); '1.2.3' -> (1, 2, 3). Apple compares the dot-separated parts as numbers. None if it isn't one."""
+    return tuple(map(int, text.split("."))) if re.fullmatch(r"\d+(\.\d+){0,2}", text or "") else None
+
+
+def ipa_build_number(ipa):
+    """The CFBundleVersion in the IPA's app bundle (Payload/<name>.app/Info.plist)."""
+    with zipfile.ZipFile(ipa) as z:
+        plists = [n for n in z.namelist() if re.fullmatch(r"Payload/[^/]+\.app/Info\.plist", n)]
+        if len(plists) != 1:
+            sys.exit(f"{Path(ipa).name}: expected one app bundle in Payload/, found {len(plists)}")
+        return plistlib.loads(z.read(plists[0])).get("CFBundleVersion")
+
+
+def build_number_checks(builds, mine):
+    """(INFO line, ok or None) for the app's builds as App Store Connect returned them and this upload's build number.
+    ok is None when there is no number to compare. Apple rejects an upload whose number isn't above every earlier one
+    for the same version, so equal fails; the first upload (no builds) passes."""
+    numbers = sorted(n for n in (build_number(attr(b, "version")) for b in builds) if n)
+    highest = ".".join(map(str, numbers[-1])) if numbers else "none"
+    info = f"{len(builds)} existing builds, highest build number {highest}"
+    if mine is None:
+        return info, None
+    return info, not numbers or (build_number(mine) or ()) > numbers[-1]
+
+
 def attr(resource, name):
     return resource["attributes"].get(name) or ""
 
@@ -144,7 +176,7 @@ def table(header, rows):
         print("  ".join(cell.ljust(width) for cell, width in zip(row, widths)).rstrip())
 
 
-def preflight(bundle_id, dry_run):
+def preflight(bundle_id, dry_run, ipa=None):
     folder = os.environ.get("WINCODE_ASC_KEY_DIR")
     if not folder and not dry_run:
         sys.exit("set WINCODE_ASC_KEY_DIR to the API key folder (docs/spikes/spike-c-store-acceptance.md)")
@@ -161,6 +193,10 @@ def preflight(bundle_id, dry_run):
             print(f"{'PASS' if ok else 'FAIL'}  {name}")
             failed.extend([name] * (not ok))
 
+    def info(text):
+        if not dry_run:
+            print(f"INFO  {text}")
+
     # The checks come first and need only read access to apps and builds; a key without access to certificates
     # or profiles stops at the table, after them. An HTTP error (a key that doesn't work) stops with Apple's code.
     try:
@@ -171,11 +207,17 @@ def preflight(bundle_id, dry_run):
     check("the API key works", True)
     app = [a["id"] for a in apps if attr(a, "bundleId") == bundle_id]
     check("the app record is found by bundle ID", len(app) == 1)
-    builds, uploads = [], []
+    builds = []
     for app_id in app or (["{id of the app record}"] if dry_run else []):
-        builds += get(f"/v1/apps/{app_id}/builds", {"fields[builds]": "processingState"})
-        uploads += get(f"/v1/apps/{app_id}/buildUploads", {"fields[buildUploads]": "state"})
-    check("the app has no builds and no build uploads yet", app and not builds and not uploads)
+        builds += get(f"/v1/apps/{app_id}/builds", {"fields[builds]": "version,processingState"})
+    mine = ipa_build_number(ipa) if ipa else (
+        spike_config()[1]["build"] if os.environ.get("WINCODE_SPIKE_C_DIR") else None)
+    text, ok = build_number_checks(builds, mine)
+    info(text)
+    if ok is None:
+        info("no IPA or config.json given: the build number was not compared (pass --ipa FILE)")
+    else:
+        check("the build number is higher than every existing build's", ok)
 
     certificates = get("/v1/certificates", {"fields[certificates]": "certificateType,expirationDate"})
     bundle_ids = get("/v1/bundleIds", {"filter[identifier]": bundle_id, "fields[bundleIds]": "identifier,platform"})
@@ -197,6 +239,29 @@ def preflight(bundle_id, dry_run):
           f"App IDs: {len(exact)}; profiles of that App ID: {len(profiles)}")
     if failed:
         sys.exit(f"{len(failed)} check(s) failed")
+
+
+def build_number_tests():
+    """Fake answers of GET /v1/apps/{id}/builds, in Apple's JSON shape, against the build-number check."""
+    def fake(*versions):
+        return json.loads(json.dumps({"data": [{"type": "builds", "id": str(i), "attributes": {"version": v}}
+                                               for i, v in enumerate(versions)]}))["data"]
+
+    for builds, mine, expected_info, expected_ok in (
+            (fake(), "1", "0 existing builds, highest build number none", True),              # first upload
+            (fake("1", "9", "10"), "11", "3 existing builds, highest build number 10", True),  # all lower (10 beats 9 as a number, not as text)
+            (fake("1", "13"), "13", "2 existing builds, highest build number 13", False),      # equal
+            (fake("14", "2"), "13", "2 existing builds, highest build number 14", False),      # an existing build is higher
+            (fake("1.2.3"), "1.2.4", "1 existing builds, highest build number 1.2.3", True),   # dotted
+            (fake("3"), "x", "1 existing builds, highest build number 3", False),              # not a number
+            (fake("3"), None, "1 existing builds, highest build number 3", None)):             # nothing to compare
+        assert build_number_checks(builds, mine) == (expected_info, expected_ok), (builds, mine)
+    with tempfile.TemporaryDirectory() as tmp:
+        ipa = Path(tmp) / "app.ipa"
+        with zipfile.ZipFile(ipa, "w") as z:
+            z.writestr("Payload/Runner.app/Info.plist", plistlib.dumps({"CFBundleVersion": "13"}))
+            z.writestr("Payload/Runner.app/Frameworks/X.framework/Info.plist", plistlib.dumps({"CFBundleVersion": "99"}))
+        assert ipa_build_number(ipa) == "13"
 
 
 def self_test():
@@ -239,16 +304,19 @@ def self_test():
             except SystemExit:
                 continue
             raise AssertionError(f"accepted a key folder at {refused}")
-    print("self-test OK: header, claims and signature follow Apple's token format, and openssl verifies the signature")
+    build_number_tests()
+    print("self-test OK: header, claims and signature follow Apple's token format, and openssl verifies the signature; "
+          "the build-number check handles no, lower, equal and higher builds")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Read-only App Store Connect preflight for spike C (GET only).")
     parser.add_argument("bundle_id", nargs="?", help="the test app's bundle ID (default: from WINCODE_SPIKE_C_DIR)")
+    parser.add_argument("--ipa", help="the IPA whose CFBundleVersion is compared with the existing builds")
     parser.add_argument("--dry-run", action="store_true", help="print each request instead of sending it")
     parser.add_argument("--self-test", action="store_true", help="check the token format offline, then exit")
     args = parser.parse_args()
     if args.self_test:
         self_test()
     else:
-        preflight(args.bundle_id or spike_config()[1]["bundle_id"], args.dry_run)
+        preflight(args.bundle_id or spike_config()[1]["bundle_id"], args.dry_run, args.ipa)
