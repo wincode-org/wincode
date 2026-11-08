@@ -4,7 +4,7 @@ winCode is pre-alpha and has no supported releases yet.
 
 ## Reporting a vulnerability
 
-Please do not open a public issue. The preferred channel is GitHub's private vulnerability reporting: go to the **Security** tab of this repository and choose **Report a vulnerability**. If that is unavailable, email bensefiayazid@gmail.com.
+Please do not open a public issue. The only reporting channel is GitHub's private vulnerability reporting: go to the **Security** tab of this repository and choose **Report a vulnerability**. A project mailbox will be added later.
 
 Include what you found, how to reproduce it, and the affected version or commit. We aim to acknowledge reports within 7 days.
 
