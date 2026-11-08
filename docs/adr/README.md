@@ -16,3 +16,4 @@ Architecture Decision Records. Copy `0000-template.md` for each new decision.
 | [0010](0010-native-build-hooks.md) | Run Dart build hooks ourselves, with an xcrun shim for the Darwin SDK | Proposed |
 | [0011](0011-store-bundle-rules.md) | Store bundle rules: what a Windows-built store bundle matches in Xcode's, and what it never fakes | Proposed |
 | [0012](0012-linux-toolchain-gaps-and-hybrid-lane.md) | Linux toolchain gaps, and the hybrid lane for apps that need a Mac build | Proposed |
+| [0013](0013-wincode-cli-build-sign-upload.md) | wincode CLI: build, sign, upload | Proposed |

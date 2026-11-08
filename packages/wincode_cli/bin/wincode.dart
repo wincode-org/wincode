@@ -2,4 +2,5 @@ import 'dart:io';
 
 import 'package:wincode_cli/wincode_cli.dart';
 
-void main(List<String> args) => exitCode = runWincode(args, stdout);
+Future<void> main(List<String> args) async =>
+    exitCode = await runWincode(args, stdout, stderr);
