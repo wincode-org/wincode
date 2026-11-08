@@ -2,7 +2,7 @@
 
 Build, sign and ship Flutter iOS apps from Windows. Early stage: a macOS hybrid lane is still needed for asset catalogs and real apps.
 
-**Status: pre-alpha.** The only `wincode` command that works so far is `wincode doctor` (`packages/wincode_cli`); the commands that will build, sign and upload are designed in [ADR-0013](docs/adr/0013-wincode-cli-build-sign-upload.md) and say "not implemented yet". Nothing here takes a Flutter project to an IPA in one step. Real apps still go to App Store Connect through a hybrid lane in which a Mac builds the IPA, and a build made without a Mac has been processed by App Store Connect but has not been through App Review. The plan of record is in [docs/PLAN.md](docs/PLAN.md).
+**Status: pre-alpha.** The only `wincode` command so far is `wincode doctor` (`packages/wincode_cli`), so nothing here takes a Flutter project to an IPA in one step. Real apps still go to App Store Connect through a hybrid lane in which a Mac builds the IPA, and a build made without a Mac has been processed by App Store Connect but has not been through App Review. The plan of record is in [docs/PLAN.md](docs/PLAN.md).
 
 What exists today:
 
