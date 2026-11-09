@@ -8,9 +8,12 @@ import 'package:args/command_runner.dart';
 import 'package:wincode_core/wincode_core.dart';
 
 import 'src/failure.dart';
+import 'src/redact.dart';
 
 export 'src/config.dart' show WincodeConfig, Workflow, loadConfig;
 export 'src/failure.dart' show ExitCode, WincodeException;
+export 'src/key_location.dart' show requireOutsideGit;
+export 'src/redact.dart' show Redactor, runsInCi;
 
 /// The commands that ADR-0013 designs and later phases implement: name, summary, arguments and phase.
 const _planned = [
@@ -50,17 +53,25 @@ const _planned = [
 /// Runs `wincode` with [args] and returns its exit code, one of [ExitCode].
 ///
 /// Reports and `--help` go to [out], errors to [err]. With `--json`, [out] gets one JSON object when the command ends
-/// and nothing else.
+/// and nothing else. Everything printed passes through a [Redactor], which is active with `--redact` or when [environment]
+/// (default: the process's) sets `CI`.
 Future<int> runWincode(
   List<String> args,
   StringSink out,
-  StringSink err,
-) async {
-  final runner = _Wincode(out);
+  StringSink err, {
+  Map<String, String>? environment,
+}) async {
   // A usage error comes before the arguments are parsed, so the flags can only be looked up in the list itself.
   final flags = args.takeWhile((a) => a != '--');
   var json = flags.contains('--json');
   var verbose = flags.contains('--verbose');
+  final redactor = Redactor.forRun(
+    flag: flags.contains('--redact'),
+    environment: environment ?? Platform.environment,
+  );
+  out = redactor.sink(out);
+  err = redactor.sink(err);
+  final runner = _Wincode(out);
   var command = '';
 
   int report(WincodeException e) {
@@ -112,7 +123,8 @@ Future<int> runWincode(
       WincodeException(
         ExitCode.internal,
         'internal',
-        'internal error: $e',
+        // The message is meant to be pasted into an issue.
+        redactor.forReport('internal error: $e'),
         why: 'this is a bug in winCode.',
         next:
             'report it at https://github.com/wincode-org/wincode/issues with the command line and this message'
@@ -139,6 +151,11 @@ class _Wincode extends CommandRunner<int> {
         'json',
         negatable: false,
         help: 'Print one JSON object on stdout when the command ends, and the messages on stderr.',
+      )
+      ..addFlag(
+        'redact',
+        negatable: false,
+        help: 'Hide the bundle ID and team ID in everything printed. Always on when the CI variable is set.',
       )
       ..addFlag(
         'verbose',

@@ -8,6 +8,7 @@ Global options:
     --config=<file>    The app's settings: bundle ID, team ID, profile, entitlements, CI workflow, output folder. No secrets.
                        (defaults to "wincode.yaml")
     --json             Print one JSON object on stdout when the command ends, and the messages on stderr.
+    --redact           Hide the bundle ID and team ID in everything printed. Always on when the CI variable is set.
     --verbose          Also print each step, external command and HTTP request, with secrets redacted.
     --dry-run          Send, write and run nothing, and print what would be done.
 
