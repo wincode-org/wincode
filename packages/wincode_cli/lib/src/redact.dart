@@ -1,8 +1,10 @@
-/// Hides the app's IDs in what `wincode` prints (ADR-0013, section 7).
+/// Hides values in what `wincode` prints (ADR-0013, section 7).
 ///
-/// The bundle ID and the team ID are shown by default. The redactor replaces the IDs that a command has registered with
-/// [hide] when `--redact` is given or the `CI` environment variable is set, so that a log kept by a CI service does not
-/// carry them. Text meant for an issue report goes through [forReport], which hides them always.
+/// - Secrets registered with [secret] (the token, the Key ID, the Issuer ID, the key folder) are replaced in
+///   everything printed, always.
+/// - IDs registered with [hide] (the bundle ID, the team ID) are shown by default. They are replaced when `--redact` is
+///   given or the `CI` environment variable is set, so that a log kept by a CI service does not carry them.
+/// - Text meant for an issue report goes through [forReport], which replaces both kinds always.
 class Redactor {
   Redactor({required this.active});
 
@@ -13,30 +15,43 @@ class Redactor {
   }) => Redactor(active: flag || runsInCi(environment));
 
   final bool active;
-  final _hidden = <String, String>{};
 
-  /// Registers [value] (a bundle ID, a team ID) to be replaced with [placeholder], such as `<bundle ID>`.
-  void hide(String value, String placeholder) {
+  /// Value -> (placeholder, whether it is a secret).
+  final _hidden = <String, (String, bool)>{};
+
+  /// Registers [value] (a bundle ID, a team ID) to be replaced with [placeholder], such as `<bundle ID>`, when [active].
+  /// A value that is registered already keeps its placeholder.
+  void hide(String value, String placeholder) =>
+      _add(value, placeholder, false);
+
+  /// Registers [value] (a token, a Key ID, a path) to be replaced with [placeholder] in everything printed.
+  void secret(String value, String placeholder) =>
+      _add(value, placeholder, true);
+
+  void _add(String value, String placeholder, bool secret) {
     if (value.isNotEmpty) {
-      _hidden[value] = placeholder;
+      final (shown, wasSecret) = _hidden[value] ?? (placeholder, false);
+      _hidden[value] = (shown, secret || wasSecret);
     }
   }
 
-  /// [text] as it is printed: unchanged unless [active].
-  String apply(String text) => active ? forReport(text) : text;
+  /// [text] as it is printed: the secrets replaced, and the IDs too when [active].
+  String apply(String text) => _replace(text, ids: active);
 
-  /// [text] with the registered values replaced, whether or not [active]: for anything a person is asked to paste into an
-  /// issue.
-  String forReport(String text) {
+  /// [text] with every registered value replaced, whether or not [active]: for anything a person is asked to paste into
+  /// an issue.
+  String forReport(String text) => _replace(text, ids: true);
+
+  String _replace(String text, {required bool ids}) {
     // The longest value first, so that one that contains another is replaced whole.
-    final values = _hidden.keys.toList()
+    final values = _hidden.keys.where((v) => ids || _hidden[v]!.$2).toList()
       ..sort((a, b) => b.length.compareTo(a.length));
-    return values.fold(text, (t, v) => t.replaceAll(v, _hidden[v]!));
+    return values.fold(text, (t, v) => t.replaceAll(v, _hidden[v]!.$1));
   }
 
   /// [inner], with everything written to it passed through [apply]. A value written in two pieces is not found, so
   /// commands write whole lines.
-  StringSink sink(StringSink inner) => active ? _Sink(inner, this) : inner;
+  StringSink sink(StringSink inner) => _Sink(inner, this);
 }
 
 /// Whether the `CI` variable says that `wincode` runs in a CI service. GitHub Actions and most others set it to `true`;

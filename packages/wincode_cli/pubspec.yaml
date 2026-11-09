@@ -11,6 +11,8 @@ executables:
 
 dependencies:
   args: ^2.7.0
+  wincode_asc:
+    path: ../wincode_asc
   wincode_core:
     path: ../wincode_core
   yaml: ^3.1.3

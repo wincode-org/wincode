@@ -7,8 +7,8 @@ import 'package:xml/xml.dart';
 typedef PlistMap = Map<String, Object?>;
 
 /// Reads an XML property list. A dict becomes a [PlistMap], an array a `List<Object?>`, `integer` an `int`,
-/// `real` a `double`, `date` a `DateTime` and `data` a [Uint8List].
-Object? parsePlist(String source) {
+/// `real` a `double`, `date` a `DateTime` and `data` a [Uint8List]. Throws a [FormatException] when [source] is not one.
+Object? parsePlist(String source) => _malformed(() {
   final root = XmlDocument.parse(source).rootElement;
   if (root.name.local != 'plist') {
     throw const FormatException(
@@ -16,16 +16,31 @@ Object? parsePlist(String source) {
     );
   }
   return _read(root.childElements.single);
-}
+});
 
-/// Reads a property list in either form: XML, or the binary `bplist00` that Xcode and the Darwin SDK often use.
+/// Reads a property list in either form: XML, or the binary `bplist00` that Xcode and the Darwin SDK often use. Throws
+/// a [FormatException] when [bytes] are not one.
 Object? parsePlistBytes(Uint8List bytes) {
   const magic = [0x62, 0x70, 0x6c, 0x69, 0x73, 0x74, 0x30, 0x30];
   if (bytes.length > 8 &&
       [for (var i = 0; i < 8; i++) bytes[i]].toString() == magic.toString()) {
-    return _BinaryReader(bytes).read();
+    return _malformed(_BinaryReader(bytes).read);
   }
   return parsePlist(utf8.decode(bytes));
+}
+
+/// [read], with the errors that damaged input causes (an offset past the end, a key that is not text, an element
+/// with no or two values) turned into a [FormatException], as for any other property list that cannot be read.
+Object? _malformed(Object? Function() read) {
+  try {
+    return read();
+  } on RangeError {
+    throw const FormatException('the property list is cut short or damaged');
+  } on StateError {
+    throw const FormatException('the property list is damaged');
+  } on TypeError {
+    throw const FormatException('the property list is damaged');
+  }
 }
 
 /// A reader for binary property lists (Apple's `bplist00`): the trailer gives the object table, and each object

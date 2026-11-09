@@ -69,7 +69,9 @@ Run "wincode help" to see global options.
 $ wincode help preflight
 Check the signed IPA and App Store Connect before an upload. Read-only.
 
-Not implemented yet, see ADR-0013 (phase 2).
+On this PC: the API key and the profile lie outside git working trees, the profile in wincode.yaml, and the IPA (signed.ipa in the output folder by default) with its bundle ID, version, build number and signature. In App Store Connect, with GET requests only: the key works, the app record exists, the build number is above every existing build's, and the App ID has an active App Store profile.
+
+The API key is read from the folder that WINCODE_ASC_KEY_DIR names: AuthKey_<Key ID>.p8 and issuer-id.
 
 Usage: wincode preflight [<signed .ipa>]
 -h, --help    Print this usage information.

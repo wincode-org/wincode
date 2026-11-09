@@ -1,0 +1,15 @@
+name: wincode_asc
+description: The App Store Connect API client of winCode - the ES256 token and read requests.
+version: 0.0.0
+publish_to: none
+
+environment:
+  sdk: ^3.13.0
+
+dependencies:
+  # ES256 for the API token (ADR-0013, section 5). Pinned: it signs with the user's API key.
+  pointycastle: 4.0.0
+
+dev_dependencies:
+  lints: ^6.0.0
+  test: ^1.25.0

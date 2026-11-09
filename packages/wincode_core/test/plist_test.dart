@@ -56,6 +56,27 @@ void main() {
     test('a file that is not a plist is refused', () {
       expect(() => parsePlist('<foo/>'), throwsFormatException);
     });
+
+    test(
+      'a damaged plist of either form is refused with a FormatException',
+      () {
+        final binary = writePlistBinary({'CFBundleVersion': '13'});
+        for (final (what, bytes) in [
+          ('binary, cut short', binary.sublist(0, binary.length - 10)),
+          (
+            'binary, offsets past the end',
+            Uint8List.fromList(binary)..[binary.length - 1] = 0xFF,
+          ),
+          ('XML, two values', utf8.encode('<plist><dict/><dict/></plist>')),
+        ]) {
+          expect(
+            () => parsePlistBytes(Uint8List.fromList(bytes)),
+            throwsFormatException,
+            reason: what,
+          );
+        }
+      },
+    );
   });
 
   group('binary property lists (written)', () {

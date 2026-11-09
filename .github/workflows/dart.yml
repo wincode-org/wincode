@@ -10,12 +10,18 @@ permissions:
 
 jobs:
   core:
-    name: format, analyze, test (${{ matrix.package }})
-    runs-on: ubuntu-latest
+    # The Linux jobs keep the names that branch protection requires; the Windows job adds ', windows'.
+    name: format, analyze, test (${{ matrix.package }}${{ matrix.os == 'windows-latest' && ', windows' || '' }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        package: [wincode_core, wincode_cli]
+        package: [wincode_core, wincode_asc, wincode_cli]
+        os: [ubuntu-latest]
+        # ADR-0013, section 8: paths and process calls differ on Windows, where users run the CLI.
+        include:
+          - package: wincode_cli
+            os: windows-latest
     steps:
       # A short path: Dart's test compiler cannot start from a very long one.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

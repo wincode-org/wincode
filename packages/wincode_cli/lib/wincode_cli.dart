@@ -7,12 +7,15 @@ import 'dart:io';
 import 'package:args/command_runner.dart';
 import 'package:wincode_core/wincode_core.dart';
 
+import 'src/config.dart';
 import 'src/failure.dart';
+import 'src/preflight.dart';
 import 'src/redact.dart';
 
 export 'src/config.dart' show WincodeConfig, Workflow, loadConfig;
 export 'src/failure.dart' show ExitCode, WincodeException;
 export 'src/key_location.dart' show requireOutsideGit;
+export 'src/preflight.dart' show AscConnect;
 export 'src/redact.dart' show Redactor, runsInCi;
 
 /// The commands that ADR-0013 designs and later phases implement: name, summary, arguments and phase.
@@ -29,12 +32,6 @@ const _planned = [
     'Sign the IPA for the App Store with zsign.',
     '[<unsigned .ipa>]',
     3,
-  ),
-  (
-    'preflight',
-    'Check the signed IPA and App Store Connect before an upload. Read-only.',
-    '[<signed .ipa>]',
-    2,
   ),
   (
     'upload',
@@ -55,23 +52,31 @@ const _planned = [
 /// Reports and `--help` go to [out], errors to [err]. With `--json`, [out] gets one JSON object when the command ends
 /// and nothing else. Everything printed passes through a [Redactor], which is active with `--redact` or when [environment]
 /// (default: the process's) sets `CI`.
+///
+/// [clock] (default: the system's) and [connect] (default: App Store Connect) are there for tests.
 Future<int> runWincode(
   List<String> args,
   StringSink out,
   StringSink err, {
   Map<String, String>? environment,
+  DateTime Function()? clock,
+  AscConnect connect = connectToApple,
 }) async {
+  environment ??= Platform.environment;
   // A usage error comes before the arguments are parsed, so the flags can only be looked up in the list itself.
   final flags = args.takeWhile((a) => a != '--');
   var json = flags.contains('--json');
   var verbose = flags.contains('--verbose');
   final redactor = Redactor.forRun(
     flag: flags.contains('--redact'),
-    environment: environment ?? Platform.environment,
+    environment: environment,
   );
   out = redactor.sink(out);
   err = redactor.sink(err);
-  final runner = _Wincode(out);
+  final runner = _Wincode(
+    out,
+    _Preflight(out, err, environment, redactor, clock ?? DateTime.now, connect),
+  );
   var command = '';
 
   int report(WincodeException e) {
@@ -135,7 +140,7 @@ Future<int> runWincode(
 }
 
 class _Wincode extends CommandRunner<int> {
-  _Wincode(this.out)
+  _Wincode(this.out, _Preflight preflight)
     : super(
         'wincode',
         'Build, sign and upload Flutter iOS apps from Windows.',
@@ -171,6 +176,7 @@ class _Wincode extends CommandRunner<int> {
       addCommand(_NotImplemented(out, name, summary, arguments, phase));
     }
     addCommand(_Doctor(out));
+    addCommand(preflight);
   }
 
   final StringSink out;
@@ -328,6 +334,92 @@ class _Doctor extends _Command {
       lines.forEach(out.writeln);
     }
     return code.code;
+  }
+}
+
+class _Preflight extends _Command {
+  _Preflight(
+    super.out,
+    this.err,
+    this.environment,
+    this.redactor,
+    this.clock,
+    this.connect,
+  );
+
+  final StringSink err;
+  final Map<String, String> environment;
+  final Redactor redactor;
+  final DateTime Function() clock;
+  final AscConnect connect;
+
+  @override
+  final name = 'preflight';
+
+  @override
+  final description =
+      'Check the signed IPA and App Store Connect before an upload. Read-only.\n\n'
+      'On this PC: the API key and the profile lie outside git working trees, the profile in wincode.yaml, and the '
+      'IPA (signed.ipa in the output folder by default) with its bundle ID, version, build number and signature. In '
+      "App Store Connect, with GET requests only: the key works, the app record exists, the build number is above every "
+      "existing build's, and the App ID has an active App Store profile.\n\n"
+      'The API key is read from the folder that WINCODE_ASC_KEY_DIR names: AuthKey_<Key ID>.p8 and issuer-id.';
+
+  @override
+  String get invocation => 'wincode preflight [<signed .ipa>]';
+
+  @override
+  Future<int> run() async {
+    final ipa = argResults!.rest;
+    if (ipa.length > 1) {
+      usageException('Give at most one IPA.');
+    }
+    final config = loadConfig(globalResults!.option('config')!);
+    final preflight = Preflight(
+      config: config,
+      ipa: File(
+        ipa.firstOrNull ??
+            '${config.output.path}${Platform.pathSeparator}signed.ipa',
+      ),
+      environment: environment,
+      redactor: redactor,
+      clock: clock,
+      connect: connect,
+      log: globalResults!.flag('verbose') ? err.writeln : null,
+    );
+    // With --json, stdout carries the JSON object only.
+    final report = jsonOutput ? err : out;
+    final List<Finding> findings;
+    if (globalResults!.flag('dry-run')) {
+      final dry = await preflight.dryRun();
+      if (dry.failures.isEmpty) {
+        for (final request in dry.requests) {
+          report
+            ..writeln(request)
+            ..writeln('    Authorization: Bearer <${dry.authorization}>');
+        }
+        if (jsonOutput) {
+          out.writeln(
+            jsonEncode({
+              'command': name,
+              'ok': true,
+              'exitCode': ExitCode.ok.code,
+              'dryRun': true,
+              'requests': dry.requests,
+            }),
+          );
+        }
+        return ExitCode.ok.code;
+      }
+      findings = dry.failures;
+    } else {
+      findings = await preflight.check();
+    }
+    writeReport(findings, report);
+    if (jsonOutput) {
+      out.writeln(jsonEncode(jsonOf(findings)));
+    }
+    return exitCodeOf(findings).code;
   }
 }
 
