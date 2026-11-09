@@ -1,5 +1,6 @@
 {
   "command": "preflight",
+  "app": null,
   "ok": false,
   "exitCode": 1,
   "checks": [

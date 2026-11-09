@@ -13,6 +13,7 @@ import 'src/failure.dart';
 import 'src/init.dart';
 import 'src/preflight.dart';
 import 'src/redact.dart';
+import 'src/select.dart';
 
 export 'src/config.dart'
     show
@@ -199,6 +200,20 @@ class _Wincode extends CommandRunner<int> {
         defaultsTo: 'wincode.yaml',
         help: "The app's settings: bundle ID, team ID, profile, entitlements, CI workflow, output folder. No secrets.",
       )
+      ..addOption(
+        'app',
+        valueHelp: 'name',
+        help:
+            'The app that the command works on, when wincode.yaml has an apps: map. Needed when it has several '
+            '(ADR-0014).',
+      )
+      ..addFlag(
+        'all',
+        negatable: false,
+        help:
+            'Run preflight or doctor for every app in wincode.yaml, one after another, and print a summary table. '
+            'Refused by commands that write.',
+      )
       ..addFlag(
         'json',
         negatable: false,
@@ -282,11 +297,21 @@ class _NotImplemented extends _Command {
       'wincode $name${_arguments.isEmpty ? '' : ' $_arguments'}';
 
   @override
-  Never run() => throw const WincodeException(
-    ExitCode.usage,
-    'not-implemented',
-    'not implemented yet, see ADR-0013',
-  );
+  Never run() {
+    final reason = writesOf[name];
+    if (reason != null && globalResults!.flag('all')) {
+      refuseAll(name, reason);
+    }
+    checkAppOptions(
+      app: globalResults!.option('app'),
+      all: globalResults!.flag('all'),
+    );
+    throw const WincodeException(
+      ExitCode.usage,
+      'not-implemented',
+      'not implemented yet, see ADR-0013',
+    );
+  }
 }
 
 class _Doctor extends _Command {
@@ -341,6 +366,11 @@ class _Doctor extends _Command {
     final reference = argResults!.option('reference');
     if (binary == null && sdk == null && reference == null) {
       return _setup();
+    }
+    if (globalResults!.option('app') != null || globalResults!.flag('all')) {
+      usageException(
+        '--app and --all choose the app of the setup check. The binary checks read no settings.',
+      );
     }
     if (binary == null || (sdk == null && reference == null)) {
       usageException(
@@ -403,25 +433,40 @@ class _Doctor extends _Command {
 }
 
 extension on _Doctor {
-  /// The setup check (ADR-0014, section 3): the settings, and where the App Store Connect key is. Sends nothing and
-  /// reads no key: it checks that the folder holds one `AuthKey_<Key ID>.p8` and an `issuer-id` with an Issuer ID, and
-  /// that they lie where the rules allow.
+  /// The setup check (ADR-0014, section 3): the settings, and where the App Store Connect key is of each app that the
+  /// command names. Sends nothing and reads no key: it checks that the folder holds one `AuthKey_<Key ID>.p8` and an
+  /// `issuer-id` with an Issuer ID, and that they lie where the rules allow.
   Future<int> _setup() async {
-    final findings = <Finding>[];
-    WincodeConfig? config;
+    final all = globalResults!.flag('all');
+    final path = globalResults!.option('config')!;
+    final report = jsonOutput ? err : out;
+    final WincodeSettings settings;
     try {
-      config = loadConfig(globalResults!.option('config')!, redactor: redactor);
-      findings.add(const Finding.pass('settings', 'wincode.yaml loads'));
+      settings = loadSettings(path, redactor: redactor);
     } on WincodeException catch (e) {
-      findings.add(Finding.fail('settings', e));
+      final findings = [Finding.fail('settings', e)];
+      writeReport(findings, report, command: 'doctor');
+      if (jsonOutput) {
+        out.writeln(jsonEncode(jsonOf(findings, command: 'doctor')));
+      }
+      return exitCodeOf(findings).code;
     }
-    if (config != null) {
+    final apps = selectApps(
+      settings,
+      path: path,
+      app: globalResults!.option('app'),
+      all: all,
+      readOnly: true,
+      redactor: redactor,
+    );
+    Future<AppOutcome> one(WincodeConfig app) async {
+      final findings = [const Finding.pass('settings', 'wincode.yaml loads')];
       try {
         final key = await locateAscKeyFiles(
-          config,
+          app,
           environment: environment,
           redactor: redactor,
-          run: runProcess,
+          run: this.runProcess,
         );
         readAscKeyIds(key!, redactor);
         findings.add(
@@ -434,13 +479,44 @@ extension on _Doctor {
       } on WincodeException catch (e) {
         findings.add(Finding.fail('credentials', e));
       }
+      writeReport(findings, report, command: 'doctor');
+      final code = exitCodeOf(findings).code;
+      return (
+        app: app,
+        code: code,
+        firstFailure: findings
+            .where((f) => f.status == 'FAIL')
+            .firstOrNull
+            ?.problem
+            ?.id,
+        json: {...jsonOf(findings, command: 'doctor', app: app.name)}
+          ..remove('command'),
+      );
     }
-    final report = jsonOutput ? err : out;
-    writeReport(findings, report, command: 'doctor');
+
+    if (!all) {
+      final outcome = await one(apps.single);
+      if (jsonOutput) {
+        out.writeln(jsonEncode({'command': name, ...outcome.json}));
+      }
+      return outcome.code;
+    }
+    final outcomes = <AppOutcome>[];
+    for (final (i, app) in apps.indexed) {
+      if (i > 0) {
+        report.writeln();
+      }
+      report.writeln('== ${app.name ?? path} ==');
+      outcomes.add(await one(app));
+    }
+    report
+      ..writeln()
+      ..writeln(summaryTable(outcomes, redactor))
+      ..writeln(summaryLine(name, path, outcomes));
     if (jsonOutput) {
-      out.writeln(jsonEncode(jsonOf(findings, command: 'doctor')));
+      out.writeln(jsonEncode(allJson(name, outcomes)));
     }
-    return exitCodeOf(findings).code;
+    return combinedCode(outcomes);
   }
 }
 
@@ -494,12 +570,17 @@ class _Init extends _Command {
       ..addOption(
         'flavor',
         valueHelp: 'name',
-        help: 'Read only the Release-<name> configuration of the Xcode project, the App Store build.',
+        help: 'The Flutter flavor of the app: read the Release-<name> configuration of the Xcode project, the App Store build, and record the flavor. Can be combined with --configuration.',
       )
       ..addOption(
         'configuration',
         valueHelp: 'name',
-        help: 'Read exactly this build configuration of the Xcode project, such as Release-demo, and do not compare Debug and Profile with it.',
+        help: 'Read exactly this build configuration of the Xcode project, such as Release-demo, and do not compare Debug and Profile with it. With --flavor it overrides the default Release-<name>.',
+      )
+      ..addOption(
+        'credentials',
+        valueHelp: 'name',
+        help: 'The credentials reference of the app: the folder of your keys folder that holds its keys. Required for an app of a file of apps.',
       )
       ..addFlag(
         'workflow',
@@ -537,10 +618,20 @@ class _Init extends _Command {
       'that you name, shows what it found, and asks you to confirm each value. It never writes a key or the key folder '
       '(WINCODE_ASC_KEY_DIR), and it never edits .gitignore.\n\n'
       'It asks only at a terminal. In CI (the CI variable), with --yes or with --json it asks nothing: give every field '
-      'as an option, or --yes to accept what it found. Without --force it does not replace a wincode.yaml.';
+      'as an option, or --yes to accept what it found. Without --force it does not replace a wincode.yaml.\n\n'
+      'With --app <name> it adds that app to a file of apps (or starts one), or updates its entry, after showing the '
+      'changes and asking you to confirm (--yes where it cannot ask); a value that the entry already has is replaced only '
+      'with --force. Moving a flat wincode.yaml to apps: is not implemented yet (ADR-0014).';
 
   @override
   Future<int> run() async {
+    if (globalResults!.flag('all')) {
+      refuseAll(name, writesOf[name]!);
+    }
+    checkAppOptions(
+      app: globalResults!.option('app'),
+      all: globalResults!.flag('all'),
+    );
     final yes = argResults!.flag('yes');
     final interactive =
         !yes && !jsonOutput && !runsInCi(environment) && terminal;
@@ -559,6 +650,8 @@ class _Init extends _Command {
         output: argResults!.option('output'),
         flavor: argResults!.option('flavor'),
         configuration: argResults!.option('configuration'),
+        app: globalResults!.option('app'),
+        credentials: argResults!.option('credentials'),
         yes: yes,
         force: argResults!.flag('force'),
         copyWorkflow: argResults!.flag('workflow'),
@@ -613,20 +706,62 @@ class _Preflight extends _Command {
 
   @override
   Future<int> run() async {
-    final ipa = argResults!.rest;
-    if (ipa.length > 1) {
+    final rest = argResults!.rest;
+    if (rest.length > 1) {
       usageException('Give at most one IPA.');
     }
-    final config = loadConfig(
-      globalResults!.option('config')!,
+    final all = globalResults!.flag('all');
+    if (all && rest.isNotEmpty) {
+      usageException(
+        '--all checks the signed.ipa in the output folder of each app: do not name an IPA.',
+      );
+    }
+    final path = globalResults!.option('config')!;
+    final settings = loadSettings(path, redactor: redactor);
+    final apps = selectApps(
+      settings,
+      path: path,
+      app: globalResults!.option('app'),
+      all: all,
+      readOnly: true,
       redactor: redactor,
     );
+    // With --json, stdout carries the JSON object only.
+    final report = jsonOutput ? err : out;
+    if (!all) {
+      final outcome = await _one(apps.single, rest.firstOrNull, report);
+      if (jsonOutput) {
+        out.writeln(jsonEncode({'command': name, ...outcome.json}));
+      }
+      return outcome.code;
+    }
+    final outcomes = <AppOutcome>[];
+    for (final (i, app) in apps.indexed) {
+      if (i > 0) {
+        report.writeln();
+      }
+      report.writeln('== ${app.name ?? path} ==');
+      outcomes.add(await _one(app, null, report));
+    }
+    report
+      ..writeln()
+      ..writeln(summaryTable(outcomes, redactor))
+      ..writeln(summaryLine(name, path, outcomes));
+    if (jsonOutput) {
+      out.writeln(jsonEncode(allJson(name, outcomes)));
+    }
+    return combinedCode(outcomes);
+  }
+
+  /// Checks [app]: its report goes to [report], and its object for `--json` (without `command`) comes back.
+  Future<AppOutcome> _one(
+    WincodeConfig app,
+    String? ipa,
+    StringSink report,
+  ) async {
     final preflight = Preflight(
-      config: config,
-      ipa: File(
-        ipa.firstOrNull ??
-            '${config.output.path}${Platform.pathSeparator}signed.ipa',
-      ),
+      config: app,
+      ipa: File(ipa ?? '${app.output.path}${Platform.pathSeparator}signed.ipa'),
       environment: environment,
       redactor: redactor,
       clock: clock,
@@ -634,8 +769,6 @@ class _Preflight extends _Command {
       log: globalResults!.flag('verbose') ? err.writeln : null,
       run: runProcess,
     );
-    // With --json, stdout carries the JSON object only.
-    final report = jsonOutput ? err : out;
     final List<Finding> findings;
     if (globalResults!.flag('dry-run')) {
       final dry = await preflight.dryRun();
@@ -645,28 +778,34 @@ class _Preflight extends _Command {
             ..writeln(request)
             ..writeln('    Authorization: Bearer <${dry.authorization}>');
         }
-        if (jsonOutput) {
-          out.writeln(
-            jsonEncode({
-              'command': name,
-              'ok': true,
-              'exitCode': ExitCode.ok.code,
-              'dryRun': true,
-              'requests': dry.requests,
-            }),
-          );
-        }
-        return ExitCode.ok.code;
+        return (
+          app: app,
+          code: ExitCode.ok.code,
+          firstFailure: null,
+          json: {
+            'app': app.name,
+            'ok': true,
+            'exitCode': ExitCode.ok.code,
+            'dryRun': true,
+            'requests': dry.requests,
+          },
+        );
       }
       findings = dry.failures;
     } else {
       findings = await preflight.check();
     }
     writeReport(findings, report);
-    if (jsonOutput) {
-      out.writeln(jsonEncode(jsonOf(findings)));
-    }
-    return exitCodeOf(findings).code;
+    return (
+      app: app,
+      code: exitCodeOf(findings).code,
+      firstFailure: findings
+          .where((f) => f.status == 'FAIL')
+          .firstOrNull
+          ?.problem
+          ?.id,
+      json: {...jsonOf(findings, app: app.name)}..remove('command'),
+    );
   }
 }
 

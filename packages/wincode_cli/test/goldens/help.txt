@@ -7,6 +7,8 @@ Global options:
 -h, --help             Print this usage information.
     --config=<file>    The app's settings: bundle ID, team ID, profile, entitlements, CI workflow, output folder. No secrets.
                        (defaults to "wincode.yaml")
+    --app=<name>       The app that the command works on, when wincode.yaml has an apps: map. Needed when it has several (ADR-0014).
+    --all              Run preflight or doctor for every app in wincode.yaml, one after another, and print a summary table. Refused by commands that write.
     --json             Print one JSON object on stdout when the command ends, and the messages on stderr.
     --redact           Hide the bundle ID and team ID in everything printed. Always on when the CI variable is set.
     --verbose          Also print each step, external command and HTTP request, with secrets redacted.
@@ -63,6 +65,8 @@ init reads ios/Runner.xcodeproj for the bundle ID and the entitlements, and the 
 
 It asks only at a terminal. In CI (the CI variable), with --yes or with --json it asks nothing: give every field as an option, or --yes to accept what it found. Without --force it does not replace a wincode.yaml.
 
+With --app <name> it adds that app to a file of apps (or starts one), or updates its entry, after showing the changes and asking you to confirm (--yes where it cannot ask); a value that the entry already has is replaced only with --force. Moving a flat wincode.yaml to apps: is not implemented yet (ADR-0014).
+
 Usage: wincode init [arguments]
 -h, --help                    Print this usage information.
     --bundle-id=<id>          The app's bundle ID. Default: read from ios/Runner.xcodeproj.
@@ -72,8 +76,9 @@ Usage: wincode init [arguments]
     --entitlements=<file>     The .entitlements file. Default: the one of the Xcode project.
     --workflow-ref=<ref>      The CI workflow for wincode build: <owner>/<repository>/.github/workflows/<file>@<branch or tag>.
     --output=<folder>         Where the IPAs go (default build/wincode).
-    --flavor=<name>           Read only the Release-<name> configuration of the Xcode project, the App Store build.
-    --configuration=<name>    Read exactly this build configuration of the Xcode project, such as Release-demo, and do not compare Debug and Profile with it.
+    --flavor=<name>           The Flutter flavor of the app: read the Release-<name> configuration of the Xcode project, the App Store build, and record the flavor. Can be combined with --configuration.
+    --configuration=<name>    Read exactly this build configuration of the Xcode project, such as Release-demo, and do not compare Debug and Profile with it. With --flavor it overrides the default Release-<name>.
+    --credentials=<name>      The credentials reference of the app: the folder of your keys folder that holds its keys. Required for an app of a file of apps.
     --workflow                Copy the reference workflow to .github/workflows/wincode-ios.yml. It never replaces a file.
 -y, --yes                     Ask nothing: accept what init found.
     --force                   Replace an existing wincode.yaml.

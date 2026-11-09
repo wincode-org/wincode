@@ -72,6 +72,9 @@ Read the build configuration Release-alpha of ios/Runner.xcodeproj.
 bundle_id: <bundle ID>
 team_id: <team ID>
 
+# The Flutter flavor that builds this app. init read Release-<flavor> of the Xcode project for it.
+flavor: alpha
+
 # The App Store profile, as the developer portal delivers it. wincode sign signs with it.
 # profile: ../signing/App_Store.mobileprovision
 
@@ -104,6 +107,9 @@ Read the build configuration Release-gamma of ios/Runner.xcodeproj.
 bundle_id: <bundle ID>
 team_id: <team ID>
 
+# The Flutter flavor that builds this app. init read Release-<flavor> of the Xcode project for it.
+flavor: gamma
+
 # The App Store profile, as the developer portal delivers it. wincode sign signs with it.
 # profile: ../signing/App_Store.mobileprovision
 
@@ -135,8 +141,8 @@ exit 64
 
 # --flavor together with --configuration
 $ wincode init --redact --flavor beta --configuration Release-beta
-stderr: wincode init: --flavor and --configuration both name the build configuration to read
-stderr:   why: --flavor <name> reads Release-<name>; --configuration <name> reads the configuration of exactly that name.
-stderr:   next: give one of them.
-exit 64
+stderr: wincode init: the Xcode project has no build configuration named Release-beta; it has Release-delta
+stderr:   why: --configuration names the build configuration whose bundle ID, team ID and entitlements init reads, and it must match a name in ios/Runner.xcodeproj exactly.
+stderr:   next: pass one of those names to --configuration, or leave it out to read Release.
+exit 1
 
