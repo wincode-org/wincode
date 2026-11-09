@@ -40,7 +40,9 @@ The **names, paths and keys** check (`.github/workflows/hygiene.yml`, `tools/sca
 
 ## Releases
 
-[release-please](https://github.com/googleapis/release-please) opens the release PR from Conventional Commits. That PR is opened with the default `GITHUB_TOKEN`, and GitHub does not start the usual checks for it: its workflow runs stay in `action_required` with no jobs, so the required checks never report and the PR stays blocked. The fix (a token for release-please that is not the default one) has not been chosen yet; this section will say which when it is.
+[release-please](https://github.com/googleapis/release-please) opens the release PR from Conventional Commits. Releases are deferred until the first tagged release: nothing is tagged yet, and the release PR stays open and unmerged until the maintainer decides to cut 0.1.0.
+
+That PR is opened with the default `GITHUB_TOKEN`, and GitHub does not start the usual checks for it: its workflow runs stay in `action_required` with no jobs, so the required checks never report and the PR stays blocked. Until a token for release-please that is not the default one is chosen, the maintainer approves its workflow runs manually. This section will say which token when it is chosen.
 
 ## Clean-room rule for Apple file formats
 

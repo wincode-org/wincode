@@ -2,7 +2,7 @@
 
 Status: v3, 2026-11-02. v2 was proposed on 2026-10-18, and v1 was approved by Alpha on 2026-10-12.
 
-Gate G0 is met: a Flutter app built on Windows runs on an iPhone. Since v2, spike C has passed (App Store Connect processed a build that winCode signed and uploaded from Windows as valid), spikes D, E and F are done, and builds of real apps have reached App Store Connect through the hybrid lane: a Mac builds the unsigned IPA, and winCode signs and uploads it from Windows. What still stands between winCode and a one-command, pure-Windows store build is a short list of gaps (section "Gaps found by real apps"): winCode cannot compile asset catalogs, the Linux toolchain differs from Xcode in a few ways, and App Review has not yet judged a pure-Windows build. The only `wincode` command that works so far is `wincode doctor`; the others are designed in ADR-0013 and say "not implemented yet", and nothing takes a project to an IPA in one step. The repository becomes public on about 2026-11-08, as source and documentation.
+Gate G0 is met: a Flutter app built on Windows runs on an iPhone. Since v2, spike C has passed (App Store Connect processed a build that winCode signed and uploaded from Windows as valid), spikes D, E and F are done, and builds of real apps have reached App Store Connect through the hybrid lane: a Mac builds the unsigned IPA, and winCode signs and uploads it from Windows. What still stands between winCode and a one-command, pure-Windows store build is a short list of gaps (section "Gaps found by real apps"): winCode cannot compile asset catalogs, the Linux toolchain differs from Xcode in a few ways, and App Review has not yet judged a pure-Windows build. The only `wincode` command that works so far is `wincode doctor`; the others are designed in ADR-0013 and say "not implemented yet", and nothing takes a project to an IPA in one step. The repository is public, as source and documentation; nothing is tagged or released yet.
 
 ## Phase 0 results (2026-10-16)
 
@@ -48,7 +48,7 @@ Repo: the core library, the spikes through F and ADRs 0008 to 0012 are on `main`
 - **Spike C passed.** The licence review and App Review are still open, so the cloud Mac lane stays the default for store builds (ADR-0008).
 - **The real-app track is the priority.** Building a real app, and a payments SDK from stock sources, showed the Linux gaps in "Gaps found by real apps". They are recorded in ADR-0012 and drive the next steps.
 - **The `Assets.car` track is split in two.** Catalogs that the app owns (icon, image sets, colour sets) are the clean-room compiler's target; catalogs that third-party packages ship go through the hybrid lane for now.
-- **Nothing is public yet.** The first public release is source and documentation (version 0.1.0); it promises no command that does not exist.
+- **The repository is public,** as source and documentation, and nothing is tagged or released yet. The first release (version 0.1.0) promises no command that does not exist.
 
 ## What changed in v2
 
@@ -382,7 +382,7 @@ Still open from v2, unchanged:
 New, in order (the maintainer decides what moves):
 
 1. **Now, in pull requests:** the two compiler options (cross-import overlays, no `SwiftUICore` autolink), the README status, ADR-0012, this plan, the CI scan for names, paths and key shapes, the release-please start at 0.1.0, and the macOS-jobs guard.
-2. **About 2026-11-08, the maintainer:** decide whether to rewrite the history first (a script and a dry run are prepared; nothing is pushed without a go), then make the repository public and turn on branch protection and private vulnerability reporting.
+2. **Done, checked on 2026-11-08:** the repository is public, private vulnerability reporting is on, and the ruleset `main protection` is active. Its history was imported from an earlier private repository (README).
 3. **Dev:** a post-link check that no library or binding in the runner is newer than the app's minimum OS, beyond the `SwiftUICore` case.
 4. **Dev:** the `wincode_cli` package: `doctor` is done. The hybrid-lane commands are designed in ADR-0013 (Proposed) and come next, ported from the spike scripts in its phase order (`preflight`, `sign`, `upload`, then `build`), then a pure-Windows build as a thin slice for simple apps. `wincode_asc` for the App Store Connect calls.
 5. **CI and Dev:** the macOS oracle for the `Assets.car` image-set and colour-set notes in `docs/formats/` (the A side), then the compiler in a separate session that reads only those notes (the B side).
@@ -396,7 +396,7 @@ New, in order (the maintainer decides what moves):
 2. Cloud Mac as the default store lane until one pure-Windows build has passed App Review and the risk is accepted (recommended: yes). In practice the hybrid lane is the store lane today.
 3. New phase order, shipping before hot reload (recommended: yes).
 4. ADR-0002 (Dart CLI) and ADR-0003 (SwiftPM-only plugins v1): the audit and the real-app builds support accepting ADR-0003, since every native plugin in the reference app is SwiftPM.
-5. When the repo goes public: about 2026-11-08, as source and documentation (version 0.1.0).
+5. When the repo goes public, as source and documentation. Done: it is public (checked 2026-11-08); version 0.1.0 is not released yet.
 6. Hot-reload phase: build it, or integrate xcross. Undecided: xcross auto-revokes certificates and ignores flavors, so it only runs with a throwaway Apple ID until the trial and a workaround settle it.
 7. Spike E (native build hooks) before the rest of phase 1 (recommended: yes, because almost every Flutter app depends on path_provider).
 
