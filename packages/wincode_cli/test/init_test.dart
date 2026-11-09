@@ -534,6 +534,7 @@ output: build/wincode
       expect(run.code, 0, reason: run.err);
       expect(jsonDecode(run.out), {
         'command': 'init',
+        'app': null,
         'ok': true,
         'exitCode': 0,
         'dryRun': false,
@@ -1297,22 +1298,77 @@ Next:
       },
     );
 
-    test('--flavor and --configuration together are a usage error', () async {
-      flutterProject(_flavors());
+    test('--flavor and --configuration may be combined: --configuration overrides Release-<flavor>, and both are recorded', () async {
+      flutterProject({
+        ..._flavors(),
+        'Release-beta-eu': '$_bundleId.beta.eu',
+      }, team: _team);
       final run = await init([
         '--yes',
         '--json',
         '--flavor',
         'beta',
         '--configuration',
-        'Release-beta',
+        'Release-beta-eu',
       ]);
-      expect(run.code, 64);
+      expect(run.code, 0, reason: run.err);
+      final loaded = loadConfig(config().path);
+      expect(loaded.bundleId, '$_bundleId.beta.eu');
+      expect(loaded.flavor, 'beta');
+      expect(loaded.configuration, 'Release-beta-eu');
       expect(
-        errorOf(run.out)['what'],
-        '--flavor and --configuration both name the build configuration to read',
+        run.err,
+        startsWith(
+          'Read the build configuration Release-beta-eu of ios/Runner.xcodeproj.\n',
+        ),
       );
     });
+
+    test('the flavor is recorded, and the default configuration Release-<flavor> is not', () async {
+      flutterProject(_flavors(), team: _team);
+      for (final args in [
+        ['--flavor', 'beta'],
+        ['--flavor', 'beta', '--configuration', 'Release-beta'],
+      ]) {
+        final run = await init(['--yes', '--force', ...args]);
+        expect(run.code, 0, reason: run.err);
+        final text = config().readAsStringSync();
+        expect(text, contains('flavor: beta'), reason: '$args');
+        expect(text, isNot(contains('configuration:')), reason: '$args');
+        expect(loadConfig(config().path).configuration, 'Release-beta');
+      }
+    });
+
+    test(
+      '--credentials is recorded, and checked with the rules of every name',
+      () async {
+        flutterProject(_flavors(), team: _team);
+        final run = await init([
+          '--yes',
+          '--flavor',
+          'beta',
+          '--credentials',
+          'team-one',
+        ]);
+        expect(run.code, 0, reason: run.err);
+        expect(loadConfig(config().path).credentials, 'team-one');
+        expect(run.out, contains('the folder team-one of your keys folder'));
+        for (final bad in ['ab', 'Team_One', 'build']) {
+          final refused = await init([
+            '--yes',
+            '--force',
+            '--credentials',
+            bad,
+          ]);
+          expect(refused.code, 64, reason: bad);
+          expect(refused.err, contains('--credentials: the credentials name'));
+          expect(
+            refused.err,
+            isNot(contains(bad == 'ab' ? 'zzz' : 'Team_One')),
+          );
+        }
+      },
+    );
   });
 
   test('the messages of a run that cannot ask are test/goldens/init-messages.txt (UPDATE_GOLDENS=1 rewrites it)', () async {

@@ -1,0 +1,207 @@
+# one app, passing: wincode doctor --app alpha --json
+{
+  "command": "doctor",
+  "app": "alpha",
+  "ok": true,
+  "exitCode": 0,
+  "checks": [
+    {
+      "check": "settings",
+      "status": "PASS",
+      "what": "wincode.yaml loads"
+    },
+    {
+      "check": "credentials",
+      "status": "PASS",
+      "what": "the App Store Connect key folder holds one AuthKey_<Key ID>.p8 and an issuer-id, outside git working trees and OneDrive"
+    }
+  ]
+}
+exit 0
+
+# one app, failing: wincode doctor --app beta --json
+{
+  "command": "doctor",
+  "app": "beta",
+  "ok": false,
+  "exitCode": 78,
+  "checks": [
+    {
+      "check": "settings",
+      "status": "PASS",
+      "what": "wincode.yaml loads"
+    },
+    {
+      "check": "credentials",
+      "status": "FAIL",
+      "id": "credentials-missing",
+      "what": "the credentials team-two of app beta are missing: the keys folder has no folder team-two",
+      "why": "wincode.yaml names a credentials reference for each app, never a key, and beta's App Store Connect key is read from that folder.",
+      "next": "create the folder team-two in %USERPROFILE%\\.wincode\\keys (or in the folder that WINCODE_KEYS_DIR names) with AuthKey_<Key ID>.p8, as App Store Connect delivered it, and issuer-id (and dist.key, for wincode sign), or set WINCODE_ASC_KEY_DIR_TEAM_TWO to a folder that holds the first two."
+    }
+  ],
+  "error": {
+    "id": "credentials-missing",
+    "what": "the credentials team-two of app beta are missing: the keys folder has no folder team-two",
+    "why": "wincode.yaml names a credentials reference for each app, never a key, and beta's App Store Connect key is read from that folder.",
+    "next": "create the folder team-two in %USERPROFILE%\\.wincode\\keys (or in the folder that WINCODE_KEYS_DIR names) with AuthKey_<Key ID>.p8, as App Store Connect delivered it, and issuer-id (and dist.key, for wincode sign), or set WINCODE_ASC_KEY_DIR_TEAM_TWO to a folder that holds the first two."
+  }
+}
+exit 78
+
+# every app: wincode doctor --all --json
+{
+  "command": "doctor",
+  "all": true,
+  "ok": false,
+  "exitCode": 78,
+  "apps": [
+    {
+      "app": "alpha",
+      "ok": true,
+      "exitCode": 0,
+      "checks": [
+        {
+          "check": "settings",
+          "status": "PASS",
+          "what": "wincode.yaml loads"
+        },
+        {
+          "check": "credentials",
+          "status": "PASS",
+          "what": "the App Store Connect key folder holds one AuthKey_<Key ID>.p8 and an issuer-id, outside git working trees and OneDrive"
+        }
+      ]
+    },
+    {
+      "app": "beta",
+      "ok": false,
+      "exitCode": 78,
+      "checks": [
+        {
+          "check": "settings",
+          "status": "PASS",
+          "what": "wincode.yaml loads"
+        },
+        {
+          "check": "credentials",
+          "status": "FAIL",
+          "id": "credentials-missing",
+          "what": "the credentials team-two of app beta are missing: the keys folder has no folder team-two",
+          "why": "wincode.yaml names a credentials reference for each app, never a key, and beta's App Store Connect key is read from that folder.",
+          "next": "create the folder team-two in %USERPROFILE%\\.wincode\\keys (or in the folder that WINCODE_KEYS_DIR names) with AuthKey_<Key ID>.p8, as App Store Connect delivered it, and issuer-id (and dist.key, for wincode sign), or set WINCODE_ASC_KEY_DIR_TEAM_TWO to a folder that holds the first two."
+        }
+      ],
+      "error": {
+        "id": "credentials-missing",
+        "what": "the credentials team-two of app beta are missing: the keys folder has no folder team-two",
+        "why": "wincode.yaml names a credentials reference for each app, never a key, and beta's App Store Connect key is read from that folder.",
+        "next": "create the folder team-two in %USERPROFILE%\\.wincode\\keys (or in the folder that WINCODE_KEYS_DIR names) with AuthKey_<Key ID>.p8, as App Store Connect delivered it, and issuer-id (and dist.key, for wincode sign), or set WINCODE_ASC_KEY_DIR_TEAM_TWO to a folder that holds the first two."
+      }
+    },
+    {
+      "app": "gamma",
+      "ok": true,
+      "exitCode": 0,
+      "checks": [
+        {
+          "check": "settings",
+          "status": "PASS",
+          "what": "wincode.yaml loads"
+        },
+        {
+          "check": "credentials",
+          "status": "PASS",
+          "what": "the App Store Connect key folder holds one AuthKey_<Key ID>.p8 and an issuer-id, outside git working trees and OneDrive"
+        }
+      ]
+    }
+  ],
+  "error": {
+    "app": "beta",
+    "id": "credentials-missing",
+    "what": "the credentials team-two of app beta are missing: the keys folder has no folder team-two",
+    "why": "wincode.yaml names a credentials reference for each app, never a key, and beta's App Store Connect key is read from that folder.",
+    "next": "create the folder team-two in %USERPROFILE%\\.wincode\\keys (or in the folder that WINCODE_KEYS_DIR names) with AuthKey_<Key ID>.p8, as App Store Connect delivered it, and issuer-id (and dist.key, for wincode sign), or set WINCODE_ASC_KEY_DIR_TEAM_TWO to a folder that holds the first two."
+  }
+}
+exit 78
+
+# every app, redacted: wincode doctor --all --redact --json
+{
+  "command": "doctor",
+  "all": true,
+  "ok": false,
+  "exitCode": 78,
+  "apps": [
+    {
+      "app": "app-1",
+      "ok": true,
+      "exitCode": 0,
+      "checks": [
+        {
+          "check": "settings",
+          "status": "PASS",
+          "what": "wincode.yaml loads"
+        },
+        {
+          "check": "credentials",
+          "status": "PASS",
+          "what": "the App Store Connect key folder holds one AuthKey_<Key ID>.p8 and an issuer-id, outside git working trees and OneDrive"
+        }
+      ]
+    },
+    {
+      "app": "app-2",
+      "ok": false,
+      "exitCode": 78,
+      "checks": [
+        {
+          "check": "settings",
+          "status": "PASS",
+          "what": "wincode.yaml loads"
+        },
+        {
+          "check": "credentials",
+          "status": "FAIL",
+          "id": "credentials-missing",
+          "what": "the credentials credentials-2 of app app-2 are missing: the keys folder has no folder credentials-2",
+          "why": "wincode.yaml names a credentials reference for each app, never a key, and app-2's App Store Connect key is read from that folder.",
+          "next": "create the folder credentials-2 in %USERPROFILE%\\.wincode\\keys (or in the folder that WINCODE_KEYS_DIR names) with AuthKey_<Key ID>.p8, as App Store Connect delivered it, and issuer-id (and dist.key, for wincode sign), or set WINCODE_ASC_KEY_DIR_CREDENTIALS_2 to a folder that holds the first two."
+        }
+      ],
+      "error": {
+        "id": "credentials-missing",
+        "what": "the credentials credentials-2 of app app-2 are missing: the keys folder has no folder credentials-2",
+        "why": "wincode.yaml names a credentials reference for each app, never a key, and app-2's App Store Connect key is read from that folder.",
+        "next": "create the folder credentials-2 in %USERPROFILE%\\.wincode\\keys (or in the folder that WINCODE_KEYS_DIR names) with AuthKey_<Key ID>.p8, as App Store Connect delivered it, and issuer-id (and dist.key, for wincode sign), or set WINCODE_ASC_KEY_DIR_CREDENTIALS_2 to a folder that holds the first two."
+      }
+    },
+    {
+      "app": "app-3",
+      "ok": true,
+      "exitCode": 0,
+      "checks": [
+        {
+          "check": "settings",
+          "status": "PASS",
+          "what": "wincode.yaml loads"
+        },
+        {
+          "check": "credentials",
+          "status": "PASS",
+          "what": "the App Store Connect key folder holds one AuthKey_<Key ID>.p8 and an issuer-id, outside git working trees and OneDrive"
+        }
+      ]
+    }
+  ],
+  "error": {
+    "app": "app-2",
+    "id": "credentials-missing",
+    "what": "the credentials credentials-2 of app app-2 are missing: the keys folder has no folder credentials-2",
+    "why": "wincode.yaml names a credentials reference for each app, never a key, and app-2's App Store Connect key is read from that folder.",
+    "next": "create the folder credentials-2 in %USERPROFILE%\\.wincode\\keys (or in the folder that WINCODE_KEYS_DIR names) with AuthKey_<Key ID>.p8, as App Store Connect delivered it, and issuer-id (and dist.key, for wincode sign), or set WINCODE_ASC_KEY_DIR_CREDENTIALS_2 to a folder that holds the first two."
+  }
+}
+exit 78
+

@@ -49,7 +49,7 @@ class Finding {
   final WincodeException? problem;
 
   /// An object of the `checks` list of `--json`.
-  Map<String, String> toJson() => {
+  Map<String, Object?> toJson() => {
     'check': check,
     'status': status,
     ...?problem?.toJson(),
@@ -1100,15 +1100,17 @@ ExitCode exitCodeOf(List<Finding> findings) =>
     findings.where((f) => f.status == 'FAIL').firstOrNull?.problem?.exitCode ??
     ExitCode.ok;
 
-/// The object that `--json` prints: `command`, `ok`, `exitCode`, every finding in `checks`, and the first failure in
+/// The object that `--json` prints: `command`, `app` (the name, null for a flat file), `ok`, `exitCode`, every finding in `checks`, and the first failure in
 /// `error`.
 Map<String, Object?> jsonOf(
   List<Finding> findings, {
   String command = 'preflight',
+  String? app,
 }) {
   final code = exitCodeOf(findings);
   return {
     'command': command,
+    'app': app,
     'ok': code == ExitCode.ok,
     'exitCode': code.code,
     'checks': [for (final f in findings) f.toJson()],

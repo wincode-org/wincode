@@ -4,7 +4,7 @@
 - Date: 2026-11-09
 - Amended: 2026-11-09, after review: the keys root is on the Windows side, not on the WSL2 disk (section 2); `init` edits a file of apps in place with `yaml_edit` (section 5); names of apps and references may not be common words or shorter than 3 characters, and paths derived from the config are redacted (section 4)
 - Amends: ADR-0013 (sections 1, 2, 3, 4 and 7, and the acceptance criteria of its phases 2 to 5). Design only: nothing here is implemented yet.
-- Implementation: pull requests 1 (schema and loader) and 2 (credentials resolution) of section 11 are built, see "As built" there; pull requests 3 and 4 are not started.
+- Implementation: pull requests 1 (schema and loader), 2 (credentials resolution) and 3 (`--app` and `--all`) of section 11 are built, see "As built" there; pull request 4 is not started.
 
 ## Context
 
@@ -462,6 +462,20 @@ Four pull requests, each one concern, each leaving every command working. The cr
   5. The folders found are registered as secrets: the root as `<WINCODE_KEYS_DIR>`, the folder of a variable as `<keys folder>`, the distribution key's file as `<distribution key>`.
   6. `resolveDistKey` checks location only: whether `dist.key` exists, and what is in it, is for `sign`. For a flat file without `credentials` it returns null when `WINCODE_DIST_KEY` is not set. `WINCODE_DIST_KEY` and `WINCODE_DIST_KEY_<REF>` are not refused under `/mnt/`, as ADR-0013 now says.
   7. `doctor` without options has no usage error any more, as the Consequences below say; with only some of `--binary`, `--sdk` and `--reference`, the usage errors are as they were. A file of several apps fails its `settings` check with exit 64 until `--app` exists.
+
+**As built: pull request 3 (`--app` and `--all`).** What the code does, and where this ADR left a choice:
+
+- **Where.** `lib/src/select.dart` (`selectApps`, the `app-required`, `app-unknown`, `app-flat-file` and `all-not-allowed` errors, the summary table, line and `--json` document), the global options `--app` and `--all`, `preflight` and `doctor` running one app or each app, and `init --app`. `WincodeException` gained `details`, which is how `apps` reaches the `--json` error.
+- **Deviation from the plan of section 11.** The plan put `yaml_edit` and in-place editing in this pull request. At the maintainer's instruction they move to pull request 4, together with the migration. So `init --app` on an existing file of apps is an interim writer here: it reads the file as plain data, keeps `defaults` and the apps in their order, and renders the file again, so **comments written by hand are lost**. The diff shows each line that goes, a confirmation comes first, and the original is not backed up (the migration's backup is pull request 4's). `yaml_edit` is not a dependency yet.
+- **Wired.** `preflight` and `doctor` (the setup check) take `--app` or `--all`; `doctor --binary` refuses both. `sign`, `upload` and `build` refuse `--all` and accept `--app` without reading the file; `status` accepts both and is still not implemented. `init` refuses `--all`. The `--json` object of `preflight`, `doctor` and `init` has `app` after `command`: the name, or null for a flat file (the goldens changed by that line).
+- **`init` as built for this change.** `--flavor` and `--configuration` combine as section 5 says, and `init` writes `flavor:` when `--flavor` is given, and `configuration:` when `--configuration` names another configuration than the default (flat files too, so the `init-messages` golden gains a `flavor:` line). `--credentials` is validated with the name rules and written to a flat file when given. For `--app`: a new file holds the one app; an existing file of apps gets the entry added, or updated with `--force`; an unchanged entry writes nothing; a flat file with `--app` stops with `not-implemented` (64) until pull request 4; a file of apps without `--app` is `app-required`. `credentials` is required for an app (asked, or listed by `init-input-missing`). IDs found are registered with the placeholders of the loader (`<bundle ID n>`, `<team ID n>`), and the final text is parsed with the redactor before it is printed, so names and paths are hidden from the first line of the report.
+- **How the ADR was read:**
+  1. The path in the messages is the file as `--config` named it (`wincode.yaml` by default), as in the loader's messages; the `why` lines say `wincode.yaml`, as the ADR prints them.
+  2. An app's `result` in the table is `PASS` when it has no failure, warnings included. The exit code of a run is that of the first failing app in file order, so a later app's code is not reported.
+  3. `--all` on a flat file runs its one app in the `--all` format (a header with the file name, a one-row table, the combined document); `app` is null in it. An IPA argument with `--all` is a usage error, and `--all --dry-run` runs each app's dry run.
+  4. The table's columns are measured on the names as the redactor prints them, so they stay in line under `--redact` and in CI. The name that the user typed for `--app` is not printed when redaction is on, and the `app-unknown` message then reads `has no app by the name that --app gives`.
+  5. The `app-flat-file` and `all-not-allowed` messages, and the usage error for `--app` with `--all`, are written in the form of section 10; `all-not-allowed` says what the command writes (`sign` a signed IPA, `upload` to Apple, `build` a run on a paid macOS runner, `init` the settings).
+  6. A bug found on the way: the setup check of `doctor` (pull request 2) called the top-level `runProcess` instead of its `run` hook, because inside an extension an unqualified name finds the import first. It started the same program, so nothing was wrong at run time, but the hook was ignored; it is `this.runProcess` now, and a test makes the hook fail one app's `git` to see the exit code 69 in a table.
 
 ## Consequences
 

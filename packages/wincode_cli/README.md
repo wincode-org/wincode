@@ -2,7 +2,7 @@
 
 The `wincode` command. Its design is [ADR-0013](../../docs/adr/0013-wincode-cli-build-sign-upload.md).
 
-Status: `doctor`, `preflight` and `init` work. `preflight` and `doctor` read an app's App Store Connect key through its `credentials` reference (ADR-0014; layout below). The other commands are registered; each prints `not implemented yet, see ADR-0013` and exits with 64 until the phase of ADR-0013 that implements it. `wincode.yaml` may describe several apps ([ADR-0014](../../docs/adr/0014-one-project-many-apps.md)): the file is read and checked, but every command still works on one app, and a file of several apps exits with 64 until `--app` is added.
+Status: `doctor`, `preflight` and `init` work. `preflight` and `doctor` read an app's App Store Connect key through its `credentials` reference (ADR-0014; layout below). The other commands are registered; each prints `not implemented yet, see ADR-0013` and exits with 64 until the phase of ADR-0013 that implements it. `wincode.yaml` may describe several apps ([ADR-0014](../../docs/adr/0014-one-project-many-apps.md)): `--app <name>` chooses the app of `preflight`, `doctor` and `init`, `--all` runs `preflight` and `doctor` for every app, and `init --app` adds an app to a file of apps (moving a flat file under `apps:` is not built yet).
 
 ```
 dart run wincode_cli:wincode <command> [arguments]
@@ -23,12 +23,30 @@ dart run wincode_cli:wincode <command> [arguments]
 They go before or after the command.
 
 - `--config <file>`: the app's settings, `wincode.yaml` by default (below).
-- `--json`: one JSON object on stdout when the command ends, with `command`, `ok`, `exitCode`, the results, and on a failure `error` with `id`, `what`, `why` and `next`. Messages go to stderr.
-- `--redact`: hide the bundle ID and team ID in everything printed. It is always on when the `CI` environment variable is set (not empty, `0` or `false`). Commands register the IDs they learn with the redactor.
+- `--app <name>` and `--all`: which app of a `wincode.yaml` with an `apps:` map the command works on (below).
+- `--json`: one JSON object on stdout when the command ends, with `command`, `app` (the name, or null for a flat file), `ok`, `exitCode`, the results, and on a failure `error` with `id`, `what`, `why` and `next`. Messages go to stderr. With `--all` it is one document (below).
+- `--redact`: hide the bundle ID and team ID, and the names of apps, credentials references, flavors and the paths of the settings, in everything printed. It is always on when the `CI` environment variable is set (not empty, `0` or `false`). Commands register the IDs they learn with the redactor.
 - `--verbose`: also print each step, external command and HTTP request, with secrets redacted.
 - `--dry-run`: send, write and run nothing, and print what would be done.
 
 `doctor`, `preflight`, `init` and the error output use `--json`. `--config` and `--dry-run` are used by `preflight` and `init`, and the HTTP lines of `--verbose` by `preflight`; otherwise `--verbose` adds only the stack trace of an internal error.
+
+## Choosing the app (ADR-0014, section 3)
+
+- **One app, or a flat file:** no `--app` is needed. With several apps and no `--app`, the command stops with exit 64 (`app-required`) and lists the names. A name that is not in the file is `app-unknown` (64), and the file's names are in `apps` of the `--json` error. A flat file has no names, so `--app` is refused there (`app-flat-file`, 64), except by `init`. There is no default app.
+- **`--all`** is for the commands that only read: `preflight` (each app's `signed.ipa`, so no IPA argument) and `doctor` without options, and `status` once it is built. The apps run in file order and a failure does not stop the next one. Each prints under `== <app> ==`, then comes a table and a last line:
+
+  ```
+  app    result  first failure        exit
+  app-1  PASS                         0
+  app-2  FAIL    credentials-missing  78
+  app-3  PASS                         0
+  wincode doctor --all: 1 of 3 apps failed; exit 78, the first failure in wincode.yaml (app-2).
+  ```
+
+  The exit code is that of the first failing app in file order, else 0. With `--json` it is one document: `command`, `all`, `ok`, `exitCode`, `apps` (each app's object as the command alone prints it, without `command`) and `error` (the first failing app's, with `app`).
+- **`--all` is refused** by `sign`, `upload`, `build` and `init` (`all-not-allowed`, 64): each writes, and a loop over apps would leave some done and some not, with nothing that records which. Run them once per app with `--app`. `--app` and `--all` together are a usage error, and the Mach-O checks of `doctor` (`--binary`) read no settings, so they refuse both.
+- **Names are hidden** by `--redact` and in CI: `app-1`, `app-2` in file order, `credentials-1`, and so on, in the report, the table, the error messages and `--json`.
 
 ## Exit codes
 
@@ -118,8 +136,8 @@ An app that names `credentials: <reference>` has its keys in a folder of that na
 ## init
 
 ```
-dart run wincode_cli:wincode init [--yes] [--force] [--dry-run] [--flavor <name> | --configuration <name>]
-    [--bundle-id <id>] [--team-id <id>] [--profile <file> | --profile-dir <folder>]
+dart run wincode_cli:wincode init [--yes] [--force] [--dry-run] [--flavor <name>] [--configuration <name>]
+    [--app <name>] [--credentials <name>] [--bundle-id <id>] [--team-id <id>] [--profile <file> | --profile-dir <folder>]
     [--entitlements <file>] [--workflow-ref <ref>] [--output <folder>] [--workflow]
 ```
 
@@ -137,14 +155,15 @@ At a terminal, `init` shows each value with what it found (Enter accepts it, `-`
 
 If the project has build configurations other than Debug, Profile and Release (for example one per flavor) and you gave neither `--flavor` nor `--configuration`, `init` prints a `WARN` that lists them and says that it read Release. `--configuration <name>` has no counterpart in `wincode.yaml`. A name that the project does not have fails (`configuration-not-found`, exit 1) and lists the names it has.
 
-With `--flavor` or `--configuration`, `init` prints `Read the build configuration <name> of ios/Runner.xcodeproj.` (and `--json` has `"configuration"`), and giving both is a usage error. A `$(NAME)` or `${NAME}` in the bundle ID, the team ID or the entitlements file is resolved without running anything: from the build settings of that configuration, from the xcconfig files it references and their `#include` and `#include?` chains (16 deep at most; a file that includes itself fails at once and is named), and from nested variables. A variable that nothing defines is listed (`PRODUCT_BUNDLE_IDENTIFIER of Release-alpha needs $(APP_ID), which no build setting or xcconfig file of Release-alpha defines`) and asked, never guessed; a run that cannot ask fails with `not detected ($(APP_ID) is not defined in Release-alpha or its xcconfig files); pass --bundle-id`.
+With `--flavor` or `--configuration`, `init` prints `Read the build configuration <name> of ios/Runner.xcodeproj.` (and `--json` has `"configuration"`). `--flavor` and `--configuration` may be combined: `--flavor` is recorded (`flavor:`) and names the default configuration, `Release-<flavor>`, and `--configuration` overrides it and is recorded (`configuration:`) only when it is another name. `--credentials <name>` records the credentials reference. A `$(NAME)` or `${NAME}` in the bundle ID, the team ID or the entitlements file is resolved without running anything: from the build settings of that configuration, from the xcconfig files it references and their `#include` and `#include?` chains (16 deep at most; a file that includes itself fails at once and is named), and from nested variables. A variable that nothing defines is listed (`PRODUCT_BUNDLE_IDENTIFIER of Release-alpha needs $(APP_ID), which no build setting or xcconfig file of Release-alpha defines`) and asked, never guessed; a run that cannot ask fails with `not detected ($(APP_ID) is not defined in Release-alpha or its xcconfig files); pass --bundle-id`.
 
+- **`--app <name>`** (ADR-0014, section 5) works on a file of apps. Without a `wincode.yaml` it starts one with that app; with one it adds the app, or updates its entry, after showing the changes with `-` and `+` and asking (`--yes` where it cannot ask; without it, `init-input-missing`, 64, and nothing is written). A value that the entry already has is replaced only with `--force` (`app-exists`, exit 1, otherwise). A value that equals the one the entry inherits from `defaults` is left out, `defaults` is never touched, and `credentials` is required (asked, or `--credentials`). **For now the file is rendered again, so comments written by hand are lost** (the diff shows them going); a later change edits in place. Without `--app`, a file of apps is `app-required`, and `--app` on a flat file says that moving it under `apps:` is not implemented yet. `--all` is refused.
 - **An existing `wincode.yaml` is kept** (`config-exists`, exit 1) and the lines that would change are shown with `-` and `+`; `--force` replaces it.
 - **A profile in a git working tree that git does not ignore is refused** (`key-in-git-tree`, exit 78) before it is read. A profile inside the project gets a suggested `.gitignore` line; `init` never edits `.gitignore`.
 - **`--dry-run`** prints the file and writes nothing. **`--redact`** and `CI` hide the bundle ID and team ID in everything printed; the file keeps the real values.
 - **`--workflow`** writes `.github/workflows/wincode-ios.yml` and never replaces that file. The text is built into `wincode`, so a compiled `wincode` needs no checkout. `templates/wincode-ios.yml` is the readable source: after changing it, run `dart run tool/embed_template.dart` in `packages/wincode_cli`, and a test fails if the two differ.
 - It ends with the commands to run next: `wincode preflight --dry-run`, then `wincode preflight`.
-- With `--json`, stdout gets `{"command": "init", "ok": true, "exitCode": 0, "dryRun": false, "written": true, "config": {...}}`, with `"warnings"` (a list) when `init` warned, and `"workflow": "copied"` or `"would-copy"` when `--workflow` was given; the report goes to stderr.
+- With `--json`, stdout gets `{"command": "init", "app": null, "ok": true, "exitCode": 0, "dryRun": false, "written": true, "config": {...}}`, with `"warnings"` (a list) when `init` warned, and `"workflow": "copied"` or `"would-copy"` when `--workflow` was given; the report goes to stderr.
 
 ## preflight
 
@@ -240,4 +259,4 @@ It exits with 0 when the checks pass, 1 when one fails or a file cannot be read,
 dart test
 ```
 
-`test/goldens/help.txt` holds the `--help` output of every command. `test/goldens/config-flat.txt` holds what the loader says about a flat `wincode.yaml`, case by case; it was first written from the loader as it was before ADR-0014, so a change in it is a change in how a flat file is read. `test/credentials_test.dart` uses real temporary git repositories for the keys-root rule, records every program that the resolution starts (only `git`), and reads the two messages of ADR-0014 that this change implements from the ADR itself. `test/config_apps_test.dart` reads the worked example and the duplicate-bundle-ID message from ADR-0014 itself, so the ADR and the code cannot drift. The tests of `init` build Flutter projects in a temporary folder, with a scripted standard input, and use a real temporary git repository for the profile rule. `test/goldens/init-messages.txt` holds what `init` prints when it cannot ask. `test/workflow_template_test.dart` fails if the embedded workflow (`lib/src/workflow_template.g.dart`) and `templates/wincode-ios.yml` differ by a byte. `test/goldens/preflight.txt` holds `preflight` reports and its `--dry-run` requests, and `test/goldens/preflight.json` its `--json` object, all from a fake App Store Connect on 127.0.0.1 with made-up IDs. After a deliberate change, `UPDATE_GOLDENS=1 dart test` rewrites them; review the diff before committing. No test reaches the network.
+`test/goldens/help.txt` holds the `--help` output of every command. `test/goldens/config-flat.txt` holds what the loader says about a flat `wincode.yaml`, case by case; it was first written from the loader as it was before ADR-0014, so a change in it is a change in how a flat file is read. `test/apps_select_test.dart` covers `--app`, `--all` and `init --app` with files of three apps, and `test/goldens/apps-json.txt` holds the `--json` documents of one app and of `--all`, redacted too. `test/credentials_test.dart` uses real temporary git repositories for the keys-root rule, records every program that the resolution starts (only `git`), and reads the two messages of ADR-0014 that this change implements from the ADR itself. `test/config_apps_test.dart` reads the worked example and the duplicate-bundle-ID message from ADR-0014 itself, so the ADR and the code cannot drift. The tests of `init` build Flutter projects in a temporary folder, with a scripted standard input, and use a real temporary git repository for the profile rule. `test/goldens/init-messages.txt` holds what `init` prints when it cannot ask. `test/workflow_template_test.dart` fails if the embedded workflow (`lib/src/workflow_template.g.dart`) and `templates/wincode-ios.yml` differ by a byte. `test/goldens/preflight.txt` holds `preflight` reports and its `--dry-run` requests, and `test/goldens/preflight.json` its `--json` object, all from a fake App Store Connect on 127.0.0.1 with made-up IDs. After a deliberate change, `UPDATE_GOLDENS=1 dart test` rewrites them; review the diff before committing. No test reaches the network.

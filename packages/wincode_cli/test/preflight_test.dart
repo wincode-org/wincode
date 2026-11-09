@@ -350,6 +350,7 @@ void main() {
     final (_, dry, _) = await preflight(['--json', '--dry-run']);
     expect(jsonDecode(dry), {
       'command': 'preflight',
+      'app': null,
       'ok': true,
       'exitCode': 0,
       'dryRun': true,

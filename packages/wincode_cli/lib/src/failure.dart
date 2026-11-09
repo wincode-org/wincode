@@ -34,6 +34,7 @@ class WincodeException implements Exception {
     this.what, {
     this.why,
     this.next,
+    this.details = const {},
   });
 
   final ExitCode exitCode;
@@ -45,6 +46,9 @@ class WincodeException implements Exception {
   final String? why;
   final String? next;
 
+  /// More fields for the `error` object of `--json`, such as the names in `apps` (ADR-0014, section 7).
+  final Map<String, Object?> details;
+
   /// The message for people, as [command] (such as `wincode sign`) prints it on stderr.
   String describe(String command) => [
     '$command: $what',
@@ -53,11 +57,12 @@ class WincodeException implements Exception {
   ].join('\n');
 
   /// The `error` object of the `--json` output.
-  Map<String, String> toJson() => {
+  Map<String, Object?> toJson() => {
     'id': id,
     'what': what,
     'why': ?why,
     'next': ?next,
+    ...details,
   };
 
   @override
