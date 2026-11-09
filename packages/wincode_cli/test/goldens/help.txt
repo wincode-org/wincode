@@ -73,6 +73,7 @@ Usage: wincode init [arguments]
     --workflow-ref=<ref>      The CI workflow for wincode build: <owner>/<repository>/.github/workflows/<file>@<branch or tag>.
     --output=<folder>         Where the IPAs go (default build/wincode).
     --flavor=<name>           Read the Release-<name> configuration of the Xcode project.
+    --configuration=<name>    Read exactly this build configuration of the Xcode project, such as Release-demo, and do not compare Debug and Profile with it.
     --workflow                Copy the reference workflow to .github/workflows/wincode-ios.yml. It never replaces a file.
 -y, --yes                     Ask nothing: accept what init found.
     --force                   Replace an existing wincode.yaml.

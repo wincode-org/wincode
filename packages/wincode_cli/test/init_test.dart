@@ -63,6 +63,19 @@ Map<String, String?> _same([String id = _bundleId]) => {
   'Release': id,
 };
 
+/// A project with the three flavors alpha, beta and gamma, as Flutter lays them out: Debug, Profile and Release for each.
+/// The Debug configuration of each flavor has another bundle ID than its Release.
+Map<String, String?> _flavors() => {
+  'Debug': _bundleId,
+  'Profile': _bundleId,
+  'Release': _bundleId,
+  for (final f in ['alpha', 'beta', 'gamma']) ...{
+    'Debug-$f': '$_bundleId.$f.debug',
+    'Profile-$f': '$_bundleId.$f',
+    'Release-$f': '$_bundleId.$f',
+  },
+};
+
 void main() {
   late Directory temp;
   late Directory root;
@@ -217,7 +230,13 @@ void main() {
         final plain = detectProject(root);
         expect(plain.bundleId, _bundleId);
         expect(plain.flavors, ['demo']);
-        expect(plain.notes.single, contains('the project has flavors (demo)'));
+        expect(plain.notes, isEmpty);
+        expect(
+          plain.warnings.single,
+          'the project has build configurations other than Debug, Profile and Release: Release-demo, Debug-demo, '
+          'Profile-demo. init read Release. To read another, pass --configuration <name>',
+        );
+        expect(detectProject(root, flavor: 'demo').warnings, isEmpty);
         expect(
           detectProject(root, flavor: 'nope').notes.single,
           contains('no Release-nope configuration'),
@@ -316,7 +335,8 @@ void main() {
       expect(
         plain.out,
         contains(
-          'note: the project has flavors (alpha, beta): give --flavor <name> to read the one you ship.',
+          'WARN  the project has build configurations other than Debug, Profile and Release: Release-alpha, '
+          'Release-beta. init read Release. To read another, pass --configuration <name>.\n',
         ),
       );
       expect(
@@ -496,8 +516,9 @@ output: build/wincode
       expect(error['id'], 'init-input-missing');
       expect(
         error['what'],
-        'init needs options that it cannot ask for: --bundle-id (found com.example.app (Release), '
-        'com.example.app.debug (Debug)); --team-id',
+        'init cannot ask here, and 2 values are not settled. bundle_id: detected several (com.example.app in '
+        'ios/Runner.xcodeproj (Release), com.example.app.debug in ios/Runner.xcodeproj (Debug)); pass --bundle-id. '
+        'team_id: not detected; pass --team-id.',
       );
       expect(error['next'], contains('add --yes to accept what init found'));
       expect(config().existsSync(), isFalse);
@@ -512,8 +533,18 @@ output: build/wincode
         final run = await init([], env: env, terminal: terminal);
         expect(run.code, 64, reason: '$env $terminal');
         expect(run.asked, 0);
-        expect(run.err, contains('--bundle-id (found '));
-        expect(run.err, contains('; --yes accepts it)'));
+        expect(
+          run.err
+              .replaceAll('<bundle ID>', 'com.example.app')
+              .replaceAll('<team ID>', _team),
+          contains(
+            'bundle_id: detected com.example.app in ios/Runner.xcodeproj (Release); confirm with --yes or pass '
+            '--bundle-id. team_id: detected TEAM000000 in ios/Runner.xcodeproj (Release); confirm with --yes or pass '
+            '--team-id. entitlements: detected ios/Runner/Runner.entitlements in ios/Runner; confirm with --yes or '
+            'pass --entitlements.',
+          ),
+          reason: '$env $terminal',
+        );
       }
       expect(config().existsSync(), isFalse);
     });
@@ -903,6 +934,188 @@ Next:
         contains('wincode preflight --config "wincode.beta.yaml" --dry-run'),
       );
     });
+  });
+
+  group('--configuration', () {
+    test('without it, init reads Release and warns about the other configurations', () async {
+      flutterProject(_flavors());
+      final run = await init(['--yes', '--json', '--team-id', _team]);
+      expect(run.code, 0, reason: run.err);
+      expect(loadConfig(config().path).bundleId, _bundleId);
+      const others =
+          'Debug-alpha, Profile-alpha, Release-alpha, Debug-beta, Profile-beta, Release-beta, Debug-gamma, '
+          'Profile-gamma, Release-gamma';
+      expect(
+        run.err,
+        contains(
+          'WARN  the project has build configurations other than Debug, Profile and Release: $others. init read '
+          'Release. To read another, pass --configuration <name>.\n',
+        ),
+      );
+      expect((jsonDecode(run.out) as Map<String, Object?>)['warnings'], [
+        'the project has build configurations other than Debug, Profile and Release: $others. init read Release. '
+            'To read another, pass --configuration <name>',
+      ]);
+    });
+
+    test('with it, init reads that configuration only, and does not compare Debug and Profile with it', () async {
+      flutterProject(_flavors(), team: _team);
+      final run = await init(['--yes', '--configuration', 'Release-beta']);
+      expect(run.code, 0, reason: run.err);
+      expect(loadConfig(config().path).bundleId, '$_bundleId.beta');
+      expect(run.out, isNot(contains('WARN')));
+      expect(run.out, isNot(contains('note:')));
+    });
+
+    test(
+      '--flavor still compares the three configurations of the flavor',
+      () async {
+        flutterProject(_flavors());
+        final run = await init([
+          '--yes',
+          '--flavor',
+          'beta',
+          '--team-id',
+          _team,
+        ]);
+        expect(run.code, 64);
+        expect(
+          run.err,
+          contains(
+            'bundle_id: detected several (com.example.app.beta in ios/Runner.xcodeproj (Release-beta)',
+          ),
+        );
+      },
+    );
+
+    test(
+      'a configuration that does not exist fails and lists the ones that do',
+      () async {
+        flutterProject(_flavors());
+        final run = await init([
+          '--yes',
+          '--json',
+          '--configuration',
+          'Release-delta',
+        ]);
+        expect(run.code, 1);
+        expect(errorOf(run.out), containsPair('id', 'configuration-not-found'));
+        expect(
+          errorOf(run.out)['what'],
+          'the Xcode project has no build configuration named Release-delta; it has Debug, Profile, Release, '
+          'Debug-alpha, Profile-alpha, Release-alpha, Debug-beta, Profile-beta, Release-beta, Debug-gamma, Profile-gamma, '
+          'Release-gamma',
+        );
+        expect(
+          errorOf(run.out)['next'],
+          startsWith('pass one of those names to --configuration'),
+        );
+        expect(config().existsSync(), isFalse);
+      },
+    );
+
+    test(
+      'a variable bundle ID in that configuration is asked, not guessed',
+      () async {
+        flutterProject({'Release': _bundleId, 'Release-x': r'$(APP_ID)'});
+        final run = await init([
+          '--yes',
+          '--configuration',
+          'Release-x',
+          '--team-id',
+          _team,
+        ]);
+        expect(run.code, 64);
+        expect(
+          run.out,
+          contains(
+            'note: the bundle ID of Release-x is a variable or is not set.',
+          ),
+        );
+        expect(run.err, contains('bundle_id: not detected; pass --bundle-id'));
+      },
+    );
+
+    test('--flavor and --configuration together are a usage error', () async {
+      flutterProject(_flavors());
+      final run = await init([
+        '--yes',
+        '--json',
+        '--flavor',
+        'beta',
+        '--configuration',
+        'Release-beta',
+      ]);
+      expect(run.code, 64);
+      expect(
+        errorOf(run.out)['what'],
+        '--flavor and --configuration both name the build configuration to read',
+      );
+    });
+  });
+
+  test('the messages of a run that cannot ask are test/goldens/init-messages.txt (UPDATE_GOLDENS=1 rewrites it)', () async {
+    final report = StringBuffer();
+    Future<void> run(
+      String setup,
+      List<String> args, {
+      Map<String, String> env = const {},
+    }) async {
+      final result = await init(args, env: env);
+      report
+        ..writeln('# $setup')
+        ..writeln([r'$ wincode init', ...args].join(' '))
+        ..write(result.out)
+        ..write(
+          result.err.isEmpty
+              ? ''
+              : result.err
+                    .trimRight()
+                    .split('\n')
+                    .map((l) => 'stderr: $l\n')
+                    .join(),
+        )
+        ..writeln('exit ${result.code}')
+        ..writeln();
+    }
+
+    flutterProject(_same(), team: _team);
+    await run(
+      'everything was detected, and nothing can be confirmed (no terminal)',
+      ['--redact'],
+    );
+    await run('the same in CI, with --json', ['--json'], env: {'CI': 'true'});
+    flutterProject({
+      'Debug': '$_bundleId.debug',
+      'Profile': _bundleId,
+      'Release': _bundleId,
+    });
+    await run('several bundle IDs, and no team ID anywhere', ['--redact']);
+    flutterProject(_flavors());
+    await run('the project has flavors, and the plain Release is read', [
+      '--redact',
+      '--dry-run',
+      '--yes',
+      '--team-id',
+      _team,
+    ]);
+    await run('a configuration that does not exist', [
+      '--redact',
+      '--configuration',
+      'Release-delta',
+    ]);
+    await run('--flavor together with --configuration', [
+      '--redact',
+      '--flavor',
+      'beta',
+      '--configuration',
+      'Release-beta',
+    ]);
+    final golden = File('test/goldens/init-messages.txt');
+    if (Platform.environment['UPDATE_GOLDENS'] != null) {
+      golden.writeAsStringSync('$report');
+    }
+    expect('$report', golden.readAsStringSync().replaceAll('\r\n', '\n'));
   });
 
   test('renderConfig quotes what YAML would misread, and comments out what is not known', () {

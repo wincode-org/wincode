@@ -1,0 +1,69 @@
+# everything was detected, and nothing can be confirmed (no terminal)
+$ wincode init --redact
+stderr: wincode init: init cannot ask here, and 3 values are not settled. bundle_id: detected <bundle ID> in ios/Runner.xcodeproj (Release); confirm with --yes or pass --bundle-id. team_id: detected <team ID> in ios/Runner.xcodeproj (Release); confirm with --yes or pass --team-id. entitlements: detected ios/Runner/Runner.entitlements in ios/Runner; confirm with --yes or pass --entitlements.
+stderr:   why: init asks questions only at a terminal, and not in CI, with --yes or with --json; there it takes every field from the options, and what it detected only with --yes.
+stderr:   next: give the missing options, add --yes to accept what init found, or run wincode init in a terminal.
+exit 64
+
+# the same in CI, with --json
+$ wincode init --json
+{"command":"init","ok":false,"exitCode":64,"error":{"id":"init-input-missing","what":"init cannot ask here, and 3 values are not settled. bundle_id: detected <bundle ID> in ios/Runner.xcodeproj (Release); confirm with --yes or pass --bundle-id. team_id: detected <team ID> in ios/Runner.xcodeproj (Release); confirm with --yes or pass --team-id. entitlements: detected ios/Runner/Runner.entitlements in ios/Runner; confirm with --yes or pass --entitlements.","why":"init asks questions only at a terminal, and not in CI, with --yes or with --json; there it takes every field from the options, and what it detected only with --yes.","next":"give the missing options, add --yes to accept what init found, or run wincode init in a terminal."}}
+stderr: wincode init: init cannot ask here, and 3 values are not settled. bundle_id: detected <bundle ID> in ios/Runner.xcodeproj (Release); confirm with --yes or pass --bundle-id. team_id: detected <team ID> in ios/Runner.xcodeproj (Release); confirm with --yes or pass --team-id. entitlements: detected ios/Runner/Runner.entitlements in ios/Runner; confirm with --yes or pass --entitlements.
+stderr:   why: init asks questions only at a terminal, and not in CI, with --yes or with --json; there it takes every field from the options, and what it detected only with --yes.
+stderr:   next: give the missing options, add --yes to accept what init found, or run wincode init in a terminal.
+exit 64
+
+# several bundle IDs, and no team ID anywhere
+$ wincode init --redact
+note: the bundle ID differs between configurations.
+stderr: wincode init: init cannot ask here, and 3 values are not settled. bundle_id: detected several (<bundle ID 1> in ios/Runner.xcodeproj (Release), <bundle ID 2> in ios/Runner.xcodeproj (Debug)); pass --bundle-id. team_id: not detected; pass --team-id. entitlements: detected ios/Runner/Runner.entitlements in ios/Runner; confirm with --yes or pass --entitlements.
+stderr:   why: init asks questions only at a terminal, and not in CI, with --yes or with --json; there it takes every field from the options, and what it detected only with --yes.
+stderr:   next: give the missing options, add --yes to accept what init found, or run wincode init in a terminal.
+exit 64
+
+# the project has flavors, and the plain Release is read
+$ wincode init --redact --dry-run --yes --team-id TEAM000000
+WARN  the project has build configurations other than Debug, Profile and Release: Debug-alpha, Profile-alpha, Release-alpha, Debug-beta, Profile-beta, Release-beta, Debug-gamma, Profile-gamma, Release-gamma. init read Release. To read another, pass --configuration <name>.
+--- wincode.yaml
+# wincode.yaml: one app, no secrets. Paths are relative to this file.
+# Written by wincode init. The App Store Connect key is not stored here: it comes from the folder that
+# WINCODE_ASC_KEY_DIR names. Keep the profile out of git working trees, or let .gitignore list it.
+
+# The app that wincode ships (the PRODUCT_BUNDLE_IDENTIFIER of its build), and the team that signs it.
+bundle_id: <bundle ID>
+team_id: <team ID>
+
+# The App Store profile, as the developer portal delivers it. wincode sign signs with it.
+# profile: ../signing/App_Store.mobileprovision
+
+# The app's own entitlements file, if it has one. wincode sign signs the app with the keys in it.
+entitlements: ios/Runner/Runner.entitlements
+
+# The workflow that wincode build starts (<owner>/<repository>/.github/workflows/<file>@<branch or tag>).
+# workflow: example-org/example-app/.github/workflows/wincode-ios.yml@main
+
+# Where wincode build and wincode sign write their IPAs.
+output: build/wincode
+---
+Dry run: nothing was written.
+
+Next:
+  1. Put AuthKey_<Key ID>.p8, as App Store Connect delivered it, and a file issuer-id with the Issuer ID in a folder outside the project and outside OneDrive, and set WINCODE_ASC_KEY_DIR to it. init never stores them.
+  2. wincode preflight --dry-run
+  3. wincode preflight    (checks signed.ipa in the output folder; name another IPA as the last argument)
+exit 0
+
+# a configuration that does not exist
+$ wincode init --redact --configuration Release-delta
+stderr: wincode init: the Xcode project has no build configuration named Release-delta; it has Debug, Profile, Release, Debug-alpha, Profile-alpha, Release-alpha, Debug-beta, Profile-beta, Release-beta, Debug-gamma, Profile-gamma, Release-gamma
+stderr:   why: --configuration names the build configuration whose bundle ID, team ID and entitlements init reads, and it must match a name in ios/Runner.xcodeproj exactly.
+stderr:   next: pass one of those names to --configuration, or leave it out to read Release.
+exit 1
+
+# --flavor together with --configuration
+$ wincode init --redact --flavor beta --configuration Release-beta
+stderr: wincode init: --flavor and --configuration both name the build configuration to read
+stderr:   why: --flavor <name> reads Release-<name>; --configuration <name> reads the configuration of exactly that name.
+stderr:   next: give one of them.
+exit 64
+

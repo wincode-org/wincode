@@ -44,3 +44,20 @@ jobs:
       - name: dart test
         working-directory: wc/packages/${{ matrix.package }}
         run: dart test
+      # ADR-0013: a compiled wincode writes the reference workflow with no source tree around it. The executable and a
+      # generated fixture project live next to the checkout, not in it.
+      - name: compiled wincode init --workflow
+        if: matrix.package == 'wincode_cli' && matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p compiled fixture/ios
+          dart compile exe wc/packages/wincode_cli/bin/wincode.dart -o compiled/wincode.exe
+          echo "name: fixture" > fixture/pubspec.yaml
+          cd fixture
+          ../compiled/wincode.exe init --workflow --dry-run --yes --bundle-id com.example.app --team-id TEAM000000 | tee ../dry-run.txt
+          grep -F "It would copy the reference workflow to .github/workflows/wincode-ios.yml." ../dry-run.txt
+          test ! -e .github
+          test ! -e wincode.yaml
+          ../compiled/wincode.exe init --workflow --yes --bundle-id com.example.app --team-id TEAM000000
+          cmp .github/workflows/wincode-ios.yml ../wc/packages/wincode_cli/templates/wincode-ios.yml

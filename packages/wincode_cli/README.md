@@ -70,7 +70,7 @@ Secrets come only from environment variables, which name files outside the proje
 ## init
 
 ```
-dart run wincode_cli:wincode init [--yes] [--force] [--dry-run] [--flavor <name>]
+dart run wincode_cli:wincode init [--yes] [--force] [--dry-run] [--flavor <name> | --configuration <name>]
     [--bundle-id <id>] [--team-id <id>] [--profile <file> | --profile-dir <folder>]
     [--entitlements <file>] [--workflow-ref <ref>] [--output <folder>] [--workflow]
 ```
@@ -79,20 +79,22 @@ Writes `wincode.yaml` in the root of the Flutter project: the nearest folder at 
 
 | Value | Where it comes from |
 | --- | --- |
-| `bundle_id` | The `PRODUCT_BUNDLE_IDENTIFIER` of Release (`Release-<flavor>` with `--flavor`), if Debug and Profile agree. A variable with no value, or a bundle ID that differs between configurations, is listed and asked, never guessed |
+| `bundle_id` | The `PRODUCT_BUNDLE_IDENTIFIER` of Release, if Debug and Profile agree (`--flavor <name>`: of `Release-<name>`, `Debug-<name>` and `Profile-<name>`). `--configuration <name>` reads exactly that configuration and compares nothing. A variable with no value, or a bundle ID that differs between configurations, is listed and asked, never guessed |
 | `team_id` | The profile, and `DEVELOPMENT_TEAM` of the Xcode project; two different ones are asked |
 | `profile` | A `.mobileprovision` in the folder that you name that is an App Store profile for the bundle ID and has not expired. It must lie outside git working trees, or git must ignore it |
 | `entitlements` | The file the Xcode project names, else the only `.entitlements` file of `ios/Runner` |
 | `workflow`, `output` | `--workflow-ref` (left as a comment without it), and `--output` (default `build/wincode`) |
 
-At a terminal, `init` shows each value with what it found (Enter accepts it, `-` leaves an optional one out) and asks before it writes. With `--yes`, with `--json`, with `CI` set, or when standard input is not a terminal, it asks nothing: give every field as an option, or `--yes` to accept what it found. Otherwise it fails with exit 64 (`init-input-missing`) and lists the options that are missing.
+At a terminal, `init` shows each value with what it found (Enter accepts it, `-` leaves an optional one out) and asks before it writes. With `--yes`, with `--json`, with `CI` set, or when standard input is not a terminal, it asks nothing: give every field as an option, or `--yes` to accept what it found. Otherwise it fails with exit 64 (`init-input-missing`) and says, for each value that is not settled, `detected <value> in <source>; confirm with --yes or pass --<option>`, `detected several (...); pass --<option>`, or `not detected; pass --<option>`.
+
+If the project has build configurations other than Debug, Profile and Release (for example one per flavor) and you gave neither `--flavor` nor `--configuration`, `init` prints a `WARN` that lists them and says that it read Release. `--configuration <name>` has no counterpart in `wincode.yaml`. A name that the project does not have fails (`configuration-not-found`, exit 1) and lists the names it has.
 
 - **An existing `wincode.yaml` is kept** (`config-exists`, exit 1) and the lines that would change are shown with `-` and `+`; `--force` replaces it.
 - **A profile in a git working tree that git does not ignore is refused** (`key-in-git-tree`, exit 78) before it is read. A profile inside the project gets a suggested `.gitignore` line; `init` never edits `.gitignore`.
 - **`--dry-run`** prints the file and writes nothing. **`--redact`** and `CI` hide the bundle ID and team ID in everything printed; the file keeps the real values.
-- **`--workflow`** copies `templates/wincode-ios.yml` to `.github/workflows/wincode-ios.yml`, and never replaces that file. It works from a checkout (`dart run`), not from a compiled `wincode` (`template-missing`, exit 69).
+- **`--workflow`** writes `.github/workflows/wincode-ios.yml` and never replaces that file. The text is built into `wincode`, so a compiled `wincode` needs no checkout. `templates/wincode-ios.yml` is the readable source: after changing it, run `dart run tool/embed_template.dart` in `packages/wincode_cli`, and a test fails if the two differ.
 - It ends with the commands to run next: `wincode preflight --dry-run`, then `wincode preflight`.
-- With `--json`, stdout gets `{"command": "init", "ok": true, "exitCode": 0, "dryRun": false, "written": true, "config": {...}}`, with `"workflow": "copied"` or `"would-copy"` when `--workflow` was given; the report goes to stderr.
+- With `--json`, stdout gets `{"command": "init", "ok": true, "exitCode": 0, "dryRun": false, "written": true, "config": {...}}`, with `"warnings"` (a list) when `init` warned, and `"workflow": "copied"` or `"would-copy"` when `--workflow` was given; the report goes to stderr.
 
 ## preflight
 
@@ -183,4 +185,4 @@ It exits with 0 when the checks pass, 1 when one fails or a file cannot be read,
 dart test
 ```
 
-`test/goldens/help.txt` holds the `--help` output of every command. The tests of `init` build Flutter projects in a temporary folder, with a scripted standard input, and use a real temporary git repository for the profile rule. `test/goldens/preflight.txt` holds `preflight` reports and its `--dry-run` requests, and `test/goldens/preflight.json` its `--json` object, all from a fake App Store Connect on 127.0.0.1 with made-up IDs. After a deliberate change, `UPDATE_GOLDENS=1 dart test` rewrites them; review the diff before committing. No test reaches the network.
+`test/goldens/help.txt` holds the `--help` output of every command. The tests of `init` build Flutter projects in a temporary folder, with a scripted standard input, and use a real temporary git repository for the profile rule. `test/goldens/init-messages.txt` holds what `init` prints when it cannot ask. `test/workflow_template_test.dart` fails if the embedded workflow (`lib/src/workflow_template.g.dart`) and `templates/wincode-ios.yml` differ by a byte. `test/goldens/preflight.txt` holds `preflight` reports and its `--dry-run` requests, and `test/goldens/preflight.json` its `--json` object, all from a fake App Store Connect on 127.0.0.1 with made-up IDs. After a deliberate change, `UPDATE_GOLDENS=1 dart test` rewrites them; review the diff before committing. No test reaches the network.
