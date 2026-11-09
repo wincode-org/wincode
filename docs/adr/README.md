@@ -17,3 +17,4 @@ Architecture Decision Records. Copy `0000-template.md` for each new decision.
 | [0011](0011-store-bundle-rules.md) | Store bundle rules: what a Windows-built store bundle matches in Xcode's, and what it never fakes | Proposed |
 | [0012](0012-linux-toolchain-gaps-and-hybrid-lane.md) | Linux toolchain gaps, and the hybrid lane for apps that need a Mac build | Proposed |
 | [0013](0013-wincode-cli-build-sign-upload.md) | wincode CLI: build, sign, upload | Proposed |
+| [0014](0014-one-project-many-apps.md) | One project, many apps: several apps in one wincode.yaml, a credentials reference per app | Accepted |
