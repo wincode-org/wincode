@@ -2,7 +2,7 @@
 
 The `wincode` command. Its design is [ADR-0013](../../docs/adr/0013-wincode-cli-build-sign-upload.md).
 
-Status: `doctor`, `preflight` and `init` work. The other commands are registered; each prints `not implemented yet, see ADR-0013` and exits with 64 until the phase of ADR-0013 that implements it.
+Status: `doctor`, `preflight` and `init` work. The other commands are registered; each prints `not implemented yet, see ADR-0013` and exits with 64 until the phase of ADR-0013 that implements it. `wincode.yaml` may describe several apps ([ADR-0014](../../docs/adr/0014-one-project-many-apps.md)): the file is read and checked, but every command still works on one app, and a file of several apps exits with 64 until `--app` is added.
 
 ```
 dart run wincode_cli:wincode <command> [arguments]
@@ -64,6 +64,35 @@ output: build/wincode
 ```
 
 `bundle_id` and `team_id` are required, and `output` defaults to `build/wincode`. Every value must be text. An unknown key is refused, and so is a key whose name looks like a secret; messages name the key, never its value. `loadConfig` reads and checks the file; `preflight` reads it, and `init` writes it and checks what it writes with `parseConfig`.
+
+A flat file may also hold `flavor`, `configuration` (which defaults to `Release-<flavor>`, or `Release`), `workflow_inputs` and `credentials`; everything else about a flat file is as it was.
+
+### Several apps
+
+A file with an `apps:` map describes one app per entry, and `defaults:` holds what they share (ADR-0014, section 1):
+
+```yaml
+defaults:
+  team_id: TEAM000001
+  credentials: team-one
+apps:
+  alpha:
+    bundle_id: com.example.alpha
+    flavor: alpha
+  beta:
+    bundle_id: com.example.beta
+    flavor: beta
+    output: out/beta
+```
+
+- A file with `apps` holds only `apps` and `defaults` at the top level; the flat file stays valid and is loaded as one app without a name.
+- `defaults` may hold `team_id`, `entitlements`, `workflow`, `workflow_inputs` and `credentials`. An app's own value replaces a default whole. `bundle_id`, `flavor`, `configuration`, `profile` and `output` are per app.
+- Every app needs `bundle_id`, `team_id` and `credentials` (the name of a credentials reference; no command reads one yet). `output` defaults to `build/wincode/<app>`.
+- An app name and a credentials reference have 3 to 32 lower-case letters, digits and hyphens, start with a letter and end with a letter or digit, and are not an ordinary word (`build`, `key`, `app`, `release`, ... `reservedNames` in `lib/src/config.dart` has the list), a Windows device name or the shape of a placeholder such as `app-1`.
+- Bundle IDs are unique (ignoring case), output folders are unique, and one credentials reference serves one team. Messages name the line and, for a name that passed its rules, the app; a refused name is never printed.
+- `workflow_inputs` names are plain, not `request_id`, `flavor` or `build_number`, and not secret-looking; values are at most 64 plain characters.
+- `loadSettings` and `parseSettings` return every app in file order (`WincodeSettings`). `loadConfig` returns the one app that existing commands work on, and refuses a file of several with exit 64 (`not-implemented`).
+- With a `Redactor`, the loader registers the names, bundle IDs, team IDs, credentials references, flavors, configurations and the `profile`, `entitlements` and `output` paths as soon as each has passed its checks, so that `--redact` and CI print `app-1`, `<bundle ID 1>`, `credentials-1`, `Release-app-1`, `<profile of app-1>` and `<output of app-1>/signed.ipa` even in an error message (ADR-0014, section 4). `preflight` passes its redactor to the loader.
 
 Secrets come only from environment variables, which name files outside the project: `WINCODE_ASC_KEY_DIR` (the App Store Connect key folder) and `WINCODE_DIST_KEY` (the distribution key on the WSL2 disk). `preflight` reads `WINCODE_ASC_KEY_DIR` (ADR-0013, section 2). A key or profile file inside a git working tree is refused unless git ignores it: `requireOutsideGit` does the check, and `preflight` calls it on each file of the key folder that it reads and on the profile, and `init` on the profile, before reading them.
 
@@ -187,4 +216,4 @@ It exits with 0 when the checks pass, 1 when one fails or a file cannot be read,
 dart test
 ```
 
-`test/goldens/help.txt` holds the `--help` output of every command. The tests of `init` build Flutter projects in a temporary folder, with a scripted standard input, and use a real temporary git repository for the profile rule. `test/goldens/init-messages.txt` holds what `init` prints when it cannot ask. `test/workflow_template_test.dart` fails if the embedded workflow (`lib/src/workflow_template.g.dart`) and `templates/wincode-ios.yml` differ by a byte. `test/goldens/preflight.txt` holds `preflight` reports and its `--dry-run` requests, and `test/goldens/preflight.json` its `--json` object, all from a fake App Store Connect on 127.0.0.1 with made-up IDs. After a deliberate change, `UPDATE_GOLDENS=1 dart test` rewrites them; review the diff before committing. No test reaches the network.
+`test/goldens/help.txt` holds the `--help` output of every command. `test/goldens/config-flat.txt` holds what the loader says about a flat `wincode.yaml`, case by case; it was first written from the loader as it was before ADR-0014, so a change in it is a change in how a flat file is read. `test/config_apps_test.dart` reads the worked example and the duplicate-bundle-ID message from ADR-0014 itself, so the ADR and the code cannot drift. The tests of `init` build Flutter projects in a temporary folder, with a scripted standard input, and use a real temporary git repository for the profile rule. `test/goldens/init-messages.txt` holds what `init` prints when it cannot ask. `test/workflow_template_test.dart` fails if the embedded workflow (`lib/src/workflow_template.g.dart`) and `templates/wincode-ios.yml` differ by a byte. `test/goldens/preflight.txt` holds `preflight` reports and its `--dry-run` requests, and `test/goldens/preflight.json` its `--json` object, all from a fake App Store Connect on 127.0.0.1 with made-up IDs. After a deliberate change, `UPDATE_GOLDENS=1 dart test` rewrites them; review the diff before committing. No test reaches the network.

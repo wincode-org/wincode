@@ -1,0 +1,137 @@
+# the two required keys
+bundle_id: org.example.app
+team_id: TEAM000000
+output: build/wincode
+profile: -
+entitlements: -
+workflow: null
+
+# every key
+bundle_id: org.example.app
+team_id: TEAM000000
+output: out
+profile: ../signing/app.mobileprovision
+entitlements: ios/Runner/Runner.entitlements
+workflow: (file: wincode-ios.yml, ref: release/1.0, repository: example-org/example-app)
+
+# a byte order mark
+bundle_id: org.example.app
+team_id: TEAM000000
+output: build/wincode
+profile: -
+entitlements: -
+workflow: null
+
+# a YAML error
+exit 78 config-invalid
+wincode preflight: wincode.yaml line 2: Mapping values are not allowed here. Did you miss a colon earlier?
+  why: wincode.yaml must be valid YAML.
+  next: fix that line. Write Windows paths with forward slashes (C:/signing/app.mobileprovision) or in single quotes.
+
+# an empty file
+exit 78 config-invalid
+wincode preflight: wincode.yaml: holds no settings
+  why: wincode.yaml is a map with one key per line, such as bundle_id: com.example.app.
+  next: write bundle_id and team_id, and the profile, entitlements, workflow and output that you use (ADR-0013).
+
+# a list
+exit 78 config-invalid
+wincode preflight: wincode.yaml: holds no settings
+  why: wincode.yaml is a map with one key per line, such as bundle_id: com.example.app.
+  next: write bundle_id and team_id, and the profile, entitlements, workflow and output that you use (ADR-0013).
+
+# a scalar
+exit 78 config-invalid
+wincode preflight: wincode.yaml: holds no settings
+  why: wincode.yaml is a map with one key per line, such as bundle_id: com.example.app.
+  next: write bundle_id and team_id, and the profile, entitlements, workflow and output that you use (ADR-0013).
+
+# an unknown key
+exit 78 config-invalid
+wincode preflight: wincode.yaml line 4: unknown key "bundel_id"
+  why: wincode.yaml reads only bundle_id, team_id, profile, entitlements, workflow, output, flavor, configuration, workflow_inputs, credentials, so a misspelled key would be ignored.
+  next: remove it, or correct its spelling.
+
+# a secret-looking key
+exit 78 config-invalid
+wincode preflight: wincode.yaml line 3: "issuer_id" looks like a secret, and wincode.yaml holds none
+  why: the file goes with the project. The App Store Connect key comes from WINCODE_ASC_KEY_DIR and the distribution key from WINCODE_DIST_KEY.
+  next: remove the line. If the file was ever committed or shared with a secret in it, revoke that key and make a new one.
+
+# a secret-looking key, p8
+exit 78 config-invalid
+wincode preflight: wincode.yaml line 3: "p8" looks like a secret, and wincode.yaml holds none
+  why: the file goes with the project. The App Store Connect key comes from WINCODE_ASC_KEY_DIR and the distribution key from WINCODE_DIST_KEY.
+  next: remove the line. If the file was ever committed or shared with a secret in it, revoke that key and make a new one.
+
+# no bundle_id
+exit 78 config-invalid
+wincode preflight: wincode.yaml has no bundle_id
+  why: winCode checks that the IPA, the profile and App Store Connect all name this app.
+  next: add bundle_id: <the app's bundle ID>, the PRODUCT_BUNDLE_IDENTIFIER of the build you ship.
+
+# no team_id
+exit 78 config-invalid
+wincode preflight: wincode.yaml has no team_id
+  why: winCode checks that the profile belongs to this team.
+  next: add team_id: <your team ID>, the 10 characters under Membership details in the developer portal.
+
+# a team_id that YAML reads as a number
+exit 78 config-invalid
+wincode preflight: wincode.yaml line 2: team_id must be text
+  why: YAML reads some values as numbers or lists: 0123456789 would become 123456789.
+  next: write the value in single quotes: team_id: '...'.
+
+# an output that is a list
+exit 78 config-invalid
+wincode preflight: wincode.yaml line 3: output must be text
+  why: YAML reads some values as numbers or lists: 0123456789 would become 123456789.
+  next: write the value in single quotes: output: '...'.
+
+# an empty profile
+exit 78 config-invalid
+wincode preflight: wincode.yaml line 3: profile must be text
+  why: YAML reads some values as numbers or lists: 0123456789 would become 123456789.
+  next: write the value in single quotes: profile: '...'.
+
+# a bundle_id that is not one
+exit 78 config-invalid
+wincode preflight: wincode.yaml line 1: bundle_id is not a bundle ID
+  why: a bundle ID is two or more parts of letters, digits and hyphens joined by dots, such as com.example.app.
+  next: use the bundle ID of the app record in App Store Connect.
+
+# a team_id that is not one
+exit 78 config-invalid
+wincode preflight: wincode.yaml line 2: team_id is not a team ID
+  why: a team ID is 10 capital letters and digits.
+  next: copy it from Membership details in the developer portal.
+
+# a profile that is not a .mobileprovision
+exit 78 config-invalid
+wincode preflight: wincode.yaml line 3: profile must name a .mobileprovision file
+  why: wincode sign signs with the App Store profile as the developer portal delivers it. wincode.yaml never names a key.
+  next: point it at the downloaded .mobileprovision file.
+
+# entitlements that are not a plist
+exit 78 config-invalid
+wincode preflight: wincode.yaml line 3: entitlements must name an .entitlements or .plist file
+  why: wincode sign signs the app with the keys in it, as Xcode does with CODE_SIGN_ENTITLEMENTS.
+  next: point it at the app's file, usually ios/Runner/Runner.entitlements.
+
+# a workflow in the wrong shape
+exit 78 config-invalid
+wincode preflight: wincode.yaml line 3: workflow must be <owner>/<repository>/.github/workflows/<file>.yml@<branch or tag>
+  why: wincode build starts that workflow at that branch or tag.
+  next: write it as GitHub does, for example example-org/example-app/.github/workflows/wincode-ios.yml@main.
+
+# an empty output
+exit 78 config-invalid
+wincode preflight: wincode.yaml line 3: output must name a folder
+  why: wincode build and wincode sign write their IPAs there.
+  next: name a folder, or remove the line to use build/wincode.
+
+# a file that does not exist
+exit 78 config-missing
+wincode preflight: nothing.yaml does not exist
+  why: build, sign, preflight, upload and status read the app's bundle ID, team ID and signing files from it.
+  next: create it in the Flutter project with `wincode init`, or name another file with --config.

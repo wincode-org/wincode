@@ -4,6 +4,7 @@
 - Date: 2026-11-09
 - Amended: 2026-11-09, after review: the keys root is on the Windows side, not on the WSL2 disk (section 2); `init` edits a file of apps in place with `yaml_edit` (section 5); names of apps and references may not be common words or shorter than 3 characters, and paths derived from the config are redacted (section 4)
 - Amends: ADR-0013 (sections 1, 2, 3, 4 and 7, and the acceptance criteria of its phases 2 to 5). Design only: nothing here is implemented yet.
+- Implementation: pull request 1 of section 11 (schema and loader) is built, see "As built" there; pull requests 2 to 4 are not started.
 
 ## Context
 
@@ -431,6 +432,21 @@ Four pull requests, each one concern, each leaving every command working. The cr
 4. **`feat(cli): migrate a one-app wincode.yaml to apps: with init --app (ADR-0014)`.**
    - The migration of section 5, `config-is-another-app` and `backup-exists`.
    - Accepted when: a test per step: the same app gives the proposal (golden diff); another app stops with nothing written; without a terminal and without `--yes` nothing is written; with `--yes` the backup is byte-identical and the new file gives every value of the old; an existing backup stops the run and is untouched; `--dry-run` writes neither file.
+
+**As built: pull request 1 (schema and loader).** What the code does, and where this ADR left a choice:
+
+- **Where.** `packages/wincode_cli/lib/src/config.dart`: `WincodeSettings` (the apps in file order, and whether the file is flat) and `WincodeConfig` (one app: now with `name`, `flavor`, `configuration`, `credentials` and `workflowInputs`), read by `loadSettings` and `parseSettings`. `loadConfig` and `parseConfig` still return one app, so no command changed; a file of several apps stops them with exit 64 (`not-implemented`). `lib/src/redact.dart`: `Redactor.hideName` matches whole words ignoring case, and every value is replaced in one pass, the longest first.
+- **Flat files.** `test/goldens/config-flat.txt` records the loader's answers for 22 cases (21 flat files and a missing one) and was first written from the loader before this change. One line differs from that first version: the unknown-key message lists ten keys instead of six, because `flavor`, `configuration`, `workflow_inputs` and `credentials` are valid in a flat file too. Every other message and result is byte for byte the same.
+- **Wired.** `preflight` passes its redactor to the loader. `init` is unchanged: it still writes a flat file, checks it with `parseConfig` without a redactor, and does not know the new keys. Nothing reads `credentials` or `WINCODE_KEYS_DIR` yet, and there is no `--app` or `--all`.
+- **How the ADR was read:**
+  1. The loader registers each name, ID and path with the redactor as soon as it has passed its checks, in file order, so an error prints placeholders for everything the loader has read before it. A name that fails its rules is never printed; a refused common word, Windows device name or placeholder shape is quoted, since it is not a brand.
+  2. The reserved list is the fourteen words that section 4 names first plus the eleven names it adds (`defaults`, `init`, `doctor`, `preflight`, `status`, `team`, `credentials`, `output`, `workflow`, `entitlements`, `flavor`); it is the constant `reservedNames`. The same rules check a credentials reference, also in a flat file that writes one.
+  3. A configuration that `Release-<flavor>` supplies is not in the file, so it is not registered; one the file writes is, as a whole value. A flavor or configuration on the reserved list, or shorter than 3 characters, is not registered. A flat file's flavor and configuration placeholders are `flavor-1` and `configuration-1`.
+  4. A path is registered as resolved against the file, as absolute and normalised, and in both separator spellings, and as written when it holds a separator or a dot. A one-word relative folder such as `out` is therefore hidden only in its absolute form, because `out` as a substring would hide that word everywhere. The default output is registered too.
+  5. The variable form of a reference (`TEAM_ONE`) is replaced as that exact upper-case string, and it wins a tie in length with the name.
+  6. Output folders are compared ignoring case, the direction of separators and a trailing separator; nested folders are not compared.
+  7. Messages that section 10 does not list are written in the same form: a key of an app next to `apps`, `defaults` without `apps`, `defaults` that is not a map, `apps` that lists no app, an app that holds no settings, a key that `defaults` may not hold, and each workflow-input rule. A secret-looking key at any level uses the secret message, which in a file of apps points at the credentials reference instead of the two variables.
+  8. `package:yaml` does not expand merge keys, so `<<` reaches the loader as an ordinary key and is refused as unknown, as section 1 says.
 
 ## Consequences
 
