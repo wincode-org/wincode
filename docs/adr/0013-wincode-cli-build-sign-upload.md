@@ -3,6 +3,7 @@
 - Status: Proposed
 - Date: 2026-11-08
 - Amended: 2026-11-08, after review: zsign in WSL2 is interim (section 4), the key-location rule (section 2), `--redact` and redaction in CI (sections 1 and 7), the `doctor` changes (Consequences)
+- Amended by [ADR-0014](0014-one-project-many-apps.md) (Proposed): several apps in one `wincode.yaml`, a credentials reference per app, `--app` and `--all`
 
 ## Context
 
