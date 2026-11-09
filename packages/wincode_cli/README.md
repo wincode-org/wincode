@@ -79,8 +79,8 @@ Writes `wincode.yaml` in the root of the Flutter project: the nearest folder at 
 
 | Value | Where it comes from |
 | --- | --- |
-| `bundle_id` | The `PRODUCT_BUNDLE_IDENTIFIER` of Release, if Debug and Profile agree (`--flavor <name>`: of `Release-<name>`, `Debug-<name>` and `Profile-<name>`). `--configuration <name>` reads exactly that configuration and compares nothing. A variable with no value, or a bundle ID that differs between configurations, is listed and asked, never guessed |
-| `team_id` | The profile, and `DEVELOPMENT_TEAM` of the Xcode project; two different ones are asked |
+| `bundle_id` | The `PRODUCT_BUNDLE_IDENTIFIER` of Release, if Debug and Profile agree. `--flavor <name>` reads only `Release-<name>`, the App Store build, and does not read Debug-`<name>` or Profile-`<name>`, which may differ. `--configuration <name>` reads exactly that configuration. A variable with no value, or a bundle ID that differs between configurations in the default read, is listed and asked, never guessed |
+| `team_id` | The profile, and `DEVELOPMENT_TEAM` of the Xcode project; two different ones are asked. A variable in it is resolved like the others (below) |
 | `profile` | A `.mobileprovision` in the folder that you name that is an App Store profile for the bundle ID and has not expired. It must lie outside git working trees, or git must ignore it |
 | `entitlements` | The file the Xcode project names, else the only `.entitlements` file of `ios/Runner` |
 | `workflow`, `output` | `--workflow-ref` (left as a comment without it), and `--output` (default `build/wincode`) |
@@ -88,6 +88,8 @@ Writes `wincode.yaml` in the root of the Flutter project: the nearest folder at 
 At a terminal, `init` shows each value with what it found (Enter accepts it, `-` leaves an optional one out) and asks before it writes. With `--yes`, with `--json`, with `CI` set, or when standard input is not a terminal, it asks nothing: give every field as an option, or `--yes` to accept what it found. Otherwise it fails with exit 64 (`init-input-missing`) and says, for each value that is not settled, `detected <value> in <source>; confirm with --yes or pass --<option>`, `detected several (...); pass --<option>`, or `not detected; pass --<option>`.
 
 If the project has build configurations other than Debug, Profile and Release (for example one per flavor) and you gave neither `--flavor` nor `--configuration`, `init` prints a `WARN` that lists them and says that it read Release. `--configuration <name>` has no counterpart in `wincode.yaml`. A name that the project does not have fails (`configuration-not-found`, exit 1) and lists the names it has.
+
+With `--flavor` or `--configuration`, `init` prints `Read the build configuration <name> of ios/Runner.xcodeproj.` (and `--json` has `"configuration"`), and giving both is a usage error. A `$(NAME)` or `${NAME}` in the bundle ID, the team ID or the entitlements file is resolved without running anything: from the build settings of that configuration, from the xcconfig files it references and their `#include` and `#include?` chains (16 deep at most; a file that includes itself fails at once and is named), and from nested variables. A variable that nothing defines is listed (`PRODUCT_BUNDLE_IDENTIFIER of Release-alpha needs $(APP_ID), which no build setting or xcconfig file of Release-alpha defines`) and asked, never guessed; a run that cannot ask fails with `not detected ($(APP_ID) is not defined in Release-alpha or its xcconfig files); pass --bundle-id`.
 
 - **An existing `wincode.yaml` is kept** (`config-exists`, exit 1) and the lines that would change are shown with `-` and `+`; `--force` replaces it.
 - **A profile in a git working tree that git does not ignore is refused** (`key-in-git-tree`, exit 78) before it is read. A profile inside the project gets a suggested `.gitignore` line; `init` never edits `.gitignore`.

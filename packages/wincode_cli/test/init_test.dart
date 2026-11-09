@@ -14,30 +14,47 @@ final _now = DateTime.utc(2026, 11, 9, 12);
 final _later = DateTime.utc(2027, 9, 5, 12);
 
 /// The `project.pbxproj` of a Runner target with the configurations of [bundleIds]. A null value leaves the setting
-/// out. [team] and [entitlements] go into every configuration.
+/// out. [team] and [entitlements] go into every configuration. [xcconfigOf] gives a configuration the base
+/// configuration file `ios/Flutter/<name>`, and [extra] more settings of a configuration.
 String _pbxproj(
   Map<String, String?> bundleIds, {
   String? team,
   String? entitlements,
+  Map<String, String> xcconfigOf = const {},
+  Map<String, Map<String, String>> extra = const {},
 }) {
   final configs = StringBuffer();
   final ids = <String>[];
+  final files = xcconfigOf.values.toSet().toList();
   for (final (i, MapEntry(key: name, value: bundleId))
       in bundleIds.entries.indexed) {
     final settings = [
       if (bundleId != null) 'PRODUCT_BUNDLE_IDENTIFIER = "$bundleId";',
       if (team != null) 'DEVELOPMENT_TEAM = $team;',
       if (entitlements != null) 'CODE_SIGN_ENTITLEMENTS = $entitlements;',
+      for (final MapEntry(:key, :value)
+          in (extra[name] ?? const <String, String>{}).entries)
+        '$key = "$value";',
     ].join(' ');
+    final base = xcconfigOf[name];
+    final reference = base == null
+        ? ''
+        : 'baseConfigurationReference = X${files.indexOf(base)}; ';
     configs
       ..writeln(
-        '\t\tT$i = {isa = XCBuildConfiguration; buildSettings = {$settings}; name = "$name"; };',
+        '\t\tT$i = {isa = XCBuildConfiguration; ${reference}buildSettings = {$settings}; name = "$name"; };',
       )
       ..writeln(
         '\t\tP$i = {isa = XCBuildConfiguration; buildSettings = {}; name = "$name"; };',
       );
     ids.add('$i');
   }
+  for (final (i, file) in files.indexed) {
+    configs.writeln(
+      '\t\tX$i = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "Flutter/$file"; sourceTree = "<group>"; };',
+    );
+  }
+  final children = [for (var i = 0; i < files.length; i++) 'X$i,'].join(' ');
   String list(String prefix) => ids.map((i) => '$prefix$i,').join(' ');
   return '''
 // !\$*UTF8*\$!
@@ -47,8 +64,9 @@ String _pbxproj(
 	};
 	objectVersion = 54;
 	objects = {
-$configs		C1 = {isa = PBXNativeTarget; buildConfigurationList = D2; name = Runner; productType = "com.apple.product-type.application"; };
-		E1 = {isa = PBXProject; buildConfigurationList = D1; targets = (C1,); };
+$configs		G1 = {isa = PBXGroup; children = ($children); sourceTree = "<group>"; };
+		C1 = {isa = PBXNativeTarget; buildConfigurationList = D2; name = Runner; productType = "com.apple.product-type.application"; };
+		E1 = {isa = PBXProject; buildConfigurationList = D1; mainGroup = G1; targets = (C1,); };
 		D1 = {isa = XCConfigurationList; buildConfigurations = (${list('P')}); };
 		D2 = {isa = XCConfigurationList; buildConfigurations = (${list('T')}); };
 	};
@@ -91,6 +109,9 @@ void main() {
     String? team,
     String? entitlementsSetting,
     List<String> entitlementFiles = const ['Runner.entitlements'],
+    Map<String, String> xcconfigFiles = const {},
+    Map<String, String> xcconfigOf = const {},
+    Map<String, Map<String, String>> extra = const {},
   }) {
     if (Directory('${root.path}/ios').existsSync()) {
       Directory('${root.path}/ios').deleteSync(recursive: true);
@@ -100,14 +121,58 @@ void main() {
       ..writeAsStringSync('name: sample\n');
     Directory('${root.path}/ios/Runner.xcodeproj').createSync(recursive: true);
     File('${root.path}/ios/Runner.xcodeproj/project.pbxproj').writeAsStringSync(
-      _pbxproj(bundleIds, team: team, entitlements: entitlementsSetting),
+      _pbxproj(
+        bundleIds,
+        team: team,
+        entitlements: entitlementsSetting,
+        xcconfigOf: xcconfigOf,
+        extra: extra,
+      ),
     );
+    for (final MapEntry(:key, :value) in xcconfigFiles.entries) {
+      File('${root.path}/ios/Flutter/$key')
+        ..createSync(recursive: true)
+        ..writeAsStringSync(value);
+    }
     for (final name in entitlementFiles) {
       File('${root.path}/ios/Runner/$name')
         ..createSync(recursive: true)
         ..writeAsStringSync('<plist/>');
     }
   }
+
+  /// The sample of three flavors whose bundle IDs come from per-flavor xcconfig files: alpha through a variable that
+  /// its file defines, beta directly, gamma through nested variables and an include chain with an optional file that
+  /// is not there. Debug-beta has a bundle ID of its own.
+  void xcconfigFlavors() => flutterProject(
+    {
+      'Debug': _bundleId,
+      'Release': _bundleId,
+      'Debug-beta': '$_bundleId.beta.debug',
+      'Release-alpha': r'$(APP_BUNDLE_ID)',
+      'Release-beta': null,
+      'Release-gamma': r'$(APP_BUNDLE_ID)',
+    },
+    xcconfigOf: {
+      'Release-alpha': 'alpha.xcconfig',
+      'Release-beta': 'beta.xcconfig',
+      'Release-gamma': 'gamma.xcconfig',
+    },
+    xcconfigFiles: {
+      'alpha.xcconfig': '#include "Generated.xcconfig"\nAPP_BUNDLE_ID = com.example.app.alpha\nDEVELOPMENT_TEAM = TEAM000000\n',
+      'beta.xcconfig': 'PRODUCT_BUNDLE_IDENTIFIER = com.example.app.beta\n',
+      'gamma.xcconfig':
+          '#include "common.xcconfig"\n#include? "local.xcconfig"\n'
+          r'APP_BUNDLE_ID = $(BASE_ID).$(FLAVOR_NAME)'
+          '\nFLAVOR_NAME = gamma\n'
+          r'CODE_SIGN_ENTITLEMENTS = Runner/$(ENTITLEMENTS_NAME).entitlements'
+          '\n',
+      'common.xcconfig':
+          'BASE_ID = com.example.app\nENTITLEMENTS_NAME = Runner\n'
+          r'DEVELOPMENT_TEAM = $(TEAM_FROM_COMMON)'
+          '\nTEAM_FROM_COMMON = TEAM000000\n',
+    },
+  );
 
   File profile(
     String folder,
@@ -197,8 +262,12 @@ void main() {
       expect(facts.bundleId, isNull);
       expect(facts.bundleIdCandidates, isEmpty);
       expect(facts.notes, [
-        'the bundle ID of Release is a variable or is not set',
+        r'PRODUCT_BUNDLE_IDENTIFIER of Release needs $(APP_ID), which no build setting or xcconfig file of Release '
+            'defines',
       ]);
+      expect(facts.unresolved, {
+        'PRODUCT_BUNDLE_IDENTIFIER': ['APP_ID'],
+      });
     });
 
     test('a bundle ID that differs between configurations is asked, with each choice', () {
@@ -936,6 +1005,213 @@ Next:
     });
   });
 
+  group('--flavor reads only Release-<flavor>', () {
+    test('Debug-X with another bundle ID does not matter, and the output says which configuration was read', () async {
+      flutterProject(_flavors(), team: _team);
+      final run = await init(['--yes', '--json', '--flavor', 'beta']);
+      expect(run.code, 0, reason: run.err);
+      expect(loadConfig(config().path).bundleId, '$_bundleId.beta');
+      expect(
+        run.err,
+        startsWith(
+          'Read the build configuration Release-beta of ios/Runner.xcodeproj.\n',
+        ),
+      );
+      expect(run.err, isNot(contains('WARN')));
+      expect(
+        (jsonDecode(run.out) as Map<String, Object?>)['configuration'],
+        'Release-beta',
+      );
+    });
+
+    test('three flavors with literal values', () async {
+      flutterProject(_flavors(), team: _team);
+      for (final flavor in ['alpha', 'beta', 'gamma']) {
+        final run = await init(['--yes', '--force', '--flavor', flavor]);
+        expect(run.code, 0, reason: '$flavor: ${run.err}');
+        expect(loadConfig(config().path).bundleId, '$_bundleId.$flavor');
+        expect(
+          run.out,
+          contains(
+            'Read the build configuration Release-$flavor of ios/Runner.xcodeproj.\n',
+          ),
+        );
+      }
+    });
+
+    test(
+      'without --flavor, Debug and Profile are still compared with Release',
+      () async {
+        flutterProject({
+          'Debug': '$_bundleId.debug',
+          'Profile': _bundleId,
+          'Release': _bundleId,
+        }, team: _team);
+        final run = await init(['--yes']);
+        expect(run.code, 64);
+        expect(run.err, contains('bundle_id: detected several'));
+        expect(run.out, isNot(contains('Read the build configuration')));
+      },
+    );
+
+    test('bundle IDs, the team and the entitlements come from per-flavor xcconfig files', () async {
+      xcconfigFlavors();
+      final alpha = await init(['--yes', '--flavor', 'alpha']);
+      expect(alpha.code, 0, reason: alpha.err);
+      expect(alpha.out, isNot(contains('note:')));
+      final loaded = loadConfig(config().path);
+      expect((loaded.bundleId, loaded.teamId), ('$_bundleId.alpha', _team));
+
+      final beta = await init([
+        '--yes',
+        '--force',
+        '--flavor',
+        'beta',
+        '--team-id',
+        _team,
+      ]);
+      expect(beta.code, 0, reason: beta.err);
+      expect(loadConfig(config().path).bundleId, '$_bundleId.beta');
+    });
+
+    test('nested variables follow an include chain, and an optional include that is missing is skipped', () async {
+      xcconfigFlavors();
+      final run = await init(['--yes', '--flavor', 'gamma']);
+      expect(run.code, 0, reason: run.err);
+      final loaded = loadConfig(config().path);
+      expect((loaded.bundleId, loaded.teamId), ('$_bundleId.gamma', _team));
+      expect(
+        config().readAsStringSync(),
+        contains('entitlements: ios/Runner/Runner.entitlements\n'),
+      );
+      expect(run.out, isNot(contains('note:')));
+    });
+
+    test('a variable that nothing defines is listed, and a run that cannot ask fails with it', () async {
+      flutterProject({'Release-gamma': r'$(GAMMA_ID)'}, team: _team);
+      final run = await init(['--yes', '--json', '--flavor', 'gamma']);
+      expect(run.code, 64);
+      expect(
+        run.err,
+        contains(
+          r'note: PRODUCT_BUNDLE_IDENTIFIER of Release-gamma needs $(GAMMA_ID), which no build setting or xcconfig '
+          'file of Release-gamma defines.',
+        ),
+      );
+      expect(
+        errorOf(run.out)['what'],
+        contains(
+          r'bundle_id: not detected ($(GAMMA_ID) is not defined in Release-gamma or its xcconfig files); pass --bundle-id',
+        ),
+      );
+      expect(config().existsSync(), isFalse);
+
+      final given = await init([
+        '--yes',
+        '--flavor',
+        'gamma',
+        '--bundle-id',
+        '$_bundleId.gamma',
+      ]);
+      expect(given.code, 0, reason: given.err);
+    });
+
+    test('at a terminal, a variable that nothing defines is asked', () async {
+      flutterProject({'Release-gamma': r'$(GAMMA_ID)'}, team: _team);
+      final run = await init(
+        ['--flavor', 'gamma'],
+        input: ['$_bundleId.gamma', '', '', '', ''],
+      );
+      expect(run.code, 0, reason: run.err);
+      expect(
+        run.out,
+        contains(
+          r'note: PRODUCT_BUNDLE_IDENTIFIER of Release-gamma needs $(GAMMA_ID)',
+        ),
+      );
+      expect(run.out, contains('Bundle ID: com.example.app.gamma\n'));
+      expect(loadConfig(config().path).bundleId, '$_bundleId.gamma');
+    });
+
+    test(
+      'an unresolved team ID or entitlements file is listed too, never guessed',
+      () async {
+        flutterProject(
+          {'Release-gamma': '$_bundleId.gamma'},
+          entitlementFiles: const [],
+          extra: {
+            'Release-gamma': {
+              'DEVELOPMENT_TEAM': r'$(TEAM_VAR)',
+              'CODE_SIGN_ENTITLEMENTS': r'Runner/$(ENT).entitlements',
+            },
+          },
+        );
+        final run = await init(['--yes', '--json', '--flavor', 'gamma']);
+        expect(run.code, 64);
+        final what = errorOf(run.out)['what']! as String;
+        expect(
+          what,
+          contains(
+            r'team_id: not detected ($(TEAM_VAR) is not defined in Release-gamma or its xcconfig files); pass --team-id',
+          ),
+        );
+        expect(
+          what,
+          contains(
+            r'entitlements: not detected ($(ENT) is not defined in Release-gamma or its xcconfig files); pass --entitlements',
+          ),
+        );
+      },
+    );
+
+    test(
+      'variables that refer to each other are reported, not followed forever',
+      () async {
+        flutterProject(
+          {'Release-x': r'$(A)'},
+          extra: {
+            'Release-x': {'A': r'$(B)', 'B': r'$(A)'},
+          },
+        );
+        final run = await init(['--yes', '--flavor', 'x', '--team-id', _team]);
+        expect(run.code, 64);
+        expect(
+          run.out,
+          contains(
+            'note: PRODUCT_BUNDLE_IDENTIFIER of Release-x cannot be resolved: build settings refer to each other in a loop',
+          ),
+        );
+      },
+    );
+
+    test('an include cycle is reported without a path of this PC, and nothing is guessed', () async {
+      flutterProject(
+        {'Release-alpha': r'$(APP_BUNDLE_ID)'},
+        xcconfigOf: {'Release-alpha': 'alpha.xcconfig'},
+        xcconfigFiles: {
+          'alpha.xcconfig': '#include "beta.xcconfig"\nAPP_BUNDLE_ID = com.example.app.alpha\n',
+          'beta.xcconfig': '#include "alpha.xcconfig"\n',
+        },
+      );
+      final run = await init([
+        '--yes',
+        '--flavor',
+        'alpha',
+        '--team-id',
+        _team,
+      ]);
+      expect(run.code, 64);
+      expect(
+        run.out,
+        contains(
+          'note: the settings of Release-alpha could not be read: alpha.xcconfig: #include is circular',
+        ),
+      );
+      expect('${run.out}${run.err}', isNot(contains(temp.path)));
+      expect(run.err, contains('bundle_id: not detected; pass --bundle-id'));
+    });
+  });
+
   group('--configuration', () {
     test('without it, init reads Release and warns about the other configurations', () async {
       flutterProject(_flavors());
@@ -966,27 +1242,6 @@ Next:
       expect(run.out, isNot(contains('WARN')));
       expect(run.out, isNot(contains('note:')));
     });
-
-    test(
-      '--flavor still compares the three configurations of the flavor',
-      () async {
-        flutterProject(_flavors());
-        final run = await init([
-          '--yes',
-          '--flavor',
-          'beta',
-          '--team-id',
-          _team,
-        ]);
-        expect(run.code, 64);
-        expect(
-          run.err,
-          contains(
-            'bundle_id: detected several (com.example.app.beta in ios/Runner.xcodeproj (Release-beta)',
-          ),
-        );
-      },
-    );
 
     test(
       'a configuration that does not exist fails and lists the ones that do',
@@ -1029,10 +1284,16 @@ Next:
         expect(
           run.out,
           contains(
-            'note: the bundle ID of Release-x is a variable or is not set.',
+            r'note: PRODUCT_BUNDLE_IDENTIFIER of Release-x needs $(APP_ID), which no build setting or xcconfig file of '
+            'Release-x defines.',
           ),
         );
-        expect(run.err, contains('bundle_id: not detected; pass --bundle-id'));
+        expect(
+          run.err,
+          contains(
+            r'bundle_id: not detected ($(APP_ID) is not defined in Release-x or its xcconfig files); pass --bundle-id',
+          ),
+        );
       },
     );
 
@@ -1103,6 +1364,25 @@ Next:
       '--redact',
       '--configuration',
       'Release-delta',
+    ]);
+    xcconfigFlavors();
+    await run(
+      '--flavor alpha: the bundle ID and the team ID come from the flavor\'s xcconfig file',
+      ['--redact', '--dry-run', '--yes', '--flavor', 'alpha'],
+    );
+    await run('--flavor gamma: nested variables through an include chain', [
+      '--redact',
+      '--dry-run',
+      '--yes',
+      '--flavor',
+      'gamma',
+    ]);
+    flutterProject({'Release-delta': r'$(DELTA_ID)'}, team: _team);
+    await run('--flavor delta: a variable that nothing defines', [
+      '--redact',
+      '--yes',
+      '--flavor',
+      'delta',
     ]);
     await run('--flavor together with --configuration', [
       '--redact',

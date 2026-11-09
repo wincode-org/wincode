@@ -21,6 +21,7 @@ class ProjectFacts {
     this.configuration,
     this.configurations = const [],
     this.entitlementsNamedByProject = false,
+    this.unresolved = const {},
     this.warnings = const [],
     this.notes = const [],
   });
@@ -51,6 +52,10 @@ class ProjectFacts {
   /// Whether the project names the entitlements file in `CODE_SIGN_ENTITLEMENTS`, rather than `ios/Runner` having it.
   final bool entitlementsNamedByProject;
 
+  /// The variables that stayed unresolved in the configuration that was read, by setting (`PRODUCT_BUNDLE_IDENTIFIER`,
+  /// `DEVELOPMENT_TEAM`, `CODE_SIGN_ENTITLEMENTS`): no build setting or xcconfig file of it defines them.
+  final Map<String, List<String>> unresolved;
+
   /// What the user should look at, such as build configurations that were not read.
   final List<String> warnings;
 
@@ -73,8 +78,9 @@ Directory? findFlutterRoot(Directory from) {
 }
 
 /// Reads `ios/Runner.xcodeproj` and `ios/Runner` of the project at [root] for the settings that `wincode.yaml` needs,
-/// for [flavor] (null for an app without flavors), or for [configuration], one build configuration by name: then only
-/// that one is read, and Debug and Profile are not compared with it. Never throws: what cannot be read becomes a note.
+/// for [flavor] (null for an app without flavors), or for [configuration], one build configuration by name. With either,
+/// only the one configuration is read (`Release-<flavor>`, or the named one), and Debug and Profile are not compared
+/// with it. Without, Release is read and Debug and Profile must agree with it on the bundle ID. Never throws: what cannot be read becomes a note.
 /// An unknown [configuration] is not a note: [ProjectFacts.configurations] lists the names, and the caller refuses it.
 ProjectFacts detectProject(
   Directory root, {
@@ -111,11 +117,11 @@ ProjectFacts detectProject(
   final suffix = flavor == null ? '' : '-$flavor';
   // The configuration whose settings are used, and the ones that must agree with it on the bundle ID.
   final primary = configuration ?? 'Release$suffix';
-  final read = configuration != null
-      ? [configuration]
-      : [
-          for (final mode in ['Release', 'Debug', 'Profile']) '$mode$suffix',
-        ];
+  // --flavor and --configuration read the one configuration of the App Store build. Without them, Debug and Profile
+  // must agree with Release on the bundle ID.
+  final read = configuration != null || flavor != null
+      ? [primary]
+      : ['Release', 'Debug', 'Profile'];
   if (!names.contains(primary)) {
     return ProjectFacts(
       flavors: flavors,
@@ -137,11 +143,14 @@ ProjectFacts detectProject(
           'Release. To read another, pass --configuration <name>',
   ];
 
-  BuildSettings? settingsOf(String configuration) {
+  // The project folder is shortened to `ios` in what the readers say, so that no path of this PC is printed.
+  String shortened(String message) => message.replaceAll(ios.path, 'ios');
+
+  BuildSettings? settingsOf(String name) {
     try {
       return resolveBuildSettings(
         iosDir: ios,
-        configuration: configuration,
+        configuration: name,
         generated: flutterGeneratedSettings(
           buildName: '1.0.0',
           buildNumber: '1',
@@ -152,7 +161,46 @@ ProjectFacts detectProject(
       if (!_damaged(e)) {
         rethrow;
       }
-      notes.add('the settings of $configuration could not be read');
+      notes.add(
+        e is FormatException
+            ? 'the settings of $name could not be read: ${shortened(e.message)}'
+            : 'the settings of $name could not be read',
+      );
+      return null;
+    }
+  }
+
+  // The variables that stay unresolved in the settings of the configuration that is read, by setting.
+  final unresolved = <String, List<String>>{};
+
+  /// The value of the setting [key] in [settings], the settings of the build configuration [name]. Variables are
+  /// replaced from the configuration's own settings, from the xcconfig files it references (with their includes) and
+  /// from the values of those, nested. Nothing is executed. Null when the setting is not set or is empty, or when it
+  /// needs a variable that nothing defines or refers to itself: a note says which, and [unresolved] keeps the names of
+  /// the variables of the configuration that is read.
+  String? valueOf(BuildSettings? settings, String name, String key) {
+    if (settings == null || !settings.containsKey(key)) {
+      return null;
+    }
+    final missing = settings.unresolved(key);
+    if (missing.isNotEmpty) {
+      // One note is enough when Release has the same problem.
+      if (name == primary || !unresolved.containsKey(key)) {
+        notes.add(
+          '$key of $name needs ${missing.map((m) => '\$($m)').join(', ')}, which no build setting or xcconfig file of '
+          '$name defines',
+        );
+      }
+      if (name == primary) {
+        unresolved[key] = [...missing];
+      }
+      return null;
+    }
+    try {
+      final value = settings[key];
+      return value == null || value.isEmpty ? null : value;
+    } on FormatException catch (e) {
+      notes.add('$key of $name cannot be resolved: ${e.message}');
       return null;
     }
   }
@@ -165,11 +213,8 @@ ProjectFacts detectProject(
         : name == primary
         ? release
         : settingsOf(name);
-    final value = settings == null
-        ? null
-        : settings['PRODUCT_BUNDLE_IDENTIFIER'];
-    // An empty value is a setting that is not set, or a variable that has no value: it is no bundle ID.
-    if (value != null && value.isNotEmpty) {
+    final value = valueOf(settings, name, 'PRODUCT_BUNDLE_IDENTIFIER');
+    if (value != null) {
       bundleIds[name] = value;
     }
   }
@@ -187,19 +232,21 @@ ProjectFacts detectProject(
         if (isBundleId(value) && seen.add(value))
           (configuration: key, value: value),
     ];
-    notes.add(
-      releaseValue == null || !isBundleId(releaseValue)
-          ? 'the bundle ID of $primary is a variable or is not set'
-          : 'the bundle ID differs between configurations',
-    );
+    if (releaseValue != null && !isBundleId(releaseValue)) {
+      notes.add('the bundle ID of $primary is not a bundle ID');
+    } else if (releaseValue != null) {
+      notes.add('the bundle ID differs between configurations');
+    } else if (!unresolved.containsKey('PRODUCT_BUNDLE_IDENTIFIER')) {
+      notes.add('the bundle ID of $primary is not set');
+    }
   }
 
-  final team = release?['DEVELOPMENT_TEAM'];
+  final team = valueOf(release, primary, 'DEVELOPMENT_TEAM');
   String? entitlements;
   var entitlementsCandidates = <String>[];
   var entitlementsNamedByProject = false;
-  final named = release?['CODE_SIGN_ENTITLEMENTS'];
-  if (named != null && named.isNotEmpty) {
+  final named = valueOf(release, primary, 'CODE_SIGN_ENTITLEMENTS');
+  if (named != null) {
     final file = File('${ios.path}/$named');
     if (file.existsSync()) {
       entitlements = file.absolute.uri.normalizePath().toFilePath();
@@ -231,6 +278,7 @@ ProjectFacts detectProject(
     configuration: primary,
     configurations: names,
     entitlementsNamedByProject: entitlementsNamedByProject,
+    unresolved: unresolved,
     warnings: warnings,
     notes: notes,
   );

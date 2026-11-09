@@ -72,7 +72,7 @@ Usage: wincode init [arguments]
     --entitlements=<file>     The .entitlements file. Default: the one of the Xcode project.
     --workflow-ref=<ref>      The CI workflow for wincode build: <owner>/<repository>/.github/workflows/<file>@<branch or tag>.
     --output=<folder>         Where the IPAs go (default build/wincode).
-    --flavor=<name>           Read the Release-<name> configuration of the Xcode project.
+    --flavor=<name>           Read only the Release-<name> configuration of the Xcode project, the App Store build.
     --configuration=<name>    Read exactly this build configuration of the Xcode project, such as Release-demo, and do not compare Debug and Profile with it.
     --workflow                Copy the reference workflow to .github/workflows/wincode-ios.yml. It never replaces a file.
 -y, --yes                     Ask nothing: accept what init found.
