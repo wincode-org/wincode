@@ -157,7 +157,6 @@ void main() {
     for (final (args, usage) in [
       (<String>[], 'Usage: wincode <command> [arguments]'),
       (['ship'], 'Usage: wincode <command> [arguments]'),
-      (['doctor'], 'Usage: wincode doctor [arguments]'),
       (['doctor', '--binary', 'Runner'], 'Usage: wincode doctor [arguments]'),
       (
         ['doctor', '--binary', 'Runner', '--sdk'],

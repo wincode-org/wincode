@@ -5,6 +5,7 @@ import 'package:wincode_asc/wincode_asc.dart';
 import 'package:wincode_core/wincode_core.dart';
 
 import 'config.dart';
+import 'credentials.dart';
 import 'failure.dart';
 import 'key_location.dart';
 import 'redact.dart';
@@ -72,6 +73,7 @@ class Preflight {
     required this.clock,
     this.connect = connectToApple,
     this.log,
+    this.run = runProcess,
   });
 
   final WincodeConfig config;
@@ -88,6 +90,12 @@ class Preflight {
 
   /// Gets one line per HTTP request with `--verbose`.
   final void Function(String line)? log;
+
+  /// Starts `git` for the key-location checks. Tests make it refuse any other program.
+  final RunProcess run;
+
+  /// How messages name where the key came from: a variable, or the folder of a credentials reference.
+  String _keySource = 'WINCODE_ASC_KEY_DIR';
 
   String get _bundleId => config.bundleId;
   String get _teamId => config.teamId;
@@ -156,7 +164,7 @@ class Preflight {
       for (final f in location)
         if (f.status == 'FAIL') f,
     ];
-    var authorization = 'no token: WINCODE_ASC_KEY_DIR is not set';
+    var authorization = noTokenReason(config);
     if (key != null && failures.isEmpty) {
       try {
         _token(_loadKey(key));
@@ -184,13 +192,22 @@ class Preflight {
 
   /// The key-location check (ADR-0013, section 2). Returns its findings, the key's files when they may be read (null
   /// without them), and whether the profile was refused.
-  Future<(List<Finding>, _KeyFiles?, bool)> _locate({
+  Future<(List<Finding>, AscKeyFiles?, bool)> _locate({
     required bool dryRun,
   }) async {
     final findings = <Finding>[];
-    _KeyFiles? key;
+    AscKeyFiles? key;
     try {
-      key = await _keyFiles(dryRun: dryRun);
+      key = await locateAscKeyFiles(
+        config,
+        environment: environment,
+        redactor: redactor,
+        run: run,
+        dryRun: dryRun,
+      );
+      if (key != null) {
+        _keySource = key.source;
+      }
     } on WincodeException catch (e) {
       findings.add(Finding.fail('key-location', e));
     }
@@ -203,6 +220,7 @@ class Preflight {
         await requireOutsideGit(
           profile.path,
           source: 'profile in wincode.yaml',
+          run: run,
         );
       } on WincodeException catch (e) {
         findings.add(Finding.fail('key-location', e));
@@ -213,91 +231,22 @@ class Preflight {
       findings.add(
         Finding.pass(
           'key-location',
-          'the files of WINCODE_ASC_KEY_DIR${profileChecked ? ' and the profile' : ''} lie outside git working '
-              'trees, or git ignores them',
+          config.credentials == null
+              ? 'the files of WINCODE_ASC_KEY_DIR${profileChecked ? ' and the profile' : ''} lie outside git working '
+                    'trees, or git ignores them'
+              : 'the keys of the credentials ${config.credentials} lie outside every git working tree'
+                    '${profileChecked ? ', and the profile outside one or ignored by git' : ''}',
         ),
       );
     }
     return (findings, key, profileRefused);
   }
 
-  /// The `.p8` files and the `issuer-id` file of the key folder, each checked with [requireOutsideGit] before anything
-  /// reads it; null when a dry run has no key folder.
-  Future<_KeyFiles?> _keyFiles({required bool dryRun}) async {
-    final variable = environment['WINCODE_ASC_KEY_DIR'] ?? '';
-    if (variable.isEmpty) {
-      return dryRun ? null : throw _keyDirMissing;
-    }
-    // Only the absolute path is hidden: the value as set may be as short as `.`, and hiding it would hide every dot.
-    // The files are listed from the absolute path, so their paths start with it.
-    final folder = Directory(variable).absolute;
-    redactor.secret(folder.path, '<WINCODE_ASC_KEY_DIR>');
-    if (folder.path
-        .split(RegExp(r'[\\/]'))
-        .any((part) => part.toLowerCase().startsWith('onedrive'))) {
-      throw _keyInOneDrive;
-    }
-    final List<File> files;
-    try {
-      files = folder.listSync().whereType<File>().toList();
-    } on FileSystemException {
-      throw _keyInvalid(
-        'WINCODE_ASC_KEY_DIR does not name a folder that can be read',
-        why:
-            'it names the folder that holds AuthKey_<Key ID>.p8 and issuer-id.',
-        next: 'set WINCODE_ASC_KEY_DIR to that folder.',
-      );
-    }
-    final key = (
-      p8: [
-        for (final f in files)
-          if (_name(f).toLowerCase().endsWith('.p8')) f,
-      ],
-      issuer: files.where((f) => _name(f) == 'issuer-id').firstOrNull,
-    );
-    for (final file in [...key.p8, ?key.issuer]) {
-      await requireOutsideGit(file.path, source: 'WINCODE_ASC_KEY_DIR');
-    }
-    return key;
-  }
-
   /// The API key in [key], with its Key ID and Issuer ID registered with the redactor before anything can print them.
-  AscKey _loadKey(_KeyFiles key) {
-    if (key.p8.length != 1) {
-      throw _keyInvalid(
-        key.p8.isEmpty
-            ? 'WINCODE_ASC_KEY_DIR holds no .p8 file'
-            : 'WINCODE_ASC_KEY_DIR holds ${key.p8.length} .p8 files',
-        why: 'preflight signs its requests with the one key in that folder.',
-        next: 'keep exactly one key there: AuthKey_<Key ID>.p8, as App Store Connect delivered it.',
-      );
-    }
-    final keyId = RegExp(r'^AuthKey_([A-Z0-9]{10})\.p8$')
-        .firstMatch(_name(key.p8.single))?[1];
-    if (keyId == null) {
-      throw _keyInvalid(
-        'the .p8 in WINCODE_ASC_KEY_DIR is not named AuthKey_<Key ID>.p8',
-        why: 'every token names the Key ID, which winCode takes from the name App Store Connect gives the file.',
-        next: 'name the file AuthKey_ followed by the 10 characters of its Key ID (Users and Access, Integrations).',
-      );
-    }
-    redactor.secret(keyId, '<Key ID>');
-    final issuer = _text(key.issuer)?.trim() ?? '';
-    if (!RegExp(
-      r'^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$',
-      caseSensitive: false,
-    ).hasMatch(issuer)) {
-      throw _keyInvalid(
-        'WINCODE_ASC_KEY_DIR has no file issuer-id with an Issuer ID in it',
-        why: 'every token names the Issuer ID of the team.',
-        next:
-            'write the Issuer ID (Users and Access, Integrations) on one line in a file named issuer-id in that '
-            'folder.',
-      );
-    }
-    redactor.secret(issuer, '<Issuer ID>');
-    final notAKey = _keyInvalid(
-      'the .p8 in WINCODE_ASC_KEY_DIR is not an App Store Connect API key',
+  AscKey _loadKey(AscKeyFiles key) {
+    final (:keyId, :issuer, :p8) = readAscKeyIds(key, redactor);
+    final notAKey = ascKeyInvalid(
+      'the .p8 in ${key.source} is not an App Store Connect API key',
       why: 'an App Store Connect API key is an EC P-256 private key in PEM, as App Store Connect delivered it.',
       next:
           'use the .p8 as it was downloaded. App Store Connect delivers a key once: if the file is lost or damaged, '
@@ -305,7 +254,7 @@ class Preflight {
     );
     try {
       return AscKey.parse(
-        _text(key.p8.single) ?? (throw notAKey),
+        readKeyText(p8) ?? (throw notAKey),
         keyId: keyId,
         issuerId: issuer,
       );
@@ -494,7 +443,7 @@ class Preflight {
             "the key was revoked, the Key ID or the Issuer ID does not belong to the .p8, or this PC's clock is off "
             'by minutes (the token carries the time).',
         next:
-            'check that WINCODE_ASC_KEY_DIR holds AuthKey_<Key ID>.p8 as downloaded and issuer-id with the Issuer '
+            'check that $_keySource holds AuthKey_<Key ID>.p8 as downloaded and issuer-id with the Issuer '
             'ID (Users and Access, Integrations); set the clock right; make a new key if this one was revoked.',
       ),
       AscFailure.forbidden => WincodeException(
@@ -1102,18 +1051,6 @@ String _day(DateTime date) => date.toUtc().toIso8601String().substring(0, 10);
 
 String _name(File file) => file.uri.pathSegments.last;
 
-typedef _KeyFiles = ({List<File> p8, File? issuer});
-
-/// The text of [file] without a byte order mark, or null when it cannot be read.
-String? _text(File? file) {
-  try {
-    final text = file?.readAsStringSync();
-    return text != null && text.startsWith('﻿') ? text.substring(1) : text;
-  } on FileSystemException {
-    return null;
-  }
-}
-
 /// The [AscClient] of `--dry-run`: it writes each request down as the script prints it, and answers nothing.
 class _Requests implements AscClient {
   final lines = <String>[];
@@ -1131,40 +1068,13 @@ class _Requests implements AscClient {
   }
 }
 
-const _keyDirMissing = WincodeException(
-  ExitCode.config,
-  'asc-key-dir-missing',
-  'WINCODE_ASC_KEY_DIR is not set',
-  why: 'preflight reads the App Store Connect API key from that folder: AuthKey_<Key ID>.p8 and issuer-id.',
-  next:
-      'put AuthKey_<Key ID>.p8, as App Store Connect delivered it, and a file issuer-id with the Issuer ID (Users and '
-      'Access, Integrations) in a folder outside every project and outside OneDrive, such as '
-      r'%USERPROFILE%\.wincode\asc, and set WINCODE_ASC_KEY_DIR to it.',
-);
-
-const _keyInOneDrive = WincodeException(
-  ExitCode.config,
-  'key-in-onedrive',
-  'WINCODE_ASC_KEY_DIR points into OneDrive',
-  why: 'OneDrive copies the folder, and the key in it, to the cloud and to other PCs.',
-  next: r'move the folder outside OneDrive, such as %USERPROFILE%\.wincode\asc, and point WINCODE_ASC_KEY_DIR at it.',
-);
-
-WincodeException _keyInvalid(
-  String what, {
-  required String why,
-  required String next,
-}) => WincodeException(
-  ExitCode.config,
-  'asc-key-invalid',
-  what,
-  why: why,
-  next: next,
-);
-
 /// Writes the report of [findings] for people: a line each, why and the next step under a failure or a warning, and a
 /// last line with the outcome.
-void writeReport(List<Finding> findings, StringSink sink) {
+void writeReport(
+  List<Finding> findings,
+  StringSink sink, {
+  String command = 'preflight',
+}) {
   for (final f in findings) {
     sink.writeln('${f.status}  ${f.what}');
     if (f.problem?.why case final why?) {
@@ -1177,7 +1087,7 @@ void writeReport(List<Finding> findings, StringSink sink) {
   final failed = findings.where((f) => f.status == 'FAIL').length;
   final warned = findings.where((f) => f.status == 'WARN').length;
   sink.writeln(
-    'wincode preflight: ${failed > 0
+    'wincode $command: ${failed > 0
         ? '$failed check${failed == 1 ? '' : 's'} failed'
         : warned > 0
         ? 'passed, with $warned warning${warned == 1 ? '' : 's'}'
@@ -1192,10 +1102,13 @@ ExitCode exitCodeOf(List<Finding> findings) =>
 
 /// The object that `--json` prints: `command`, `ok`, `exitCode`, every finding in `checks`, and the first failure in
 /// `error`.
-Map<String, Object?> jsonOf(List<Finding> findings) {
+Map<String, Object?> jsonOf(
+  List<Finding> findings, {
+  String command = 'preflight',
+}) {
   final code = exitCodeOf(findings);
   return {
-    'command': 'preflight',
+    'command': command,
     'ok': code == ExitCode.ok,
     'exitCode': code.code,
     'checks': [for (final f in findings) f.toJson()],
