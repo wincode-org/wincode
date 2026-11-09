@@ -18,6 +18,10 @@ class ProjectFacts {
     this.entitlements,
     this.entitlementsCandidates = const [],
     this.flavors = const [],
+    this.configuration,
+    this.configurations = const [],
+    this.entitlementsNamedByProject = false,
+    this.warnings = const [],
     this.notes = const [],
   });
 
@@ -38,6 +42,18 @@ class ProjectFacts {
   /// The flavors of the project: the `Release-<flavor>` configurations.
   final List<String> flavors;
 
+  /// The build configuration that the settings were read from (`Release`, `Release-<flavor>` or the one asked for).
+  final String? configuration;
+
+  /// Every build configuration of the `Runner` target; empty when the project could not be read.
+  final List<String> configurations;
+
+  /// Whether the project names the entitlements file in `CODE_SIGN_ENTITLEMENTS`, rather than `ios/Runner` having it.
+  final bool entitlementsNamedByProject;
+
+  /// What the user should look at, such as build configurations that were not read.
+  final List<String> warnings;
+
   /// What could not be read, and why, for the user.
   final List<String> notes;
 }
@@ -57,8 +73,14 @@ Directory? findFlutterRoot(Directory from) {
 }
 
 /// Reads `ios/Runner.xcodeproj` and `ios/Runner` of the project at [root] for the settings that `wincode.yaml` needs,
-/// for [flavor] (null for an app without flavors). Never throws: what cannot be read becomes a note.
-ProjectFacts detectProject(Directory root, {String? flavor}) {
+/// for [flavor] (null for an app without flavors), or for [configuration], one build configuration by name: then only
+/// that one is read, and Debug and Profile are not compared with it. Never throws: what cannot be read becomes a note.
+/// An unknown [configuration] is not a note: [ProjectFacts.configurations] lists the names, and the caller refuses it.
+ProjectFacts detectProject(
+  Directory root, {
+  String? flavor,
+  String? configuration,
+}) {
   final notes = <String>[];
   final ios = Directory('${root.path}/ios');
   final pbxproj = File('${ios.path}/Runner.xcodeproj/project.pbxproj');
@@ -87,19 +109,33 @@ ProjectFacts detectProject(Directory root, {String? flavor}) {
       if (name.startsWith('Release-')) name.substring('Release-'.length),
   ];
   final suffix = flavor == null ? '' : '-$flavor';
-  if (!names.contains('Release$suffix')) {
+  // The configuration whose settings are used, and the ones that must agree with it on the bundle ID.
+  final primary = configuration ?? 'Release$suffix';
+  final read = configuration != null
+      ? [configuration]
+      : [
+          for (final mode in ['Release', 'Debug', 'Profile']) '$mode$suffix',
+        ];
+  if (!names.contains(primary)) {
     return ProjectFacts(
       flavors: flavors,
+      configurations: names,
       notes: [
-        'the Xcode project has no Release$suffix configuration${flavors.isEmpty ? '' : ' (flavors: ${flavors.join(', ')})'}',
+        if (configuration == null)
+          'the Xcode project has no $primary configuration${flavors.isEmpty ? '' : ' (flavors: ${flavors.join(', ')})'}',
       ],
     );
   }
-  if (flavor == null && flavors.isNotEmpty) {
-    notes.add(
-      'the project has flavors (${flavors.join(', ')}): give --flavor <name> to read the one you ship',
-    );
-  }
+  // Without --flavor or --configuration, init reads the plain Release. Say what it did not read.
+  final others = [
+    for (final name in names)
+      if (!const {'Debug', 'Profile', 'Release'}.contains(name)) name,
+  ];
+  final warnings = [
+    if (flavor == null && configuration == null && others.isNotEmpty)
+      'the project has build configurations other than Debug, Profile and Release: ${others.join(', ')}. init read '
+          'Release. To read another, pass --configuration <name>',
+  ];
 
   BuildSettings? settingsOf(String configuration) {
     try {
@@ -121,13 +157,12 @@ ProjectFacts detectProject(Directory root, {String? flavor}) {
     }
   }
 
-  final release = settingsOf('Release$suffix');
+  final release = settingsOf(primary);
   final bundleIds = <String, String>{};
-  for (final mode in ['Release', 'Debug', 'Profile']) {
-    final name = '$mode$suffix';
+  for (final name in read) {
     final settings = !names.contains(name)
         ? null
-        : mode == 'Release'
+        : name == primary
         ? release
         : settingsOf(name);
     final value = settings == null
@@ -140,7 +175,7 @@ ProjectFacts detectProject(Directory root, {String? flavor}) {
   }
   String? bundleId;
   var candidates = <({String configuration, String value})>[];
-  final releaseValue = bundleIds['Release$suffix'];
+  final releaseValue = bundleIds[primary];
   if (releaseValue != null &&
       isBundleId(releaseValue) &&
       bundleIds.values.every((v) => v == releaseValue)) {
@@ -154,7 +189,7 @@ ProjectFacts detectProject(Directory root, {String? flavor}) {
     ];
     notes.add(
       releaseValue == null || !isBundleId(releaseValue)
-          ? 'the bundle ID of Release$suffix is a variable or is not set'
+          ? 'the bundle ID of $primary is a variable or is not set'
           : 'the bundle ID differs between configurations',
     );
   }
@@ -162,11 +197,13 @@ ProjectFacts detectProject(Directory root, {String? flavor}) {
   final team = release?['DEVELOPMENT_TEAM'];
   String? entitlements;
   var entitlementsCandidates = <String>[];
+  var entitlementsNamedByProject = false;
   final named = release?['CODE_SIGN_ENTITLEMENTS'];
   if (named != null && named.isNotEmpty) {
     final file = File('${ios.path}/$named');
     if (file.existsSync()) {
       entitlements = file.absolute.uri.normalizePath().toFilePath();
+      entitlementsNamedByProject = true;
     } else {
       notes.add('the project names an entitlements file that does not exist');
     }
@@ -191,6 +228,10 @@ ProjectFacts detectProject(Directory root, {String? flavor}) {
     entitlements: entitlements,
     entitlementsCandidates: entitlementsCandidates,
     flavors: flavors,
+    configuration: primary,
+    configurations: names,
+    entitlementsNamedByProject: entitlementsNamedByProject,
+    warnings: warnings,
     notes: notes,
   );
 }

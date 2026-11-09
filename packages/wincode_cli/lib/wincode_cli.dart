@@ -405,6 +405,11 @@ class _Init extends _Command {
         valueHelp: 'name',
         help: 'Read the Release-<name> configuration of the Xcode project.',
       )
+      ..addOption(
+        'configuration',
+        valueHelp: 'name',
+        help: 'Read exactly this build configuration of the Xcode project, such as Release-demo, and do not compare Debug and Profile with it.',
+      )
       ..addFlag(
         'workflow',
         negatable: false,
@@ -462,6 +467,7 @@ class _Init extends _Command {
         workflowRef: argResults!.option('workflow-ref'),
         output: argResults!.option('output'),
         flavor: argResults!.option('flavor'),
+        configuration: argResults!.option('configuration'),
         yes: yes,
         force: argResults!.flag('force'),
         copyWorkflow: argResults!.flag('workflow'),

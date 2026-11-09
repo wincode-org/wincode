@@ -1,5 +1,5 @@
+import 'dart:convert';
 import 'dart:io';
-import 'dart:isolate';
 
 import 'package:wincode_core/wincode_core.dart';
 
@@ -8,6 +8,7 @@ import 'failure.dart';
 import 'init_detect.dart';
 import 'key_location.dart';
 import 'redact.dart';
+import 'workflow_template.g.dart';
 
 /// Reads one line of the user's answer, or null when the input has ended.
 typedef ReadLine = String? Function();
@@ -24,6 +25,7 @@ class InitOptions {
     this.workflowRef,
     this.output,
     this.flavor,
+    this.configuration,
     this.yes = false,
     this.force = false,
     this.copyWorkflow = false,
@@ -41,6 +43,9 @@ class InitOptions {
   final String? output;
   final String? flavor;
 
+  /// `--configuration`: the build configuration to read, by name.
+  final String? configuration;
+
   /// `--yes`: accept what was detected, ask nothing.
   final bool yes;
 
@@ -52,7 +57,14 @@ class InitOptions {
   final bool dryRun;
 }
 
-typedef _Candidate = ({String value, String display});
+/// A value that `init` found: the [value] to write, how a prompt [display]s it, and, for a message that says what it
+/// found, its [name] and the [source] it came from.
+typedef _Candidate = ({
+  String value,
+  String display,
+  String name,
+  String source,
+});
 
 /// `wincode init` (ADR-0013, phase 2): writes `wincode.yaml` for the Flutter project at or above [cwd].
 ///
@@ -86,6 +98,9 @@ class Initializer {
   /// The options that a non-interactive run needs and did not get, with what was found for them.
   final _missing = <String>[];
 
+  /// What `detectProject` said the user should look at.
+  var _warnings = const <String>[];
+
   /// Runs the command, and returns the object for `--json`.
   Future<Map<String, Object?>> execute() async {
     final root =
@@ -110,10 +125,43 @@ class Initializer {
     // An existing file is never replaced without --force. Nothing is asked: the summary shows what init found.
     final preview = target.existsSync() && !options.force;
 
-    final facts = detectProject(root, flavor: options.flavor);
+    if (options.flavor != null && options.configuration != null) {
+      throw const WincodeException(
+        ExitCode.usage,
+        'init-value-invalid',
+        '--flavor and --configuration both name the build configuration to read',
+        why: '--flavor <name> reads Release-<name>; --configuration <name> reads the configuration of exactly that name.',
+        next: 'give one of them.',
+      );
+    }
+    final facts = detectProject(
+      root,
+      flavor: options.flavor,
+      configuration: options.configuration,
+    );
+    final unknown = options.configuration;
+    if (unknown != null &&
+        facts.configurations.isNotEmpty &&
+        !facts.configurations.contains(unknown)) {
+      throw WincodeException(
+        ExitCode.failed,
+        'configuration-not-found',
+        'the Xcode project has no build configuration named $unknown; it has ${facts.configurations.join(', ')}',
+        why:
+            '--configuration names the build configuration whose bundle ID, team ID and entitlements init reads, '
+            'and it must match a name in ios/Runner.xcodeproj exactly.',
+        next: 'pass one of those names to --configuration, or leave it out to read Release.',
+      );
+    }
     for (final note in facts.notes) {
       report.writeln('note: $note.');
     }
+    for (final warning in facts.warnings) {
+      report.writeln('WARN  $warning.');
+    }
+    _warnings = facts.warnings;
+    String inProject(String? configuration) =>
+        'ios/Runner.xcodeproj${configuration == null ? '' : ' ($configuration)'}';
     _hideAll([
       ?facts.bundleId,
       for (final c in facts.bundleIdCandidates) c.value,
@@ -121,14 +169,25 @@ class Initializer {
 
     final bundleId = await _choose(
       label: 'Bundle ID',
+      key: 'bundle_id',
       flagName: 'bundle-id',
       flag: options.bundleId,
       candidates: [
         if (facts.bundleId != null)
-          (value: facts.bundleId!, display: facts.bundleId!)
+          (
+            value: facts.bundleId!,
+            display: facts.bundleId!,
+            name: facts.bundleId!,
+            source: inProject(facts.configuration),
+          )
         else
           for (final c in facts.bundleIdCandidates)
-            (value: c.value, display: '${c.value} (${c.configuration})'),
+            (
+              value: c.value,
+              display: '${c.value} (${c.configuration})',
+              name: c.value,
+              source: inProject(c.configuration),
+            ),
       ],
       preview: preview,
       validate: (v) => isBundleId(v) ? null : 'it is not a bundle ID: two or more parts of letters, digits and hyphens joined by dots',
@@ -144,13 +203,21 @@ class Initializer {
         (
           value: profile.profile.teamId,
           display: '${profile.profile.teamId} (the profile)',
+          name: profile.profile.teamId,
+          source: 'the profile',
         ),
       if (facts.teamId != null && facts.teamId != profile?.profile.teamId)
-        (value: facts.teamId!, display: '${facts.teamId} (the Xcode project)'),
+        (
+          value: facts.teamId!,
+          display: '${facts.teamId} (the Xcode project)',
+          name: facts.teamId!,
+          source: inProject(facts.configuration),
+        ),
     ];
     _hideAll([for (final t in teams) t.value], 'team ID');
     final teamId = await _choose(
       label: 'Team ID',
+      key: 'team_id',
       flagName: 'team-id',
       flag: options.teamId,
       candidates: teams,
@@ -165,6 +232,7 @@ class Initializer {
 
     final entitlementsChosen = await _choose(
       label: 'Entitlements file',
+      key: 'entitlements',
       flagName: 'entitlements',
       flag: options.entitlements,
       required: false,
@@ -175,7 +243,14 @@ class Initializer {
           else
             ...facts.entitlementsCandidates,
         ])
-          (value: path, display: relativePath(root.path, path) ?? path),
+          (
+            value: path,
+            display: relativePath(root.path, path) ?? path,
+            name: relativePath(root.path, path) ?? path,
+            source: facts.entitlementsNamedByProject
+                ? inProject(facts.configuration)
+                : 'ios/Runner',
+          ),
       ],
       preview: preview,
       validate: (v) =>
@@ -186,10 +261,11 @@ class Initializer {
       throw WincodeException(
         ExitCode.usage,
         'init-input-missing',
-        'init needs ${_missing.length == 1 ? 'an option' : 'options'} that it cannot ask for: ${_missing.join('; ')}',
+        'init cannot ask here, and ${_missing.length == 1 ? 'one value is' : '${_missing.length} values are'} not '
+            'settled. ${_missing.join('. ')}.',
         why:
             'init asks questions only at a terminal, and not in CI, with --yes or with --json; there it takes every '
-            'field from the options.',
+            'field from the options, and what it detected only with --yes.',
         next: 'give the missing options, add --yes to accept what init found, or run wincode init in a terminal.',
       );
     }
@@ -230,7 +306,6 @@ class Initializer {
       // The same checks that every other command makes, before anything is written.
       parseConfig(text, path: target.path);
     }
-    File? template;
     if (options.copyWorkflow) {
       if (workflowTarget.existsSync()) {
         throw WincodeException(
@@ -239,11 +314,10 @@ class Initializer {
           '.github/workflows/wincode-ios.yml already exists',
           why: 'init copies the reference workflow only to a new file, even with --force.',
           next:
-              'compare it with packages/wincode_cli/templates/wincode-ios.yml of winCode by hand, or delete it and run '
-              'init again.',
+              'compare it with the reference workflow (templates/wincode-ios.yml in winCode) by hand, or delete it and '
+              'run init again.',
         );
       }
-      template = _template();
     }
 
     report
@@ -266,7 +340,7 @@ class Initializer {
     }
     if (options.dryRun) {
       report.writeln('Dry run: nothing was written.');
-      if (template != null) {
+      if (options.copyWorkflow) {
         report.writeln(
           'It would copy the reference workflow to .github/workflows/wincode-ios.yml.',
         );
@@ -275,9 +349,10 @@ class Initializer {
       target.parent.createSync(recursive: true);
       target.writeAsStringSync(text);
       report.writeln('Wrote $name.');
-      if (template != null) {
+      if (options.copyWorkflow) {
         workflowTarget.parent.createSync(recursive: true);
-        template.copySync(workflowTarget.path);
+        // The bytes of templates/wincode-ios.yml, which a test compares with the constant.
+        workflowTarget.writeAsBytesSync(utf8.encode(workflowTemplate));
         report.writeln(
           'Copied the reference workflow to .github/workflows/wincode-ios.yml.',
         );
@@ -292,7 +367,7 @@ class Initializer {
         );
       }
     }
-    if (template != null && options.workflowRef == null) {
+    if (options.copyWorkflow && options.workflowRef == null) {
       report.writeln(
         'When the workflow is pushed, add its reference to $name: workflow: <owner>/<repository>/.github/workflows/'
         'wincode-ios.yml@<branch>.',
@@ -301,7 +376,7 @@ class Initializer {
     _nextSteps(target);
     return _json(
       written: !options.dryRun,
-      workflow: template == null
+      workflow: !options.copyWorkflow
           ? null
           : (options.dryRun ? 'would-copy' : 'copied'),
       values: _values(bundleId, teamId, profile, entitlementsChosen),
@@ -334,6 +409,7 @@ class Initializer {
     'dryRun': options.dryRun,
     'written': written,
     'config': values,
+    'warnings': ?(_warnings.isEmpty ? null : _warnings),
     'workflow': ?workflow,
   };
 
@@ -409,6 +485,7 @@ class Initializer {
       }
       path = await _choose(
         label: 'Profile',
+        key: 'profile',
         flagName: 'profile',
         required: false,
         preview: preview,
@@ -418,6 +495,8 @@ class Initializer {
               value: file.path,
               display:
                   '${file.uri.pathSegments.last}, valid until ${profile.expirationDate.toIso8601String().substring(0, 10)}',
+              name: file.uri.pathSegments.last,
+              source: 'the profile folder',
             ),
         ],
         validate: _profileFileProblem,
@@ -488,6 +567,7 @@ class Initializer {
   /// nothing is asked and nothing is missing: the best guess, or null.
   Future<String?> _choose({
     required String label,
+    required String key,
     required String flagName,
     required List<_Candidate> candidates,
     required String? Function(String) validate,
@@ -517,10 +597,10 @@ class Initializer {
       }
       if (required || candidates.isNotEmpty) {
         _missing.add(
-          '--$flagName${switch (candidates.length) {
-            0 => '',
-            1 => ' (found ${candidates.single.display}; --yes accepts it)',
-            _ => ' (found ${candidates.map((c) => c.display).join(', ')})',
+          '$key: ${switch (candidates.length) {
+            0 => 'not detected; pass --$flagName',
+            1 => 'detected ${candidates.single.name} in ${candidates.single.source}; confirm with --yes or pass --$flagName',
+            _ => 'detected several (${candidates.map((c) => '${c.name} in ${c.source}').join(', ')}); pass --$flagName',
           }}',
         );
       }
@@ -596,28 +676,6 @@ class Initializer {
 
   String _absolute(String path) =>
       File(path).isAbsolute ? path : '${cwd.absolute.path}/$path';
-
-  /// The reference workflow of winCode, from the `templates` folder next to `lib` in this package.
-  File _template() {
-    final lib = Isolate.resolvePackageUriSync(
-      Uri.parse('package:wincode_cli/wincode_cli.dart'),
-    );
-    final file = lib == null
-        ? null
-        : File.fromUri(lib.resolve('../templates/wincode-ios.yml'));
-    if (file == null || !file.existsSync()) {
-      throw const WincodeException(
-        ExitCode.unavailable,
-        'template-missing',
-        'the reference workflow is not next to this installation of wincode',
-        why: 'init copies packages/wincode_cli/templates/wincode-ios.yml, which a compiled wincode does not carry.',
-        next:
-            'run wincode from a checkout of winCode (dart run wincode_cli:wincode init --workflow), or copy '
-            'packages/wincode_cli/templates/wincode-ios.yml to .github/workflows/ by hand.',
-      );
-    }
-    return file;
-  }
 }
 
 /// The text of `wincode.yaml` for these values. A value that is null is left as a comment. A value is quoted when YAML
