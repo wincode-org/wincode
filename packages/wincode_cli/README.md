@@ -89,7 +89,8 @@ The checks, in the order of the report:
 | `store-profile` | The developer portal has the App ID, and an active App Store profile for it that has not expired |
 | `local-profile` | The profile of `wincode.yaml` is an App Store profile of the team, for the bundle ID, and has not expired |
 | `ipa` | The IPA is a zip archive with one app in `Payload/`, whose bundle ID is that of `wincode.yaml`, and whose version and build number are one to three numbers joined by dots |
-| `signature` | When the IPA holds `embedded.mobileprovision`: that profile passes the `local-profile` checks, and the executable is signed with the `application-identifier` `<team ID>.<bundle ID>`. An IPA without it is reported (INFO), not failed |
+| `signature` | When the IPA holds `embedded.mobileprovision`: that profile passes the `local-profile` checks, and the executable is signed with the `application-identifier` `<team ID>.<bundle ID>`. An IPA without it is reported (INFO), not failed: `upload` will require a signature (ADR-0013, phase 4) |
+| `profile-link` | The `UUID` of the profile agrees across App Store Connect, the profile of `wincode.yaml` and the IPA's `embedded.mobileprovision`; no UUID is printed. The file must be an active App Store profile of the App ID in App Store Connect, and a signed IPA must carry the file's profile. An unsigned IPA is an INFO |
 
 Each check prints `PASS`, `FAIL`, `WARN` or `INFO`, and a failure or a warning prints why and the next step under it. A profile that expires within 30 days is a warning. When a request fails, the checks in App Store Connect after it are not run; the checks on this PC always are. The last line sums up, and the exit code is that of the first failure, or 0:
 
@@ -104,14 +105,16 @@ wincode preflight: 1 check failed
 | Exit | Failure ids |
 | --- | --- |
 | 0 | `profile-expires-soon` (a warning) |
-| 1 | `app-record-missing`, `build-number-not-higher`, `build-number-invalid`, `version-invalid`, `bundle-id-mismatch`, `app-id-missing`, `profile-missing`, `profile-expired`, `profile-team-mismatch`, `profile-not-app-store`, `profile-unreadable`, `ipa-missing`, `ipa-unreadable`, `signature-invalid`, `asc-error` |
+| 1 | `profile-uuid-mismatch`, `profile-not-active`, `ipa-profile-mismatch`, `ipa-profile-unknown`, `app-record-missing`, `build-number-not-higher`, `build-number-invalid`, `version-invalid`, `bundle-id-mismatch`, `app-id-missing`, `profile-missing`, `profile-expired`, `profile-team-mismatch`, `profile-not-app-store`, `profile-unreadable`, `ipa-missing`, `ipa-unreadable`, `signature-invalid`, `asc-error` |
 | 69 | `offline`, `asc-unavailable`, `git-unavailable` |
 | 77 | `asc-unauthorized` (HTTP 401), `asc-forbidden` (HTTP 403) |
 | 78 | `config-missing`, `config-invalid`, `asc-key-dir-missing`, `asc-key-invalid`, `key-in-onedrive`, `key-in-git-tree` |
 
+The IPA is read within limits: at most 50,000 entries, a 32 MiB directory, 8 GiB claimed in all, and 64 MiB of one entry held in memory (the executable is read at its header and signature only). A zip64 archive, an encrypted entry, a duplicate or overlapping entry, or a name with `..` makes the IPA `ipa-unreadable` (exit 1).
+
 Requests time out after 20 seconds. One that gets no answer or HTTP 5xx is tried twice more, after 1 and 2 seconds. `HTTPS_PROXY` and `NO_PROXY` apply.
 
-- `--dry-run` sends nothing and prints the GET requests in the form of `asc_preflight.py --dry-run`, with `{id of the app record}` and `{id of the App ID}` for the IDs that only Apple's answers would give. When `WINCODE_ASC_KEY_DIR` is set, it checks where the key lies and signs a token, which it does not show.
+- `--dry-run` sends nothing and prints the GET requests in the form of `asc_preflight.py --dry-run`, without its certificates request and with `uuid` added to the fields of the profiles request, with `{id of the app record}` and `{id of the App ID}` for the IDs that only Apple's answers would give. When `WINCODE_ASC_KEY_DIR` is set, it checks where the key lies and signs a token, which it does not show.
 - `--verbose` adds one line per HTTP request on stderr: method, host, path, query, status or error, and time. Never the token or a header.
 - `--redact`, or `CI`, hides the bundle ID and team ID of `wincode.yaml` (`<bundle ID>`, `<team ID>`), those of another app or team that the IPA or a profile names (`<other bundle ID>`, `<other team ID>`), and Apple's IDs of the app record and the App ID.
 

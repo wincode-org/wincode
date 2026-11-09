@@ -9,7 +9,8 @@ export 'src/app_snapshot.dart'
         genSnapshotArguments,
         wrapInFat;
 export 'src/build_settings.dart' show BuildSettings, resolveBuildSettings;
-export 'src/code_signature.dart' show readSignedEntitlements;
+export 'src/code_signature.dart'
+    show codeSignatureOf, entitlementsOfSignature, readSignedEntitlements;
 export 'src/doctor.dart' show DoctorFinding, checkFlutterSdkLineEndings;
 export 'src/entitlements.dart' show buildEntitlements;
 export 'src/flutter_assets.dart'
@@ -70,4 +71,4 @@ export 'src/swift_build.dart'
     show SwiftBuild, buildSwiftPackage, swiftBuildCommand;
 export 'src/wsl.dart' show toWslPath, wslRunner;
 export 'src/xcconfig.dart' show XcconfigEntry, readXcconfig;
-export 'src/zip.dart' show ZipArchive;
+export 'src/zip.dart' show ZipArchive, ZipLimits;

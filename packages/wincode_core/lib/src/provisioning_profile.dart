@@ -7,11 +7,15 @@ import 'plist.dart';
 /// signature around it is not checked, as the spike's `sign.py` did not check it.
 class ProvisioningProfile {
   const ProvisioningProfile({
+    required this.uuid,
     required this.teamId,
     required this.applicationIdentifier,
     required this.expirationDate,
     required this.isForAppStore,
   });
+
+  /// `UUID`: what App Store Connect calls the profile's `uuid`, and what the signed app's embedded copy carries.
+  final String uuid;
 
   /// The first of `TeamIdentifier`: the team that made the profile.
   final String teamId;
@@ -50,6 +54,7 @@ ProvisioningProfile readProvisioningProfile(Uint8List bytes) {
   if (plist
       case final Map<String, Object?> profile &&
           {
+            'UUID': final String uuid,
             'TeamIdentifier': [final String teamId, ...],
             'Entitlements':
                 final Map<String, Object?> entitlements &&
@@ -57,6 +62,7 @@ ProvisioningProfile readProvisioningProfile(Uint8List bytes) {
             'ExpirationDate': final DateTime expires,
           }) {
     return ProvisioningProfile(
+      uuid: uuid,
       teamId: teamId,
       applicationIdentifier: appId,
       expirationDate: expires.toUtc(),
@@ -67,6 +73,6 @@ ProvisioningProfile readProvisioningProfile(Uint8List bytes) {
     );
   }
   throw const FormatException(
-    'its property list lacks TeamIdentifier, the application-identifier entitlement or ExpirationDate',
+    'its property list lacks UUID, TeamIdentifier, the application-identifier entitlement or ExpirationDate',
   );
 }

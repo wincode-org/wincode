@@ -53,6 +53,16 @@
       "check": "signature",
       "status": "PASS",
       "what": "the IPA is signed as TEAM000000.com.example.app with an App Store profile, valid until 2027-09-05"
+    },
+    {
+      "check": "profile-link",
+      "status": "PASS",
+      "what": "the profile in wincode.yaml is an active App Store profile of com.example.app in App Store Connect (same UUID)"
+    },
+    {
+      "check": "profile-link",
+      "status": "PASS",
+      "what": "the IPA is signed with the profile in wincode.yaml (same UUID)"
     }
   ],
   "error": {

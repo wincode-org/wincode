@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:test/test.dart';
 import 'package:wincode_asc/testing.dart';
@@ -19,6 +20,11 @@ final _expires = _now.add(const Duration(days: 300));
 const _bundleId = 'com.example.app';
 const _teamId = 'TEAM000000';
 const _keyId = 'ABCDE12345';
+
+/// Made-up profile UUIDs: the App Store profile of the fixture, its development profile, and one that nobody has.
+const _uuid = '00000000-0000-0000-0000-0000000000a1';
+const _developmentUuid = '00000000-0000-0000-0000-0000000000b2';
+const _otherUuid = '00000000-0000-0000-0000-0000000000c3';
 
 /// Apple's IDs of the app record and of the App ID in the fake App Store Connect.
 const _appRecord = '1000000001';
@@ -55,11 +61,13 @@ FakeAnswer Function(FakeRequest) _appStore({
         fakeResource('profiles', 'profile-1', {
           'profileType': 'IOS_APP_DEVELOPMENT',
           'profileState': 'ACTIVE',
+          'uuid': _developmentUuid,
           'expirationDate': _appleDate(_now.add(const Duration(days: 400))),
         }),
         fakeResource('profiles', 'profile-2', {
           'profileType': 'IOS_APP_STORE',
           'profileState': 'ACTIVE',
+          'uuid': _uuid,
           'expirationDate': _appleDate(expires ?? _expires),
         }),
       ]),
@@ -70,11 +78,13 @@ PlistMap _profile({
   String teamId = _teamId,
   DateTime? expires,
   bool devices = false,
+  String uuid = _uuid,
 }) => appStoreProfile(
   teamId: teamId,
   bundleId: _bundleId,
   expires: expires ?? _expires,
   devices: devices,
+  uuid: uuid,
 );
 
 /// An IPA as zsign signs one: the app's Info.plist, a framework's, the embedded App Store profile, and the executable
@@ -84,6 +94,7 @@ List<int> _ipa({
   String build = '13',
   String signedAs = '$_teamId.$_bundleId',
   bool signed = true,
+  String profileUuid = _uuid,
 }) => zipOf({
   'Payload/': [],
   'Payload/Runner.app/': [],
@@ -109,7 +120,9 @@ List<int> _ipa({
         : null,
   ),
   if (signed)
-    'Payload/Runner.app/embedded.mobileprovision': profileOf(_profile()),
+    'Payload/Runner.app/embedded.mobileprovision': profileOf(
+      _profile(uuid: profileUuid),
+    ),
 });
 
 /// Compares [actual] with test/goldens/[name]; UPDATE_GOLDENS=1 rewrites the file.
@@ -120,6 +133,37 @@ void _expectGolden(String name, String actual) {
   }
   expect(actual, golden.readAsStringSync().replaceAll('\r\n', '\n'));
 }
+
+/// [zip] with the field [at] bytes into the central directory header of [name] set to [value].
+List<int> _patched(
+  List<int> zip,
+  String name,
+  int at,
+  int value, {
+  int bytes = 4,
+}) {
+  final out = List<int>.of(zip);
+  final wanted = name.codeUnits;
+  for (var i = 0; i + 46 + wanted.length <= out.length; i++) {
+    final header =
+        out[i] == 0x50 &&
+        out[i + 1] == 0x4B &&
+        out[i + 2] == 1 &&
+        out[i + 3] == 2;
+    if (header &&
+        String.fromCharCodes(out.sublist(i + 46, i + 46 + wanted.length)) ==
+            name) {
+      for (var b = 0; b < bytes; b++) {
+        out[i + at + b] = value >> (8 * b) & 0xFF;
+      }
+      return out;
+    }
+  }
+  throw StateError('no entry $name');
+}
+
+Map<String, Object?> _error(String out) =>
+    (jsonDecode(out) as Map<String, Object?>)['error']! as Map<String, Object?>;
 
 void main() {
   late Directory temp;
@@ -248,6 +292,33 @@ void main() {
       'the IPA is build 12 of com.example.app.beta; the profile expires in 20 days',
       ['--redact'],
     );
+    profile.writeAsBytesSync(profileOf(_profile(uuid: _otherUuid)));
+    ipa.writeAsBytesSync(_ipa());
+    await run(
+      'the profile in wincode.yaml is not a profile that App Store Connect has',
+      [],
+    );
+    profile.writeAsBytesSync(profileOf(_profile()));
+    ipa.writeAsBytesSync(_ipa(profileUuid: _otherUuid));
+    await run(
+      'the IPA was signed with another profile than wincode.yaml names',
+      [],
+    );
+    ipa.writeAsBytesSync(_ipa(signed: false));
+    await run('the IPA is not signed', []);
+    ipa.writeAsBytesSync(
+      zipOf({
+        'Payload/Runner.app/Info.plist': [1],
+        'Payload/Runner.app/../../evil': [1],
+      }),
+    );
+    await run('the IPA has an entry named with ../', []);
+    ipa.writeAsBytesSync(
+      _patched(_ipa(), 'Payload/Runner.app/Info.plist', 24, 100 << 20),
+    );
+    await run('the IPA claims an Info.plist larger than the cap', []);
+    profile.writeAsBytesSync(profileOf(_profile()));
+    ipa.writeAsBytesSync(_ipa());
     await run('the requests, as asc_preflight.py --dry-run prints them', [
       '--dry-run',
       '--redact',
@@ -556,6 +627,236 @@ void main() {
       expect(err, contains('wincode.yaml does not exist'));
       expect(apple!.requests, isEmpty);
     });
+  });
+
+  group('the profile in three places', () {
+    test(
+      'the same profile in App Store Connect, wincode.yaml and the IPA passes',
+      () async {
+        final (code, out, _) = await preflight([]);
+        expect(code, 0);
+        expect(
+          out,
+          contains(
+            'PASS  the profile in wincode.yaml is an active App Store profile of com.example.app in App Store '
+            'Connect (same UUID)\n'
+            'PASS  the IPA is signed with the profile in wincode.yaml (same UUID)\n',
+          ),
+        );
+      },
+    );
+
+    test(
+      'a profile file that App Store Connect does not have fails (1)',
+      () async {
+        profile.writeAsBytesSync(profileOf(_profile(uuid: _otherUuid)));
+        ipa.writeAsBytesSync(_ipa(profileUuid: _otherUuid));
+        final (code, out, _) = await preflight(['--json']);
+        expect(code, 1);
+        expect(_error(out), {
+          'id': 'profile-uuid-mismatch',
+          'what': 'the profile in wincode.yaml is not a profile of com.example.app in App Store Connect',
+          'why': contains('refused'),
+          'next': startsWith('download the current App Store profile'),
+        });
+      },
+    );
+
+    test(
+      'a profile file that App Store Connect has as another type fails (1)',
+      () async {
+        profile.writeAsBytesSync(profileOf(_profile(uuid: _developmentUuid)));
+        ipa.writeAsBytesSync(_ipa(profileUuid: _developmentUuid));
+        final (code, out, _) = await preflight(['--json']);
+        expect(code, 1);
+        expect(_error(out), containsPair('id', 'profile-not-active'));
+        expect(
+          _error(out)['what'],
+          'the profile in wincode.yaml is in App Store Connect as IOS_APP_DEVELOPMENT, ACTIVE, not as an active App '
+          'Store profile',
+        );
+      },
+    );
+
+    test(
+      'a signed IPA with another profile than wincode.yaml fails (1)',
+      () async {
+        ipa.writeAsBytesSync(_ipa(profileUuid: _otherUuid));
+        final (code, out, _) = await preflight(['--json']);
+        expect(code, 1);
+        expect(_error(out), containsPair('id', 'ipa-profile-mismatch'));
+        expect(
+          _error(out)['what'],
+          'the profile inside the IPA is not the profile in wincode.yaml',
+        );
+      },
+    );
+
+    test(
+      'an unsigned IPA is an INFO, and the other two are still compared',
+      () async {
+        ipa.writeAsBytesSync(_ipa(signed: false));
+        final (code, out, _) = await preflight([]);
+        expect(code, 0);
+        expect(out, contains('(same UUID)\n'));
+        expect(
+          out,
+          contains(
+            'INFO  the IPA is not signed, so the profile inside it was not compared\n',
+          ),
+        );
+      },
+    );
+
+    test('without a profile in wincode.yaml, the IPA is compared with App Store Connect', () async {
+      config.writeAsStringSync(
+        'bundle_id: $_bundleId\nteam_id: $_teamId\noutput: build\n',
+      );
+      final (ok, out, _) = await preflight([]);
+      expect(ok, 0);
+      expect(
+        out,
+        contains(
+          'PASS  the IPA is signed with an active App Store profile of com.example.app in App Store Connect '
+          '(same UUID)\n',
+        ),
+      );
+      ipa.writeAsBytesSync(_ipa(profileUuid: _otherUuid));
+      final (code, json, _) = await preflight(['--json']);
+      expect(code, 1);
+      expect(_error(json), containsPair('id', 'ipa-profile-unknown'));
+    });
+
+    test('with too little to compare, it says so', () async {
+      config.writeAsStringSync(
+        'bundle_id: $_bundleId\nteam_id: $_teamId\noutput: build\n',
+      );
+      ipa.writeAsBytesSync(_ipa(signed: false));
+      final (code, out, _) = await preflight([], environment: const {});
+      expect(code, 78);
+      expect(
+        out,
+        contains(
+          'INFO  the IPA is not signed, so the profile inside it was not compared',
+        ),
+      );
+    });
+
+    test('no UUID is printed', () async {
+      profile.writeAsBytesSync(profileOf(_profile(uuid: _otherUuid)));
+      ipa.writeAsBytesSync(_ipa(profileUuid: _developmentUuid));
+      final (_, out, err) = await preflight(['--verbose']);
+      for (final uuid in [_uuid, _developmentUuid, _otherUuid]) {
+        expect('$out$err', isNot(contains(uuid)));
+      }
+    });
+  });
+
+  group('a damaged IPA is a failure (1) with the format error, never an internal error (70)', () {
+    const info = 'Payload/Runner.app/Info.plist';
+    final two = {
+      info: writePlistBinary({
+        'CFBundleIdentifier': _bundleId,
+        'CFBundleVersion': '13',
+      }),
+      'Payload/Runner.app/a.txt': [1, 2, 3],
+      'Payload/Runner.app/b.txt': [4, 5, 6],
+    };
+    final whole = _ipa();
+    final cases = <String, (List<int>, String)>{
+      'cut short': (whole.sublist(0, whole.length - 30), 'not a zip archive'),
+      'a Zip64 marker': (
+        List<int>.of(whole)
+          ..[whole.length - 12] = 0xFF
+          ..[whole.length - 11] = 0xFF,
+        'a Zip64 archive, which is not read here',
+      ),
+      'a name with ../': (
+        zipOf({
+          ...two,
+          'Payload/Runner.app/../../evil': [1],
+        }),
+        'an entry is named "Payload/Runner.app/../../evil", which leaves its folder',
+      ),
+      'a duplicate name': (
+        _patched(
+          zipOf(two),
+          'Payload/Runner.app/b.txt',
+          46 + 'Payload/Runner.app/'.length,
+          0x61,
+          bytes: 1,
+        ),
+        'the entry "Payload/Runner.app/a.txt" occurs twice',
+      ),
+      'overlapping entries': (
+        _patched(zipOf(two), 'Payload/Runner.app/b.txt', 42, 0),
+        'the data of "Payload/Runner.app/Info.plist" overlap the next entry or the directory',
+      ),
+      'a claimed size above the cap': (
+        _patched(whole, info, 24, 100 << 20),
+        '$info asks for ${100 << 20} bytes, more than the ${64 << 20} that are read',
+      ),
+      'more data than the header says': (
+        _patched(whole, info, 24, 4),
+        '$info holds more than its header says',
+      ),
+    };
+    for (final MapEntry(key: what, value: (bytes, part)) in cases.entries) {
+      test(what, () async {
+        ipa.writeAsBytesSync(bytes);
+        final (code, out, err) = await preflight(['--json']);
+        expect(code, 1);
+        expect(err, contains('FAIL  signed.ipa cannot be read as an IPA: '));
+        expect(err, isNot(contains('internal error')));
+        expect(_error(out), containsPair('id', 'ipa-unreadable'));
+        expect(
+          _error(out)['what'],
+          'signed.ipa cannot be read as an IPA: $part',
+        );
+      });
+    }
+
+    test(
+      'a large executable is read only at its header and its signature',
+      () async {
+        // 65 MiB of zeros between the header and the signature, more than ZipArchive.read keeps: a few kilobytes
+        // deflated. Only readRange can get at the signature.
+        final signed = executable(
+          entitlements: {
+            'application-identifier': '$_teamId.$_bundleId',
+            'get-task-allow': false,
+          },
+        );
+        const padding = 65 << 20;
+        final big = BytesBuilder(copy: false)
+          ..add(signed.sublist(0, 64))
+          ..add(Uint8List(padding))
+          ..add(signed.sublist(64));
+        final bytes = big.takeBytes();
+        // LC_CODE_SIGNATURE follows the 32-byte header: command, size, then the signature's offset.
+        ByteData.sublistView(bytes).setUint32(40, 64 + padding, Endian.little);
+        ipa.writeAsBytesSync(
+          zipOf({
+            'Payload/Runner.app/Info.plist': writePlistBinary({
+              'CFBundleExecutable': 'Runner',
+              'CFBundleIdentifier': _bundleId,
+              'CFBundleShortVersionString': '1.0.0',
+              'CFBundleVersion': '13',
+            }),
+            'Payload/Runner.app/Runner': bytes,
+            'Payload/Runner.app/embedded.mobileprovision': profileOf(
+              _profile(),
+            ),
+          }),
+        );
+        final (code, out, _) = await preflight([]);
+        expect(code, 0);
+        expect(
+          out,
+          contains('PASS  the IPA is signed as TEAM000000.com.example.app'),
+        );
+      },
+    );
   });
 
   group('the key', () {

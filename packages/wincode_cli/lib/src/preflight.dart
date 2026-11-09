@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math';
 
 import 'package:wincode_asc/wincode_asc.dart';
 import 'package:wincode_core/wincode_core.dart';
@@ -94,6 +95,22 @@ class Preflight {
   /// The `application-identifier` that the app is signed with: `<team ID>.<bundle ID>`.
   String get _appId => '$_teamId.$_bundleId';
 
+  // What the checks read, for the `profile-link` check. A check sets its field only when it read a profile that can
+  // sign this app; a Preflight is used once.
+
+  /// The profile that wincode.yaml names.
+  ProvisioningProfile? _local;
+
+  /// The profile inside the IPA, and whether the IPA holds one at all.
+  ProvisioningProfile? _embedded;
+  bool _ipaIsSigned = false;
+
+  /// Whether the IPA was opened and its app found, so that [_ipaIsSigned] says something.
+  bool _ipaChecked = false;
+
+  /// Every profile of the App ID in App Store Connect by `uuid`, with its type and state; null when not asked.
+  Map<String, ({String type, String state})>? _inAsc;
+
   /// Runs every check, and returns what each found, in the order of the report.
   Future<List<Finding>> check() async {
     _registerIds();
@@ -122,12 +139,8 @@ class Preflight {
           ..add(notChecked);
       }
     }
-    return [
-      ...location,
-      ...asc,
-      _localProfile(now, refused: profileRefused),
-      ...ipaFindings,
-    ];
+    final local = _localProfile(now, refused: profileRefused);
+    return [...location, ...asc, local, ...ipaFindings, ..._profileLink()];
   }
 
   /// What `--dry-run` prints: the GET requests that [check] sends, in the order and form of `asc_preflight.py
@@ -389,10 +402,18 @@ class Preflight {
         redactor.hide(id, '{id of the App ID}');
         profiles.addAll(
           await get('/v1/bundleIds/$id/profiles', {
-            'fields[profiles]': 'profileType,profileState,expirationDate',
+            'fields[profiles]': 'profileType,profileState,expirationDate,uuid',
           }),
         );
       }
+      _inAsc = {
+        for (final p in profiles)
+          if (_attribute(p, 'uuid').isNotEmpty)
+            _attribute(p, 'uuid'): (
+              type: _attribute(p, 'profileType'),
+              state: _attribute(p, 'profileState'),
+            ),
+      };
       found.add(_storeProfile(appIds, profiles, now));
     } on AscException catch (e) {
       found
@@ -551,6 +572,9 @@ class Preflight {
       );
     }
     final problem = _profileProblem(subject, profile);
+    if (problem == null) {
+      _local = profile;
+    }
     return problem != null
         ? Finding.fail('local-profile', problem)
         : _expiry(
@@ -659,6 +683,107 @@ class Preflight {
       );
     }
     return Finding.pass(check, '$passed, valid until $date');
+  }
+
+  // The profile in three places.
+
+  /// The `profile-link` check: the profile that App Store Connect has for the App ID, the one in wincode.yaml and the
+  /// one inside the IPA are the same profile, by `UUID`. A comparison is made when both of its sides were read; an
+  /// unsigned IPA has no profile and gets an INFO. The UUIDs are not printed.
+  List<Finding> _profileLink() {
+    const check = 'profile-link';
+    final local = _local;
+    final embedded = _embedded;
+    final asc = _inAsc;
+    const download =
+        'download the current App Store profile for the App ID from the developer portal (Profiles), point profile in '
+        'wincode.yaml at it, and sign the IPA again.';
+    Finding fail(String id, String what, String why, String next) =>
+        Finding.fail(
+          check,
+          WincodeException(ExitCode.failed, id, what, why: why, next: next),
+        );
+    bool isActiveStore(String uuid) => switch (asc?[uuid]) {
+      (type: 'IOS_APP_STORE', state: 'ACTIVE') => true,
+      _ => false,
+    };
+    const whyApple =
+        'Apple checks a signed build against the profile it holds for the App ID. A profile that App Store Connect does '
+        'not list as an active App Store profile was deleted, replaced or invalidated, and a build signed with it is '
+        'refused.';
+    final found = <Finding>[];
+    if (local != null && asc != null) {
+      final known = asc[local.uuid];
+      found.add(
+        known == null
+            ? fail(
+                'profile-uuid-mismatch',
+                'the profile in wincode.yaml is not a profile of $_bundleId in App Store Connect',
+                whyApple,
+                download,
+              )
+            : isActiveStore(local.uuid)
+            ? Finding.pass(
+                check,
+                'the profile in wincode.yaml is an active App Store profile of $_bundleId in App Store Connect (same UUID)',
+              )
+            : fail(
+                'profile-not-active',
+                'the profile in wincode.yaml is in App Store Connect as ${known.type}, ${known.state}, not as an active App '
+                    'Store profile',
+                whyApple,
+                download,
+              ),
+      );
+    }
+    if (embedded != null && local != null) {
+      found.add(
+        embedded.uuid == local.uuid
+            ? Finding.pass(
+                check,
+                'the IPA is signed with the profile in wincode.yaml (same UUID)',
+              )
+            : fail(
+                'ipa-profile-mismatch',
+                'the profile inside the IPA is not the profile in wincode.yaml',
+                'wincode sign embeds the profile of wincode.yaml. An IPA with another profile was signed with a '
+                    'different or an earlier one, and the upload would be checked against that profile.',
+                'sign the IPA again with wincode sign, or point profile in wincode.yaml at the profile the IPA was '
+                    'signed with.',
+              ),
+      );
+    } else if (embedded != null && asc != null) {
+      found.add(
+        isActiveStore(embedded.uuid)
+            ? Finding.pass(
+                check,
+                'the IPA is signed with an active App Store profile of $_bundleId in App Store Connect (same UUID)',
+              )
+            : fail(
+                'ipa-profile-unknown',
+                'the profile inside the IPA is not an active App Store profile of $_bundleId in App Store Connect',
+                whyApple,
+                download,
+              ),
+      );
+    }
+    if (_ipaChecked && !_ipaIsSigned) {
+      found.add(
+        const Finding.info(
+          check,
+          'the IPA is not signed, so the profile inside it was not compared',
+        ),
+      );
+    }
+    return found.isEmpty
+        ? const [
+            Finding.info(
+              check,
+              'the profile UUIDs were not compared: fewer than two of App Store Connect, wincode.yaml and the IPA gave '
+              'a profile to compare',
+            ),
+          ]
+        : found;
   }
 
   // The IPA.
@@ -782,6 +907,7 @@ class Preflight {
           ),
         );
       }
+      _ipaChecked = true;
       findings.add(_signature(zip, app, text('CFBundleExecutable'), now));
       return (build != null && _isDottedNumber(build) ? build : null, findings);
     } on FormatException catch (e) {
@@ -818,6 +944,7 @@ class Preflight {
         next: 'sign the IPA again with the App Store profile of $_bundleId.',
       ),
     );
+    _ipaIsSigned = true;
     final ProvisioningProfile profile;
     try {
       profile = readProvisioningProfile(
@@ -830,6 +957,7 @@ class Preflight {
     if (problem != null) {
       return Finding.fail('signature', problem);
     }
+    _embedded = profile;
     if (executable == null || !zip.names.contains('$app$executable')) {
       return invalid(
         "the IPA's Info.plist names no executable that the IPA holds",
@@ -837,7 +965,16 @@ class Preflight {
     }
     final PlistMap? entitlements;
     try {
-      entitlements = readSignedEntitlements(zip.read('$app$executable'));
+      // The executable can be large: read its header and its signature only.
+      final path = '$app$executable';
+      final signature = codeSignatureOf(
+        zip.readRange(path, 0, min(zip.sizeOf(path), 1 << 20)),
+      );
+      entitlements = signature == null
+          ? null
+          : entitlementsOfSignature(
+              zip.readRange(path, signature.offset, signature.size),
+            );
     } on FormatException catch (e) {
       return invalid(
         "the signature of the IPA's executable cannot be read: ${e.message}",

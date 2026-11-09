@@ -193,13 +193,14 @@ Uint8List profileOf(PlistMap plist) {
 }
 
 /// The property list of an App Store profile of team [teamId] for [bundleId] that expires at [expires]. [devices] makes
-/// it an ad hoc one, [debuggable] a development one.
+/// it an ad hoc one, [debuggable] a development one. [uuid] is made up, never a real profile's.
 PlistMap appStoreProfile({
   required String teamId,
   required String bundleId,
   required DateTime expires,
   bool devices = false,
   bool debuggable = false,
+  String uuid = '00000000-0000-0000-0000-000000000000',
 }) => {
   'AppIDName': 'Example',
   'ApplicationIdentifierPrefix': [teamId],
@@ -220,6 +221,6 @@ PlistMap appStoreProfile({
   'TeamIdentifier': [teamId],
   'TeamName': 'Example',
   'TimeToLive': 365,
-  'UUID': '00000000-0000-0000-0000-000000000000',
+  'UUID': uuid,
   'Version': 1,
 };
