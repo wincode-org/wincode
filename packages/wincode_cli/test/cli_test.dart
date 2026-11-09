@@ -4,7 +4,7 @@ import 'dart:io';
 import 'package:test/test.dart';
 import 'package:wincode_cli/wincode_cli.dart';
 
-const _planned = ['build', 'init', 'sign', 'status', 'upload'];
+const _planned = ['build', 'sign', 'status', 'upload'];
 
 /// (exit code, stdout, stderr) of `wincode` with [args].
 Future<(int, String, String)> wincode(List<String> args) async {
@@ -19,7 +19,12 @@ void main() {
     final help = StringBuffer();
     for (final args in [
       ['--help'],
-      for (final command in [..._planned, 'doctor', 'preflight']..sort())
+      for (final command in [
+        ..._planned,
+        'doctor',
+        'init',
+        'preflight',
+      ]..sort())
         ['help', command],
     ]) {
       final (code, out, err) = await wincode(args);

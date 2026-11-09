@@ -2,7 +2,7 @@
 
 The `wincode` command. Its design is [ADR-0013](../../docs/adr/0013-wincode-cli-build-sign-upload.md).
 
-Status: `doctor` and `preflight` work. The other commands are registered; each prints `not implemented yet, see ADR-0013` and exits with 64 until the phase of ADR-0013 that implements it.
+Status: `doctor`, `preflight` and `init` work. The other commands are registered; each prints `not implemented yet, see ADR-0013` and exits with 64 until the phase of ADR-0013 that implements it.
 
 ```
 dart run wincode_cli:wincode <command> [arguments]
@@ -10,7 +10,7 @@ dart run wincode_cli:wincode <command> [arguments]
 
 | Command | What it will do | Phase |
 | --- | --- | --- |
-| `init` | Write `wincode.yaml` for the Flutter project in this folder | 2 |
+| `init` | Write `wincode.yaml` for the Flutter project in this folder | works |
 | `preflight [<signed .ipa>]` | Check the signed IPA and App Store Connect before an upload. Read-only | works |
 | `sign [<unsigned .ipa>]` | Sign the IPA for the App Store with zsign | 3 |
 | `upload [<signed .ipa>]` | Upload the signed IPA to App Store Connect and wait for its processing | 4 |
@@ -28,7 +28,7 @@ They go before or after the command.
 - `--verbose`: also print each step, external command and HTTP request, with secrets redacted.
 - `--dry-run`: send, write and run nothing, and print what would be done.
 
-`doctor`, `preflight` and the error output use `--json`. `--config`, `--dry-run` and the HTTP lines of `--verbose` are used by `preflight` so far; otherwise `--verbose` adds only the stack trace of an internal error.
+`doctor`, `preflight`, `init` and the error output use `--json`. `--config` and `--dry-run` are used by `preflight` and `init`, and the HTTP lines of `--verbose` by `preflight`; otherwise `--verbose` adds only the stack trace of an internal error.
 
 ## Exit codes
 
@@ -63,9 +63,36 @@ workflow: example-org/example-app/.github/workflows/wincode-ios.yml@main
 output: build/wincode
 ```
 
-`bundle_id` and `team_id` are required, and `output` defaults to `build/wincode`. Every value must be text. An unknown key is refused, and so is a key whose name looks like a secret; messages name the key, never its value. `loadConfig` reads and checks the file; `preflight` is the first command that reads it.
+`bundle_id` and `team_id` are required, and `output` defaults to `build/wincode`. Every value must be text. An unknown key is refused, and so is a key whose name looks like a secret; messages name the key, never its value. `loadConfig` reads and checks the file; `preflight` reads it, and `init` writes it and checks what it writes with `parseConfig`.
 
-Secrets come only from environment variables, which name files outside the project: `WINCODE_ASC_KEY_DIR` (the App Store Connect key folder) and `WINCODE_DIST_KEY` (the distribution key on the WSL2 disk). `preflight` reads `WINCODE_ASC_KEY_DIR` (ADR-0013, section 2). A key or profile file inside a git working tree is refused unless git ignores it: `requireOutsideGit` does the check, and `preflight` calls it on each file of the key folder that it reads and on the profile, before reading them.
+Secrets come only from environment variables, which name files outside the project: `WINCODE_ASC_KEY_DIR` (the App Store Connect key folder) and `WINCODE_DIST_KEY` (the distribution key on the WSL2 disk). `preflight` reads `WINCODE_ASC_KEY_DIR` (ADR-0013, section 2). A key or profile file inside a git working tree is refused unless git ignores it: `requireOutsideGit` does the check, and `preflight` calls it on each file of the key folder that it reads and on the profile, and `init` on the profile, before reading them.
+
+## init
+
+```
+dart run wincode_cli:wincode init [--yes] [--force] [--dry-run] [--flavor <name>]
+    [--bundle-id <id>] [--team-id <id>] [--profile <file> | --profile-dir <folder>]
+    [--entitlements <file>] [--workflow-ref <ref>] [--output <folder>] [--workflow]
+```
+
+Writes `wincode.yaml` in the root of the Flutter project: the nearest folder at or above the current one with `pubspec.yaml` and `ios`. It reads `ios/Runner.xcodeproj` and `ios/Runner`, and the `.mobileprovision` files directly in the folder that `--profile-dir` (or your answer) names. It searches nothing else, reads no credential store, and uses no network. The file has no field for a key, and `WINCODE_ASC_KEY_DIR` is not read.
+
+| Value | Where it comes from |
+| --- | --- |
+| `bundle_id` | The `PRODUCT_BUNDLE_IDENTIFIER` of Release (`Release-<flavor>` with `--flavor`), if Debug and Profile agree. A variable with no value, or a bundle ID that differs between configurations, is listed and asked, never guessed |
+| `team_id` | The profile, and `DEVELOPMENT_TEAM` of the Xcode project; two different ones are asked |
+| `profile` | A `.mobileprovision` in the folder that you name that is an App Store profile for the bundle ID and has not expired. It must lie outside git working trees, or git must ignore it |
+| `entitlements` | The file the Xcode project names, else the only `.entitlements` file of `ios/Runner` |
+| `workflow`, `output` | `--workflow-ref` (left as a comment without it), and `--output` (default `build/wincode`) |
+
+At a terminal, `init` shows each value with what it found (Enter accepts it, `-` leaves an optional one out) and asks before it writes. With `--yes`, with `--json`, with `CI` set, or when standard input is not a terminal, it asks nothing: give every field as an option, or `--yes` to accept what it found. Otherwise it fails with exit 64 (`init-input-missing`) and lists the options that are missing.
+
+- **An existing `wincode.yaml` is kept** (`config-exists`, exit 1) and the lines that would change are shown with `-` and `+`; `--force` replaces it.
+- **A profile in a git working tree that git does not ignore is refused** (`key-in-git-tree`, exit 78) before it is read. A profile inside the project gets a suggested `.gitignore` line; `init` never edits `.gitignore`.
+- **`--dry-run`** prints the file and writes nothing. **`--redact`** and `CI` hide the bundle ID and team ID in everything printed; the file keeps the real values.
+- **`--workflow`** copies `templates/wincode-ios.yml` to `.github/workflows/wincode-ios.yml`, and never replaces that file. It works from a checkout (`dart run`), not from a compiled `wincode` (`template-missing`, exit 69).
+- It ends with the commands to run next: `wincode preflight --dry-run`, then `wincode preflight`.
+- With `--json`, stdout gets `{"command": "init", "ok": true, "exitCode": 0, "dryRun": false, "written": true, "config": {...}}`, with `"workflow": "copied"` or `"would-copy"` when `--workflow` was given; the report goes to stderr.
 
 ## preflight
 
@@ -156,4 +183,4 @@ It exits with 0 when the checks pass, 1 when one fails or a file cannot be read,
 dart test
 ```
 
-`test/goldens/help.txt` holds the `--help` output of every command. `test/goldens/preflight.txt` holds `preflight` reports and its `--dry-run` requests, and `test/goldens/preflight.json` its `--json` object, all from a fake App Store Connect on 127.0.0.1 with made-up IDs. After a deliberate change, `UPDATE_GOLDENS=1 dart test` rewrites them; review the diff before committing. No test reaches the network.
+`test/goldens/help.txt` holds the `--help` output of every command. The tests of `init` build Flutter projects in a temporary folder, with a scripted standard input, and use a real temporary git repository for the profile rule. `test/goldens/preflight.txt` holds `preflight` reports and its `--dry-run` requests, and `test/goldens/preflight.json` its `--json` object, all from a fake App Store Connect on 127.0.0.1 with made-up IDs. After a deliberate change, `UPDATE_GOLDENS=1 dart test` rewrites them; review the diff before committing. No test reaches the network.
