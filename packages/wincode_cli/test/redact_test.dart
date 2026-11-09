@@ -62,10 +62,27 @@ void main() {
     expect('$out', 'a <team ID> b <team ID> c <team ID>\n!');
   });
 
-  test('an inactive redactor hands back the sink it was given', () {
+  test('secrets are hidden always, even when the IDs are shown', () {
     final out = StringBuffer();
-    expect(identical(_redactor().sink(out), out), isTrue);
+    (_redactor()..secret('token-1', '<token>'))
+        .sink(out)
+        .writeln('TEAM000000 token-1');
+    expect('$out', 'TEAM000000 <token>\n');
   });
+
+  test(
+    'a value keeps its first placeholder, and stays hidden once it is a secret',
+    () {
+      final redactor = _redactor()
+        ..hide('com.example.app', '<other bundle ID>')
+        ..secret('TEAM000000', '<secret>')
+        ..hide('TEAM000000', '<team ID>');
+      expect(
+        redactor.apply(_message),
+        'wincode sign: the IPA is for com.example.app.beta, but wincode.yaml says com.example.app (team <team ID>)',
+      );
+    },
+  );
 
   group('runWincode', () {
     Future<(int, String, String)> run(

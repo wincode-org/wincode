@@ -345,6 +345,19 @@ The ten most likely failures, with `<…>` filled in at run time:
 - `wincode init` writes `wincode.yaml` for the flavored sample in `wincode_core`'s test fixtures, and refuses to overwrite one;
 - CI runs `wincode_asc`, and `wincode_cli` on Windows too.
 
+**Phase 2 as built: `preflight`.** `init` comes in a change of its own, so phase 2 is not accepted yet. What `preflight` does, and where it departs from the sections above:
+- **The checks,** in the order of the report: `key-location`, `api-key`, `app-record`, `builds` (INFO: how many builds and the highest number), `build-number`, `store-profile`, `local-profile`, `ipa` and `signature`. Each prints PASS, FAIL, WARN or INFO, with the why and the next step of section 6 under a failure or a warning. A failed request stops only the checks in App Store Connect after it; the checks on the PC always run. The exit code is that of the first failure. A profile that expires within 30 days is a warning and does not fail.
+- **The requests** are the script's, without `GET /v1/certificates`: the script only listed the certificates in its table, and no check of `preflight` needs them. `--dry-run` prints the other four as the script prints them (golden).
+- **The build number** is compared as in PR #11. One difference: a build number of the IPA that is not one to three numbers joined by dots fails in the `ipa` check even when the app has no build yet, which the script let pass.
+- **Beyond the script:** the App ID's active App Store profile and its expiry; the profile of `wincode.yaml` (team, bundle ID, App Store distribution, expiry); the IPA (one app in `Payload/`, its bundle ID, its version and its build number). When the IPA holds `embedded.mobileprovision`, that profile is checked the same way, and so is the `application-identifier` signed into the executable, read as `docs/formats/code-signature-entitlements.md` describes. An IPA without it is reported (INFO), not failed: `upload` (phase 4) decides whether to require a signature.
+- **Dependencies:** only `pointycastle`, pinned to 4.0.0. `archive` was not added. A zip reader in `wincode_core` reads the IPA: stored and deflated entries, without Zip64, which zsign's IPAs do not use. The profile's property list is found by its markers inside the CMS, without a CMS parser, and a DER reader in `wincode_asc` reads the `.p8`.
+- **HTTP:** a timeout of 20 seconds. A request that gets no answer or HTTP 5xx is tried twice more, after 1 and 2 seconds. `HTTPS_PROXY` applies, as it did for the script.
+- **Redaction:**
+  - always replaced: the token, the Key ID, the Issuer ID and the key folder's absolute path;
+  - replaced with `--redact` or `CI`: the bundle ID and the team ID, those of another app or team that the IPA or a profile names, and Apple's IDs of the app record and the App ID.
+- **`--json`:** `checks` holds every finding, each with `check`, `status` and `what`, and with `id`, `why` and `next` for a failure or a warning. `error` holds the first failure (golden).
+- **The real run** on the test app record is recorded in the pull request, without IDs (section 8).
+
 **Phase 3: `sign`.** Accepted when:
 - each check of section 4 has a test, with a throwaway CA, identity and profile, and a fake zsign;
 - the read-back is in Dart (the entitlements blob of the code signature that `LC_CODE_SIGNATURE` points to), with its format notes in `docs/formats/` first;

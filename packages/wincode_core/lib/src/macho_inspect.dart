@@ -5,6 +5,7 @@ const _magic64 = 0xFEEDFACF;
 const _lcRpath = 0x8000001C;
 const _lcBuildVersion = 0x32;
 const _lcDyldChainedFixups = 0x80000034;
+const _lcCodeSignature = 0x1D;
 const _dylibKinds = {
   0xC: DylibKind.strong, // LC_LOAD_DYLIB
   0x80000018: DylibKind.weak, // LC_LOAD_WEAK_DYLIB
@@ -34,6 +35,7 @@ class MachO {
     required this.rpaths,
     required this.buildVersion,
     required this.imports,
+    required this.codeSignature,
   });
 
   /// The kind (`cmd`) of each load command, in order.
@@ -50,6 +52,9 @@ class MachO {
 
   /// The chained-fixups import table, or null when the file has none (a file that binds with opcodes).
   final List<Import>? imports;
+
+  /// Where `LC_CODE_SIGNATURE` puts the code signature in the file, or null when the file is not signed.
+  final ({int offset, int size})? codeSignature;
 }
 
 /// Reads the load commands of the 64-bit little-endian Mach-O file [macho] and the import table of its
@@ -74,6 +79,7 @@ MachO readMachO(Uint8List macho) {
     final rpaths = <String>[];
     BuildVersion? buildVersion;
     int? fixups;
+    ({int offset, int size})? codeSignature;
     var offset = 32;
     for (var i = data.getUint32(16, Endian.little); i > 0; i--) {
       final command = data.getUint32(offset, Endian.little);
@@ -104,6 +110,11 @@ MachO readMachO(Uint8List macho) {
         );
       } else if (command == _lcDyldChainedFixups) {
         fixups = data.getUint32(offset + 8, Endian.little);
+      } else if (command == _lcCodeSignature) {
+        codeSignature = (
+          offset: data.getUint32(offset + 8, Endian.little),
+          size: data.getUint32(offset + 12, Endian.little),
+        );
       }
       offset = end;
     }
@@ -113,6 +124,7 @@ MachO readMachO(Uint8List macho) {
       rpaths: rpaths,
       buildVersion: buildVersion,
       imports: fixups == null ? null : _imports(data, fixups, dylibs, cString),
+      codeSignature: codeSignature,
     );
   } on RangeError {
     throw const FormatException('the Mach-O file is truncated');

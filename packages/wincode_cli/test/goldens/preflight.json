@@ -1,0 +1,64 @@
+{
+  "command": "preflight",
+  "ok": false,
+  "exitCode": 1,
+  "checks": [
+    {
+      "check": "key-location",
+      "status": "PASS",
+      "what": "the files of WINCODE_ASC_KEY_DIR and the profile lie outside git working trees, or git ignores them"
+    },
+    {
+      "check": "api-key",
+      "status": "PASS",
+      "what": "App Store Connect accepts the API key"
+    },
+    {
+      "check": "app-record",
+      "status": "PASS",
+      "what": "App Store Connect has the app record of com.example.app"
+    },
+    {
+      "check": "builds",
+      "status": "INFO",
+      "what": "1 existing builds, highest build number 13"
+    },
+    {
+      "check": "build-number",
+      "status": "FAIL",
+      "id": "build-number-not-higher",
+      "what": "build 13 is not higher than 13, the highest build App Store Connect has for this app",
+      "why": "Apple refuses a build number it has already seen, and a used number stays used even when its build failed.",
+      "next": "raise the build number above 13 (version: x.y.z+N in pubspec.yaml), then build and sign again."
+    },
+    {
+      "check": "store-profile",
+      "status": "PASS",
+      "what": "App Store Connect has an active App Store profile for com.example.app, valid until 2027-09-05"
+    },
+    {
+      "check": "local-profile",
+      "status": "WARN",
+      "id": "profile-expires-soon",
+      "what": "the profile in wincode.yaml expires on 2026-11-29, in 20 days",
+      "why": "Apple refuses a build signed with an expired profile, so a build signed with this one must be uploaded before then.",
+      "next": "make a new App Store profile for com.example.app in the developer portal (Profiles) before 2026-11-29, download it, and point profile in wincode.yaml at it."
+    },
+    {
+      "check": "ipa",
+      "status": "PASS",
+      "what": "the IPA holds com.example.app, version 1.0.0, build 13"
+    },
+    {
+      "check": "signature",
+      "status": "PASS",
+      "what": "the IPA is signed as TEAM000000.com.example.app with an App Store profile, valid until 2027-09-05"
+    }
+  ],
+  "error": {
+    "id": "build-number-not-higher",
+    "what": "build 13 is not higher than 13, the highest build App Store Connect has for this app",
+    "why": "Apple refuses a build number it has already seen, and a used number stays used even when its build failed.",
+    "next": "raise the build number above 13 (version: x.y.z+N in pubspec.yaml), then build and sign again."
+  }
+}

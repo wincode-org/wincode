@@ -1,0 +1,62 @@
+# App Store Connect has builds 11 and 12; the IPA is build 13
+$ wincode preflight
+PASS  the files of WINCODE_ASC_KEY_DIR and the profile lie outside git working trees, or git ignores them
+PASS  App Store Connect accepts the API key
+PASS  App Store Connect has the app record of com.example.app
+INFO  2 existing builds, highest build number 12
+PASS  build 13 is higher than 12, the highest existing build
+PASS  App Store Connect has an active App Store profile for com.example.app, valid until 2027-09-05
+PASS  the profile in wincode.yaml is an App Store profile of team TEAM000000 for com.example.app, valid until 2027-09-05
+PASS  the IPA holds com.example.app, version 1.0.0, build 13
+PASS  the IPA is signed as TEAM000000.com.example.app with an App Store profile, valid until 2027-09-05
+wincode preflight: passed
+
+exit 0
+
+# the IPA is build 12 of com.example.app.beta; the profile expires in 20 days
+$ wincode preflight --redact
+PASS  the files of WINCODE_ASC_KEY_DIR and the profile lie outside git working trees, or git ignores them
+PASS  App Store Connect accepts the API key
+PASS  App Store Connect has the app record of <bundle ID>
+INFO  2 existing builds, highest build number 12
+FAIL  build 12 is not higher than 12, the highest build App Store Connect has for this app
+  why: Apple refuses a build number it has already seen, and a used number stays used even when its build failed.
+  next: raise the build number above 12 (version: x.y.z+N in pubspec.yaml), then build and sign again.
+PASS  App Store Connect has an active App Store profile for <bundle ID>, valid until 2027-09-05
+WARN  the profile in wincode.yaml expires on 2026-11-29, in 20 days
+  why: Apple refuses a build signed with an expired profile, so a build signed with this one must be uploaded before then.
+  next: make a new App Store profile for <bundle ID> in the developer portal (Profiles) before 2026-11-29, download it, and point profile in wincode.yaml at it.
+FAIL  the IPA's bundle ID is <other bundle ID>, but wincode.yaml says <bundle ID>
+  why: winCode signs and uploads only the app that wincode.yaml names, so a build of another flavor or app cannot reach this app record.
+  next: build the flavor whose bundle ID is <bundle ID>, or use the wincode.yaml of that app (--config).
+PASS  the IPA is signed as <team ID>.<bundle ID> with an App Store profile, valid until 2027-09-05
+wincode preflight: 2 checks failed
+
+exit 1
+
+# the requests, as asc_preflight.py --dry-run prints them
+$ wincode preflight --dry-run --redact
+GET https://api.appstoreconnect.apple.com/v1/apps?filter[bundleId]=<bundle ID>&fields[apps]=bundleId&limit=200
+    Authorization: Bearer <token signed locally, not shown>
+GET https://api.appstoreconnect.apple.com/v1/apps/{id of the app record}/builds?fields[builds]=version,processingState&limit=200
+    Authorization: Bearer <token signed locally, not shown>
+GET https://api.appstoreconnect.apple.com/v1/bundleIds?filter[identifier]=<bundle ID>&fields[bundleIds]=identifier,platform&limit=200
+    Authorization: Bearer <token signed locally, not shown>
+GET https://api.appstoreconnect.apple.com/v1/bundleIds/{id of the App ID}/profiles?fields[profiles]=profileType,profileState,expirationDate&limit=200
+    Authorization: Bearer <token signed locally, not shown>
+
+exit 0
+
+# without WINCODE_ASC_KEY_DIR
+$ wincode preflight --dry-run
+GET https://api.appstoreconnect.apple.com/v1/apps?filter[bundleId]=com.example.app&fields[apps]=bundleId&limit=200
+    Authorization: Bearer <no token: WINCODE_ASC_KEY_DIR is not set>
+GET https://api.appstoreconnect.apple.com/v1/apps/{id of the app record}/builds?fields[builds]=version,processingState&limit=200
+    Authorization: Bearer <no token: WINCODE_ASC_KEY_DIR is not set>
+GET https://api.appstoreconnect.apple.com/v1/bundleIds?filter[identifier]=com.example.app&fields[bundleIds]=identifier,platform&limit=200
+    Authorization: Bearer <no token: WINCODE_ASC_KEY_DIR is not set>
+GET https://api.appstoreconnect.apple.com/v1/bundleIds/{id of the App ID}/profiles?fields[profiles]=profileType,profileState,expirationDate&limit=200
+    Authorization: Bearer <no token: WINCODE_ASC_KEY_DIR is not set>
+
+exit 0
+
