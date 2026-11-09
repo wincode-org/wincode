@@ -403,7 +403,7 @@ class _Init extends _Command {
       ..addOption(
         'flavor',
         valueHelp: 'name',
-        help: 'Read the Release-<name> configuration of the Xcode project.',
+        help: 'Read only the Release-<name> configuration of the Xcode project, the App Store build.',
       )
       ..addOption(
         'configuration',

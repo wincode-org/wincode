@@ -21,6 +21,33 @@ class BuildSettings {
 
   bool containsKey(String key) => _values.containsKey(key);
 
+  /// The names of the variables that the value of [key] needs, directly or through the settings it names, and that no
+  /// setting defines: what `this[key]` would silently leave empty. Empty when [key] is fully defined or is not set.
+  Set<String> unresolved(String key) {
+    final found = <String>{};
+    void visit(String text, int depth) {
+      // A loop is reported by [expand], which fails on it.
+      if (depth > 20) {
+        return;
+      }
+      for (final m in _variable.allMatches(text)) {
+        final name = m.group(1)!;
+        final raw = _values[name];
+        if (raw == null) {
+          found.add(name);
+        } else {
+          visit(raw, depth + 1);
+        }
+      }
+    }
+
+    final raw = _values[key];
+    if (raw != null) {
+      visit(raw, 0);
+    }
+    return found;
+  }
+
   /// The expanded value of [key], or null when it isn't set.
   String? operator [](String key) =>
       _values.containsKey(key) ? expand(_values[key]!) : null;

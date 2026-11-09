@@ -60,6 +60,79 @@ stderr:   why: --configuration names the build configuration whose bundle ID, te
 stderr:   next: pass one of those names to --configuration, or leave it out to read Release.
 exit 1
 
+# --flavor alpha: the bundle ID and the team ID come from the flavor's xcconfig file
+$ wincode init --redact --dry-run --yes --flavor alpha
+Read the build configuration Release-alpha of ios/Runner.xcodeproj.
+--- wincode.yaml
+# wincode.yaml: one app, no secrets. Paths are relative to this file.
+# Written by wincode init. The App Store Connect key is not stored here: it comes from the folder that
+# WINCODE_ASC_KEY_DIR names. Keep the profile out of git working trees, or let .gitignore list it.
+
+# The app that wincode ships (the PRODUCT_BUNDLE_IDENTIFIER of its build), and the team that signs it.
+bundle_id: <bundle ID>
+team_id: <team ID>
+
+# The App Store profile, as the developer portal delivers it. wincode sign signs with it.
+# profile: ../signing/App_Store.mobileprovision
+
+# The app's own entitlements file, if it has one. wincode sign signs the app with the keys in it.
+entitlements: ios/Runner/Runner.entitlements
+
+# The workflow that wincode build starts (<owner>/<repository>/.github/workflows/<file>@<branch or tag>).
+# workflow: example-org/example-app/.github/workflows/wincode-ios.yml@main
+
+# Where wincode build and wincode sign write their IPAs.
+output: build/wincode
+---
+Dry run: nothing was written.
+
+Next:
+  1. Put AuthKey_<Key ID>.p8, as App Store Connect delivered it, and a file issuer-id with the Issuer ID in a folder outside the project and outside OneDrive, and set WINCODE_ASC_KEY_DIR to it. init never stores them.
+  2. wincode preflight --dry-run
+  3. wincode preflight    (checks signed.ipa in the output folder; name another IPA as the last argument)
+exit 0
+
+# --flavor gamma: nested variables through an include chain
+$ wincode init --redact --dry-run --yes --flavor gamma
+Read the build configuration Release-gamma of ios/Runner.xcodeproj.
+--- wincode.yaml
+# wincode.yaml: one app, no secrets. Paths are relative to this file.
+# Written by wincode init. The App Store Connect key is not stored here: it comes from the folder that
+# WINCODE_ASC_KEY_DIR names. Keep the profile out of git working trees, or let .gitignore list it.
+
+# The app that wincode ships (the PRODUCT_BUNDLE_IDENTIFIER of its build), and the team that signs it.
+bundle_id: <bundle ID>
+team_id: <team ID>
+
+# The App Store profile, as the developer portal delivers it. wincode sign signs with it.
+# profile: ../signing/App_Store.mobileprovision
+
+# The app's own entitlements file, if it has one. wincode sign signs the app with the keys in it.
+entitlements: ios/Runner/Runner.entitlements
+
+# The workflow that wincode build starts (<owner>/<repository>/.github/workflows/<file>@<branch or tag>).
+# workflow: example-org/example-app/.github/workflows/wincode-ios.yml@main
+
+# Where wincode build and wincode sign write their IPAs.
+output: build/wincode
+---
+Dry run: nothing was written.
+
+Next:
+  1. Put AuthKey_<Key ID>.p8, as App Store Connect delivered it, and a file issuer-id with the Issuer ID in a folder outside the project and outside OneDrive, and set WINCODE_ASC_KEY_DIR to it. init never stores them.
+  2. wincode preflight --dry-run
+  3. wincode preflight    (checks signed.ipa in the output folder; name another IPA as the last argument)
+exit 0
+
+# --flavor delta: a variable that nothing defines
+$ wincode init --redact --yes --flavor delta
+Read the build configuration Release-delta of ios/Runner.xcodeproj.
+note: PRODUCT_BUNDLE_IDENTIFIER of Release-delta needs $(DELTA_ID), which no build setting or xcconfig file of Release-delta defines.
+stderr: wincode init: init cannot ask here, and one value is not settled. bundle_id: not detected ($(DELTA_ID) is not defined in Release-delta or its xcconfig files); pass --bundle-id.
+stderr:   why: init asks questions only at a terminal, and not in CI, with --yes or with --json; there it takes every field from the options, and what it detected only with --yes.
+stderr:   next: give the missing options, add --yes to accept what init found, or run wincode init in a terminal.
+exit 64
+
 # --flavor together with --configuration
 $ wincode init --redact --flavor beta --configuration Release-beta
 stderr: wincode init: --flavor and --configuration both name the build configuration to read

@@ -101,6 +101,9 @@ class Initializer {
   /// What `detectProject` said the user should look at.
   var _warnings = const <String>[];
 
+  /// The build configuration read for `--flavor` or `--configuration`.
+  String? _readConfiguration;
+
   /// Runs the command, and returns the object for `--json`.
   Future<Map<String, Object?>> execute() async {
     final root =
@@ -153,6 +156,13 @@ class Initializer {
         next: 'pass one of those names to --configuration, or leave it out to read Release.',
       );
     }
+    if ((options.flavor != null || options.configuration != null) &&
+        facts.configuration != null) {
+      _readConfiguration = facts.configuration;
+      report.writeln(
+        'Read the build configuration ${facts.configuration} of ios/Runner.xcodeproj.',
+      );
+    }
     for (final note in facts.notes) {
       report.writeln('note: $note.');
     }
@@ -160,6 +170,15 @@ class Initializer {
       report.writeln('WARN  $warning.');
     }
     _warnings = facts.warnings;
+    // What the user needs to know about a setting that uses a variable that nothing defines.
+    String? unresolvedHint(String key) {
+      final names = facts.unresolved[key];
+      return names == null
+          ? null
+          : '${names.map((n) => '\$($n)').join(', ')} ${names.length == 1 ? 'is' : 'are'} not defined in '
+                '${facts.configuration} or its xcconfig files';
+    }
+
     String inProject(String? configuration) =>
         'ios/Runner.xcodeproj${configuration == null ? '' : ' ($configuration)'}';
     _hideAll([
@@ -169,6 +188,7 @@ class Initializer {
 
     final bundleId = await _choose(
       label: 'Bundle ID',
+      hint: unresolvedHint('PRODUCT_BUNDLE_IDENTIFIER'),
       key: 'bundle_id',
       flagName: 'bundle-id',
       flag: options.bundleId,
@@ -217,6 +237,7 @@ class Initializer {
     _hideAll([for (final t in teams) t.value], 'team ID');
     final teamId = await _choose(
       label: 'Team ID',
+      hint: unresolvedHint('DEVELOPMENT_TEAM'),
       key: 'team_id',
       flagName: 'team-id',
       flag: options.teamId,
@@ -232,6 +253,7 @@ class Initializer {
 
     final entitlementsChosen = await _choose(
       label: 'Entitlements file',
+      hint: unresolvedHint('CODE_SIGN_ENTITLEMENTS'),
       key: 'entitlements',
       flagName: 'entitlements',
       flag: options.entitlements,
@@ -409,6 +431,7 @@ class Initializer {
     'dryRun': options.dryRun,
     'written': written,
     'config': values,
+    'configuration': ?_readConfiguration,
     'warnings': ?(_warnings.isEmpty ? null : _warnings),
     'workflow': ?workflow,
   };
@@ -572,6 +595,7 @@ class Initializer {
     required List<_Candidate> candidates,
     required String? Function(String) validate,
     String? flag,
+    String? hint,
     bool required = true,
     bool preview = false,
   }) async {
@@ -595,10 +619,11 @@ class Initializer {
       if (candidates.length == 1 && options.yes) {
         return candidates.single.value;
       }
-      if (required || candidates.isNotEmpty) {
+      // An optional value whose variable could not be resolved is not skipped: it may be one that the app needs.
+      if (required || candidates.isNotEmpty || hint != null) {
         _missing.add(
           '$key: ${switch (candidates.length) {
-            0 => 'not detected; pass --$flagName',
+            0 => 'not detected${hint == null ? '' : ' ($hint)'}; pass --$flagName',
             1 => 'detected ${candidates.single.name} in ${candidates.single.source}; confirm with --yes or pass --$flagName',
             _ => 'detected several (${candidates.map((c) => '${c.name} in ${c.source}').join(', ')}); pass --$flagName',
           }}',

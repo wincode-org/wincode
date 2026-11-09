@@ -20,13 +20,24 @@ final _include = RegExp(r'^#include(\?)?\s+"([^"]+)"$');
 ///
 /// [virtualFiles] holds files that don't exist on disk, by name. Flutter writes `Generated.xcconfig` on the Mac that
 /// builds, so winCode supplies one. A missing file fails unless it was included with `#include?`.
+///
+/// Includes nest at most 16 deep, and a file that includes itself, directly or through others, fails at once with a
+/// message that says so ([including] holds the files above [file] in the chain). Nothing in a file is executed.
 List<XcconfigEntry> readXcconfig(
   File file, {
   Map<String, String> virtualFiles = const {},
   int depth = 0,
+  List<String> including = const [],
 }) {
   if (depth > 16) {
     throw FormatException('${file.path}: #include nests too deeply');
+  }
+  final id = file.resolveSymbolicLinksSync();
+  final key = Platform.isWindows ? id.toLowerCase() : id;
+  if (including.contains(key)) {
+    throw FormatException(
+      '${file.uri.pathSegments.last}: #include is circular: it includes itself, directly or through other files',
+    );
   }
   return _parse(
     file.readAsStringSync(),
@@ -34,6 +45,7 @@ List<XcconfigEntry> readXcconfig(
     file.path,
     virtualFiles,
     depth,
+    [...including, key],
   );
 }
 
@@ -43,6 +55,7 @@ List<XcconfigEntry> _parse(
   String name,
   Map<String, String> virtualFiles,
   int depth,
+  List<String> including,
 ) {
   final entries = <XcconfigEntry>[];
   var number = 0;
@@ -58,7 +71,14 @@ List<XcconfigEntry> _parse(
       final base = target.split(RegExp(r'[\\/]')).last;
       if (virtualFiles.containsKey(base)) {
         entries.addAll(
-          _parse(virtualFiles[base]!, folder, base, virtualFiles, depth + 1),
+          _parse(
+            virtualFiles[base]!,
+            folder,
+            base,
+            virtualFiles,
+            depth + 1,
+            including,
+          ),
         );
       } else {
         final included = File('${folder.path}/$target');
@@ -68,6 +88,7 @@ List<XcconfigEntry> _parse(
               included,
               virtualFiles: virtualFiles,
               depth: depth + 1,
+              including: including,
             ),
           );
         } else if (include.group(1) == null) {
