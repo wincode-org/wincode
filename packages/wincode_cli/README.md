@@ -2,7 +2,7 @@
 
 The `wincode` command. Its design is [ADR-0013](../../docs/adr/0013-wincode-cli-build-sign-upload.md).
 
-Status: `doctor`, `preflight` and `init` work. The other commands are registered; each prints `not implemented yet, see ADR-0013` and exits with 64 until the phase of ADR-0013 that implements it. `wincode.yaml` may describe several apps ([ADR-0014](../../docs/adr/0014-one-project-many-apps.md)): the file is read and checked, but every command still works on one app, and a file of several apps exits with 64 until `--app` is added.
+Status: `doctor`, `preflight` and `init` work. `preflight` and `doctor` read an app's App Store Connect key through its `credentials` reference (ADR-0014; layout below). The other commands are registered; each prints `not implemented yet, see ADR-0013` and exits with 64 until the phase of ADR-0013 that implements it. `wincode.yaml` may describe several apps ([ADR-0014](../../docs/adr/0014-one-project-many-apps.md)): the file is read and checked, but every command still works on one app, and a file of several apps exits with 64 until `--app` is added.
 
 ```
 dart run wincode_cli:wincode <command> [arguments]
@@ -96,6 +96,25 @@ apps:
 
 Secrets come only from environment variables, which name files outside the project: `WINCODE_ASC_KEY_DIR` (the App Store Connect key folder) and `WINCODE_DIST_KEY` (the distribution key on the WSL2 disk). `preflight` reads `WINCODE_ASC_KEY_DIR` (ADR-0013, section 2). A key or profile file inside a git working tree is refused unless git ignores it: `requireOutsideGit` does the check, and `preflight` calls it on each file of the key folder that it reads and on the profile, and `init` on the profile, before reading them.
 
+### The keys folder (ADR-0014, section 2)
+
+An app that names `credentials: <reference>` has its keys in a folder of that name under the keys root, on the Windows side (nothing is written inside WSL2, and `preflight` never starts `wsl.exe`). Names only:
+
+```
+%USERPROFILE%\.wincode\keys\
+  <reference>\
+    AuthKey_<Key ID>.p8    the App Store Connect API key, as App Store Connect delivered it (exactly one)
+    issuer-id              one line: the Issuer ID
+    dist.key               the distribution private key (PEM); read by `sign`, which is not built yet
+```
+
+- **The root** is `WINCODE_KEYS_DIR` when it is set, else `.wincode/keys` in the user profile folder (`USERPROFILE`, or `HOME` where there is none).
+- **The Key ID** is taken from the name `AuthKey_<Key ID>.p8` and the Issuer ID from `issuer-id`: neither is in `wincode.yaml` or in a variable.
+- **Per reference**, for CI and for keys kept elsewhere: `WINCODE_ASC_KEY_DIR_<REF>` names a folder with the `.p8` and `issuer-id`, and `WINCODE_DIST_KEY_<REF>` a file for `dist.key`; `<REF>` is the reference in capitals with `-` as `_` (`team-one` gives `TEAM_ONE`). Each replaces its own half only. Apps of one team name one reference and share its folder.
+- **A flat file without `credentials`** keeps `WINCODE_ASC_KEY_DIR` and `WINCODE_DIST_KEY`, with the single-file git rule above. An app with `credentials` never reads those two, and a missing folder says so.
+- **The keys root, and every folder that a variable of a reference names, is refused inside any git working tree, even when git ignores it**, and in OneDrive. A repository made inside the root is found too. If git cannot answer, the folder is refused. Messages name the variable or the reference, never a path.
+
+
 ## init
 
 ```
@@ -135,7 +154,7 @@ dart run wincode_cli:wincode preflight [<signed .ipa>]
 
 Read-only checks before an upload. In App Store Connect it sends GET requests only; it never creates, changes or uploads anything. Without an argument it checks `signed.ipa` in the `output` folder of `wincode.yaml`.
 
-The API key comes from the folder that `WINCODE_ASC_KEY_DIR` names, outside every project and outside OneDrive: `AuthKey_<Key ID>.p8`, as App Store Connect delivered it, and a file `issuer-id` with the Issuer ID on one line. The token, the Key ID, the Issuer ID and the folder are never printed.
+The API key of an app with `credentials` comes from its folder under the keys root (see "The keys folder" above). For a flat file without `credentials` it comes from the folder that `WINCODE_ASC_KEY_DIR` names, outside every project and outside OneDrive: `AuthKey_<Key ID>.p8`, as App Store Connect delivered it, and a file `issuer-id` with the Issuer ID on one line. The token, the Key ID, the Issuer ID and the folder are never printed.
 
 The checks, in the order of the report:
 
@@ -198,13 +217,18 @@ With `--dry-run --json`, it is `{"command": "preflight", "ok": true, "exitCode":
 ## doctor
 
 ```
+dart run wincode_cli:wincode doctor
 dart run wincode_cli:wincode doctor --binary <Mach-O file> [--sdk <iPhoneOS.sdk folder>] [--reference <Mach-O file>]
 ```
+
+Without options, `doctor` checks the setup of the app in `wincode.yaml` and sends nothing (ADR-0014, section 3): `settings` (the file loads) and `credentials` (the App Store Connect key folder holds one `AuthKey_<Key ID>.p8` and an `issuer-id` with an Issuer ID, outside git working trees and OneDrive; the key itself is not read). Each check prints PASS or FAIL with the why and the next step, `--json` gives `checks` and `error` as for `preflight`, and the exit code is that of the first failure. A file of several apps exits with 64 until `--app` exists. This replaces the usage error that `doctor` without options gave before.
+
+The Mach-O checks:
 
 - `--sdk` checks the binary against the text stubs of the SDK folder (`docs/formats/macho-conformance.md`) and fails on a library or binding that its minimum OS lacks. On Windows, the folder that `xtool sdk` built in WSL2 is read through `\\wsl.localhost\<distribution>\home\<user>\.swiftpm\swift-sdks\darwin.artifactbundle\Developer\Platforms\iPhoneOS.platform\Developer\SDKs\iPhoneOS.sdk`.
 - `--reference` lists how the binary differs from a reference build, such as an Xcode-built copy: libraries, weak or strong, bindings and load commands. It does not fail.
 
-It exits with 0 when the checks pass, 1 when one fails or a file cannot be read, 64 for a usage error, and 69 when `--sdk` names a folder that is not an SDK.
+It exits with 0 when the checks pass, 1 when one fails or a file cannot be read, 64 for a usage error (such as `--binary` without `--sdk` or `--reference`), and 69 when `--sdk` names a folder that is not an SDK.
 
 ## The reference workflow
 
@@ -216,4 +240,4 @@ It exits with 0 when the checks pass, 1 when one fails or a file cannot be read,
 dart test
 ```
 
-`test/goldens/help.txt` holds the `--help` output of every command. `test/goldens/config-flat.txt` holds what the loader says about a flat `wincode.yaml`, case by case; it was first written from the loader as it was before ADR-0014, so a change in it is a change in how a flat file is read. `test/config_apps_test.dart` reads the worked example and the duplicate-bundle-ID message from ADR-0014 itself, so the ADR and the code cannot drift. The tests of `init` build Flutter projects in a temporary folder, with a scripted standard input, and use a real temporary git repository for the profile rule. `test/goldens/init-messages.txt` holds what `init` prints when it cannot ask. `test/workflow_template_test.dart` fails if the embedded workflow (`lib/src/workflow_template.g.dart`) and `templates/wincode-ios.yml` differ by a byte. `test/goldens/preflight.txt` holds `preflight` reports and its `--dry-run` requests, and `test/goldens/preflight.json` its `--json` object, all from a fake App Store Connect on 127.0.0.1 with made-up IDs. After a deliberate change, `UPDATE_GOLDENS=1 dart test` rewrites them; review the diff before committing. No test reaches the network.
+`test/goldens/help.txt` holds the `--help` output of every command. `test/goldens/config-flat.txt` holds what the loader says about a flat `wincode.yaml`, case by case; it was first written from the loader as it was before ADR-0014, so a change in it is a change in how a flat file is read. `test/credentials_test.dart` uses real temporary git repositories for the keys-root rule, records every program that the resolution starts (only `git`), and reads the two messages of ADR-0014 that this change implements from the ADR itself. `test/config_apps_test.dart` reads the worked example and the duplicate-bundle-ID message from ADR-0014 itself, so the ADR and the code cannot drift. The tests of `init` build Flutter projects in a temporary folder, with a scripted standard input, and use a real temporary git repository for the profile rule. `test/goldens/init-messages.txt` holds what `init` prints when it cannot ask. `test/workflow_template_test.dart` fails if the embedded workflow (`lib/src/workflow_template.g.dart`) and `templates/wincode-ios.yml` differ by a byte. `test/goldens/preflight.txt` holds `preflight` reports and its `--dry-run` requests, and `test/goldens/preflight.json` its `--json` object, all from a fake App Store Connect on 127.0.0.1 with made-up IDs. After a deliberate change, `UPDATE_GOLDENS=1 dart test` rewrites them; review the diff before committing. No test reaches the network.

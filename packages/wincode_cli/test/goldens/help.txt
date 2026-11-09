@@ -14,7 +14,7 @@ Global options:
 
 Available commands:
   build       Build the unsigned IPA on the app's macOS runner (GitHub Actions) and download it.
-  doctor      Check a Mach-O binary against the SDK or a reference build.
+  doctor      Check the setup, or a Mach-O binary against the SDK or a reference build.
   init        Write wincode.yaml for the Flutter project in this folder.
   preflight   Check the signed IPA and App Store Connect before an upload. Read-only.
   sign        Sign the IPA for the App Store with zsign.
@@ -44,9 +44,9 @@ Usage: wincode build
 Run "wincode help" to see global options.
 
 $ wincode help doctor
-Check a Mach-O binary against the SDK or a reference build.
+Check the setup, or a Mach-O binary against the SDK or a reference build.
 
-Give --binary and at least one of --sdk and --reference.
+Without options, doctor checks the setup of the app in wincode.yaml and sends nothing: that the file loads, and that the app's App Store Connect key is where its credentials say (a folder with one AuthKey_<Key ID>.p8 and an issuer-id, outside git working trees and OneDrive). To check a binary, give --binary and at least one of --sdk and --reference.
 
 Usage: wincode doctor [arguments]
 -h, --help                         Print this usage information.

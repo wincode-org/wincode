@@ -4,7 +4,7 @@
 - Date: 2026-11-09
 - Amended: 2026-11-09, after review: the keys root is on the Windows side, not on the WSL2 disk (section 2); `init` edits a file of apps in place with `yaml_edit` (section 5); names of apps and references may not be common words or shorter than 3 characters, and paths derived from the config are redacted (section 4)
 - Amends: ADR-0013 (sections 1, 2, 3, 4 and 7, and the acceptance criteria of its phases 2 to 5). Design only: nothing here is implemented yet.
-- Implementation: pull request 1 of section 11 (schema and loader) is built, see "As built" there; pull requests 2 to 4 are not started.
+- Implementation: pull requests 1 (schema and loader) and 2 (credentials resolution) of section 11 are built, see "As built" there; pull requests 3 and 4 are not started.
 
 ## Context
 
@@ -447,6 +447,21 @@ Four pull requests, each one concern, each leaving every command working. The cr
   6. Output folders are compared ignoring case, the direction of separators and a trailing separator; nested folders are not compared.
   7. Messages that section 10 does not list are written in the same form: a key of an app next to `apps`, `defaults` without `apps`, `defaults` that is not a map, `apps` that lists no app, an app that holds no settings, a key that `defaults` may not hold, and each workflow-input rule. A secret-looking key at any level uses the secret message, which in a file of apps points at the credentials reference instead of the two variables.
   8. `package:yaml` does not expand merge keys, so `<<` reaches the loader as an ordinary key and is refused as unknown, as section 1 says.
+
+**As built: pull request 2 (credentials resolution).** What the code does, and where this ADR left a choice:
+
+- **Where.** `packages/wincode_cli/lib/src/credentials.dart`: `locateAscKeyFiles` (the App Store Connect half), `readAscKeyIds` (the Key ID from the file name and the Issuer ID from `issuer-id`, registered with the redactor), `resolveDistKey`, `keysRoot` and the variable names. `requireNoWorkTree` in `key_location.dart` is the strict git check. The legacy path moved there from `preflight.dart` with its code and messages unchanged: the existing `preflight` tests and goldens pass without an edit.
+- **Wired.** `preflight` reads an app's key through `locateAscKeyFiles`: an app with `credentials` from its reference, a flat file without it from `WINCODE_ASC_KEY_DIR` as before. `doctor` without `--binary`, `--sdk` and `--reference` checks `settings` and `credentials` of the one app. Nothing calls `resolveDistKey` yet: `sign` is phase 3. There is still no `--app` or `--all`, and `init` is unchanged.
+- **Messages 3 and 4 of section 10** are those of the ADR, word for word: a test reads them from this file. The variants are written in the same form: a variable of a reference that points into a working tree, the default root in one (a profile folder that is a repository), a reference folder that is itself a repository, a root or variable in OneDrive, a root that does not exist (with and without `WINCODE_KEYS_DIR`), and a missing user profile.
+- **No `wsl.exe`.** No path of the resolution starts it, and the tests record every program that `preflight`, `doctor` and the resolution start: only `git`. `runWincode` gained a `run` parameter for that, as it has `connect` for the server.
+- **How the ADR was read:**
+  1. The default root is `.wincode/keys` in `USERPROFILE`, else in `HOME`, so that the tests and a run on another system have one. With neither and no `WINCODE_KEYS_DIR`, the credentials are missing, and the message says so.
+  2. Order of the checks for a reference without a variable: the root exists, is not in OneDrive and not in a working tree; then the folder of the reference exists and is not itself in a working tree. The files inside are not asked about one by one, since the folder check covers them; `git check-ignore` is never asked. For a variable, the folder (for `dist.key`, the folder of the file) is checked.
+  3. A `--dry-run` goes on without a token when the keys are not there, as it does without `WINCODE_ASC_KEY_DIR`, and says which; every other failure stops it.
+  4. The Issuer ID and Key ID rules are `preflight`'s, with the source in the messages: `WINCODE_ASC_KEY_DIR` as before, the variable of the reference, or `the folder of the credentials <reference>`. The `PASS` line of the key-location check names the reference instead of the legacy variable. These names pass through the redactor, so `--redact` and CI print `credentials-1` and `WINCODE_ASC_KEY_DIR_CREDENTIALS_1`.
+  5. The folders found are registered as secrets: the root as `<WINCODE_KEYS_DIR>`, the folder of a variable as `<keys folder>`, the distribution key's file as `<distribution key>`.
+  6. `resolveDistKey` checks location only: whether `dist.key` exists, and what is in it, is for `sign`. For a flat file without `credentials` it returns null when `WINCODE_DIST_KEY` is not set. `WINCODE_DIST_KEY` and `WINCODE_DIST_KEY_<REF>` are not refused under `/mnt/`, as ADR-0013 now says.
+  7. `doctor` without options has no usage error any more, as the Consequences below say; with only some of `--binary`, `--sdk` and `--reference`, the usage errors are as they were. A file of several apps fails its `settings` check with exit 64 until `--app` exists.
 
 ## Consequences
 

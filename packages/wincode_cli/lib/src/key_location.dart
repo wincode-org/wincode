@@ -67,6 +67,37 @@ Future<void> requireOutsideGit(
   }
 }
 
+/// Refuses [folder], a folder of keys, when it lies inside a git working tree at all: ignored or not (ADR-0014,
+/// section 2). It throws [refusal] for that, and the fail-closed `git-unavailable` when git cannot answer. [source]
+/// names the folder in that message, never its path.
+Future<void> requireNoWorkTree(
+  String folder, {
+  required String source,
+  required WincodeException refusal,
+  RunProcess run = runProcess,
+}) async {
+  final ProcessResult inside;
+  try {
+    inside = await run('git', [
+      '-C',
+      folder,
+      'rev-parse',
+      '--is-inside-work-tree',
+    ]);
+  } on ProcessException {
+    throw _gitFailed(source, 'git is not installed');
+  }
+  if (inside.exitCode != 0) {
+    if ('${inside.stderr}'.contains('not a git repository')) {
+      return;
+    }
+    throw _gitFailed(source, 'git could not read the folder');
+  }
+  if ('${inside.stdout}'.trim() == 'true') {
+    throw refusal;
+  }
+}
+
 WincodeException _gitFailed(String source, String what) => WincodeException(
   ExitCode.unavailable,
   'git-unavailable',

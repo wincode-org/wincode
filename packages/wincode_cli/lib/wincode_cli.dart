@@ -8,6 +8,7 @@ import 'package:args/command_runner.dart';
 import 'package:wincode_core/wincode_core.dart';
 
 import 'src/config.dart';
+import 'src/credentials.dart';
 import 'src/failure.dart';
 import 'src/init.dart';
 import 'src/preflight.dart';
@@ -23,6 +24,17 @@ export 'src/config.dart'
         nameProblem,
         parseSettings,
         reservedNames;
+export 'src/credentials.dart'
+    show
+        AscKeyFiles,
+        ascOverrideVariable,
+        distOverrideVariable,
+        keysRoot,
+        keysRootVariable,
+        locateAscKeyFiles,
+        noTokenReason,
+        readAscKeyIds,
+        resolveDistKey;
 export 'src/failure.dart' show ExitCode, WincodeException;
 export 'src/key_location.dart' show requireOutsideGit;
 export 'src/init.dart' show ReadLine;
@@ -64,7 +76,8 @@ const _planned = [
 /// (default: the process's) sets `CI`.
 ///
 /// [clock] (default: the system's), [connect] (default: App Store Connect), [workingDirectory] (default: the current
-/// folder), [readLine] and [terminal] (default: standard input) are there for tests.
+/// folder), [readLine] and [terminal] (default: standard input) and [run] (default: starts the program) are there for
+/// tests.
 Future<int> runWincode(
   List<String> args,
   StringSink out,
@@ -75,6 +88,7 @@ Future<int> runWincode(
   Directory? workingDirectory,
   ReadLine? readLine,
   bool? terminal,
+  RunProcess run = runProcess,
 }) async {
   environment ??= Platform.environment;
   // A usage error comes before the arguments are parsed, so the flags can only be looked up in the list itself.
@@ -89,7 +103,16 @@ Future<int> runWincode(
   err = redactor.sink(err);
   final runner = _Wincode(
     out,
-    _Preflight(out, err, environment, redactor, clock ?? DateTime.now, connect),
+    _Doctor(out, err, environment, redactor, run),
+    _Preflight(
+      out,
+      err,
+      environment,
+      redactor,
+      clock ?? DateTime.now,
+      connect,
+      run,
+    ),
     _Init(
       out,
       err,
@@ -164,7 +187,7 @@ Future<int> runWincode(
 }
 
 class _Wincode extends CommandRunner<int> {
-  _Wincode(this.out, _Preflight preflight, _Init init)
+  _Wincode(this.out, _Doctor doctor, _Preflight preflight, _Init init)
     : super(
         'wincode',
         'Build, sign and upload Flutter iOS apps from Windows.',
@@ -199,7 +222,7 @@ class _Wincode extends CommandRunner<int> {
     for (final (name, summary, arguments, phase) in _planned) {
       addCommand(_NotImplemented(out, name, summary, arguments, phase));
     }
-    addCommand(_Doctor(out));
+    addCommand(doctor);
     addCommand(preflight);
     addCommand(init);
   }
@@ -267,7 +290,13 @@ class _NotImplemented extends _Command {
 }
 
 class _Doctor extends _Command {
-  _Doctor(super.out) {
+  _Doctor(
+    super.out,
+    this.err,
+    this.environment,
+    this.redactor,
+    this.runProcess,
+  ) {
     argParser
       ..addOption(
         'binary',
@@ -286,22 +315,33 @@ class _Doctor extends _Command {
       );
   }
 
+  final StringSink err;
+  final Map<String, String> environment;
+  final Redactor redactor;
+  final RunProcess runProcess;
+
   @override
   final name = 'doctor';
 
   @override
   final description =
-      'Check a Mach-O binary against the SDK or a reference build.\n\n'
-      'Give --binary and at least one of --sdk and --reference.';
+      'Check the setup, or a Mach-O binary against the SDK or a reference build.\n\n'
+      'Without options, doctor checks the setup of the app in wincode.yaml and sends nothing: that the file loads, '
+      'and that the app\'s App Store Connect key is where its credentials say (a folder with one AuthKey_<Key ID>.p8 '
+      'and an issuer-id, outside git working trees and OneDrive). To check a binary, give --binary and at least one '
+      'of --sdk and --reference.';
 
   @override
   bool get takesArguments => false;
 
   @override
-  int run() {
+  Future<int> run() async {
     final binary = argResults!.option('binary');
     final sdk = argResults!.option('sdk');
     final reference = argResults!.option('reference');
+    if (binary == null && sdk == null && reference == null) {
+      return _setup();
+    }
     if (binary == null || (sdk == null && reference == null)) {
       usageException(
         'Give --binary and at least one of --sdk and --reference.',
@@ -359,6 +399,48 @@ class _Doctor extends _Command {
       lines.forEach(out.writeln);
     }
     return code.code;
+  }
+}
+
+extension on _Doctor {
+  /// The setup check (ADR-0014, section 3): the settings, and where the App Store Connect key is. Sends nothing and
+  /// reads no key: it checks that the folder holds one `AuthKey_<Key ID>.p8` and an `issuer-id` with an Issuer ID, and
+  /// that they lie where the rules allow.
+  Future<int> _setup() async {
+    final findings = <Finding>[];
+    WincodeConfig? config;
+    try {
+      config = loadConfig(globalResults!.option('config')!, redactor: redactor);
+      findings.add(const Finding.pass('settings', 'wincode.yaml loads'));
+    } on WincodeException catch (e) {
+      findings.add(Finding.fail('settings', e));
+    }
+    if (config != null) {
+      try {
+        final key = await locateAscKeyFiles(
+          config,
+          environment: environment,
+          redactor: redactor,
+          run: runProcess,
+        );
+        readAscKeyIds(key!, redactor);
+        findings.add(
+          const Finding.pass(
+            'credentials',
+            'the App Store Connect key folder holds one AuthKey_<Key ID>.p8 and an issuer-id, outside git working trees '
+                'and OneDrive',
+          ),
+        );
+      } on WincodeException catch (e) {
+        findings.add(Finding.fail('credentials', e));
+      }
+    }
+    final report = jsonOutput ? err : out;
+    writeReport(findings, report, command: 'doctor');
+    if (jsonOutput) {
+      out.writeln(jsonEncode(jsonOf(findings, command: 'doctor')));
+    }
+    return exitCodeOf(findings).code;
   }
 }
 
@@ -504,6 +586,7 @@ class _Preflight extends _Command {
     this.redactor,
     this.clock,
     this.connect,
+    this.runProcess,
   );
 
   final StringSink err;
@@ -511,6 +594,7 @@ class _Preflight extends _Command {
   final Redactor redactor;
   final DateTime Function() clock;
   final AscConnect connect;
+  final RunProcess runProcess;
 
   @override
   final name = 'preflight';
@@ -548,6 +632,7 @@ class _Preflight extends _Command {
       clock: clock,
       connect: connect,
       log: globalResults!.flag('verbose') ? err.writeln : null,
+      run: runProcess,
     );
     // With --json, stdout carries the JSON object only.
     final report = jsonOutput ? err : out;
