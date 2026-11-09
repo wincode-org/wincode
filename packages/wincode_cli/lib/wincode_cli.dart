@@ -13,7 +13,16 @@ import 'src/init.dart';
 import 'src/preflight.dart';
 import 'src/redact.dart';
 
-export 'src/config.dart' show WincodeConfig, Workflow, loadConfig;
+export 'src/config.dart'
+    show
+        WincodeConfig,
+        WincodeSettings,
+        Workflow,
+        loadConfig,
+        loadSettings,
+        nameProblem,
+        parseSettings,
+        reservedNames;
 export 'src/failure.dart' show ExitCode, WincodeException;
 export 'src/key_location.dart' show requireOutsideGit;
 export 'src/init.dart' show ReadLine;
@@ -524,7 +533,10 @@ class _Preflight extends _Command {
     if (ipa.length > 1) {
       usageException('Give at most one IPA.');
     }
-    final config = loadConfig(globalResults!.option('config')!);
+    final config = loadConfig(
+      globalResults!.option('config')!,
+      redactor: redactor,
+    );
     final preflight = Preflight(
       config: config,
       ipa: File(

@@ -84,6 +84,73 @@ void main() {
     },
   );
 
+  group('names (ADR-0014, section 4)', () {
+    Redactor names(Map<String, String> values) {
+      final redactor = Redactor(active: true);
+      values.forEach(redactor.hideName);
+      return redactor;
+    }
+
+    test('are replaced as whole words, whatever their case', () {
+      final redactor = names({'alpha': 'app-1'});
+      expect(
+        redactor.apply(
+          'alpha Alpha ALPHA, Release-alpha build/wincode/alpha/x alpha_1 alphabet xalpha alpha2 1alpha',
+        ),
+        'app-1 app-1 app-1, Release-app-1 build/wincode/app-1/x app-1_1 alphabet xalpha alpha2 1alpha',
+      );
+    });
+
+    test('are shown while redaction is off, and hidden in a report', () {
+      final redactor = Redactor(active: false)..hideName('alpha', 'app-1');
+      expect(redactor.apply('alpha'), 'alpha');
+      expect(redactor.forReport('alpha'), 'app-1');
+    });
+
+    test('are replaced in one pass: a placeholder is never replaced again', () {
+      final redactor = names({'bundle': 'app-1'})
+        ..hide('com.example.bundle', '<bundle ID 1>')
+        ..hide('TEAM000001', '<team ID>')
+        ..hide('com.example.app', '<bundle ID>');
+      expect(
+        redactor.apply('bundle com.example.app com.example.bundle TEAM000001'),
+        'app-1 <bundle ID> <bundle ID 1> <team ID>',
+      );
+      final chain = names({'alpha': 'beta', 'beta': 'gamma'});
+      expect(chain.apply('alpha beta'), 'beta gamma');
+    });
+
+    test('the longest value wins where two start together', () {
+      final redactor = names({'team': 'x-1', 'team-one': 'credentials-1'});
+      expect(redactor.apply('team-one and team'), 'credentials-1 and x-1');
+    });
+
+    test('a name keeps its first placeholder, whatever the case it is registered in', () {
+      final redactor = names({'alpha': 'app-1'})..hideName('Alpha', 'flavor-1');
+      expect(redactor.apply('alpha'), 'app-1');
+    });
+
+    test('a variable form is replaced as an exact string and wins a tie with the name', () {
+      final redactor = names({'teamone': 'credentials-1'})
+        ..hide('TEAMONE', 'CREDENTIALS_1');
+      expect(
+        redactor.apply('WINCODE_ASC_KEY_DIR_TEAMONE and teamone'),
+        'WINCODE_ASC_KEY_DIR_CREDENTIALS_1 and credentials-1',
+      );
+    });
+
+    test(
+      'regular-expression characters in a name or a path are plain text',
+      () {
+        final redactor = names({'a.b': 'app-1'})..hide('x(1)+[2]', '<path>');
+        expect(
+          redactor.apply('a.b axb x(1)+[2] x1+2'),
+          'app-1 axb <path> x1+2',
+        );
+      },
+    );
+  });
+
   group('runWincode', () {
     Future<(int, String, String)> run(
       List<String> args, {
