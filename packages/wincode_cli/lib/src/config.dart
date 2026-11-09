@@ -57,6 +57,12 @@ final _secretName = RegExp(
   caseSensitive: false,
 );
 
+/// Whether [text] is a bundle ID as `wincode.yaml` accepts it.
+bool isBundleId(String text) => _bundleId.hasMatch(text);
+
+/// Whether [text] is a team ID as `wincode.yaml` accepts it.
+bool isTeamId(String text) => _teamId.hasMatch(text);
+
 /// Reads and checks the settings in [path].
 ///
 /// Every problem is a [WincodeException] with [ExitCode.config] that names the line, says why it matters and what to
@@ -74,6 +80,25 @@ WincodeConfig loadConfig(String path) {
     );
   }
 
+  final String text;
+  try {
+    text = file.readAsStringSync();
+  } on FileSystemException catch (e) {
+    throw WincodeException(
+      ExitCode.config,
+      'config-invalid',
+      '$path: cannot be read: ${e.osError?.message ?? e.message}',
+      why: 'winCode reads wincode.yaml as UTF-8 text.',
+      next: 'check that the file can be opened, save it as UTF-8 text, then run the command again.',
+    );
+  }
+  return parseConfig(text, path: path);
+}
+
+/// Checks the settings in [text], as if it were the file at [path] (which need not exist). Problems are reported as
+/// [loadConfig] reports them.
+WincodeConfig parseConfig(String text, {required String path}) {
+  final file = File(path);
   WincodeException invalid(
     YamlNode? node,
     String what, {
@@ -89,16 +114,8 @@ WincodeConfig loadConfig(String path) {
 
   final YamlNode root;
   try {
-    final text = file.readAsStringSync();
     // Notepad may start the file with a byte order mark.
     root = loadYamlNode(text.startsWith('\uFEFF') ? text.substring(1) : text);
-  } on FileSystemException catch (e) {
-    throw invalid(
-      null,
-      'cannot be read: ${e.osError?.message ?? e.message}',
-      why: 'winCode reads wincode.yaml as UTF-8 text.',
-      next: 'check that the file can be opened, save it as UTF-8 text, then run the command again.',
-    );
   } on YamlException catch (e) {
     throw WincodeException(
       ExitCode.config,

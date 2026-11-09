@@ -59,10 +59,23 @@ Run "wincode help" to see global options.
 $ wincode help init
 Write wincode.yaml for the Flutter project in this folder.
 
-Not implemented yet, see ADR-0013 (phase 2).
+init reads ios/Runner.xcodeproj for the bundle ID and the entitlements, and the .mobileprovision files of a folder that you name, shows what it found, and asks you to confirm each value. It never writes a key or the key folder (WINCODE_ASC_KEY_DIR), and it never edits .gitignore.
 
-Usage: wincode init
--h, --help    Print this usage information.
+It asks only at a terminal. In CI (the CI variable), with --yes or with --json it asks nothing: give every field as an option, or --yes to accept what it found. Without --force it does not replace a wincode.yaml.
+
+Usage: wincode init [arguments]
+-h, --help                    Print this usage information.
+    --bundle-id=<id>          The app's bundle ID. Default: read from ios/Runner.xcodeproj.
+    --team-id=<id>            The team ID (10 capital letters and digits). Default: from the profile or the Xcode project.
+    --profile=<file>          The App Store profile (.mobileprovision). It must lie outside git working trees, or be ignored by git.
+    --profile-dir=<folder>    A folder to list the App Store profiles of this app in. Nothing else is searched.
+    --entitlements=<file>     The .entitlements file. Default: the one of the Xcode project.
+    --workflow-ref=<ref>      The CI workflow for wincode build: <owner>/<repository>/.github/workflows/<file>@<branch or tag>.
+    --output=<folder>         Where the IPAs go (default build/wincode).
+    --flavor=<name>           Read the Release-<name> configuration of the Xcode project.
+    --workflow                Copy the reference workflow to .github/workflows/wincode-ios.yml. It never replaces a file.
+-y, --yes                     Ask nothing: accept what init found.
+    --force                   Replace an existing wincode.yaml.
 
 Run "wincode help" to see global options.
 

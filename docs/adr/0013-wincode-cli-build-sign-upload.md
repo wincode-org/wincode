@@ -23,7 +23,7 @@
 
 | Command | What it does | Talks to | Phase |
 | --- | --- | --- | --- |
-| `init` | Writes a commented `wincode.yaml` for the Flutter project in the current folder, from `ios/Runner.xcodeproj` and its xcconfig files, read by `wincode_core`'s flavor reader (`--flavor` for one flavor). From phase 5 it also writes the reference workflow. It never overwrites a file | nothing | 2 |
+| `init` | Writes a commented `wincode.yaml` for the Flutter project in the current folder, from `ios/Runner.xcodeproj` and its xcconfig files, read by `wincode_core`'s flavor reader (`--flavor` for one flavor). With `--workflow` it also copies the reference workflow, and it never replaces that file. It replaces `wincode.yaml` only with `--force` | nothing | 2 |
 | `build` | Starts the app's macOS workflow at the configured branch or tag, waits for it, downloads the unsigned IPA to `<output>/unsigned.ipa` and checks it (section 3) | GitHub, through `gh` | 5 |
 | `sign [<ipa>]` | Signs for the App Store with zsign, from `<output>/unsigned.ipa` to `<output>/signed.ipa` by default. Checks the inputs first and every signature after (section 4) | nothing | 3 |
 | `preflight [<ipa>]` | Read-only checks before an upload. On the IPA (`<output>/signed.ipa` by default): the bundle ID, the version and build number, a signature with an App Store profile that has not expired. In App Store Connect: the key works, the app record exists, the build number is above every existing build's | App Store Connect, GET only | 2 |
@@ -101,7 +101,7 @@ wincode sign: WINCODE_DIST_KEY points inside a git working tree, and git does no
   next: move the file outside every project folder, such as %USERPROFILE%\.wincode on Windows or ~/.wincode in WSL2, and point WINCODE_DIST_KEY at the new place. A file that has to stay may be listed in the project's .gitignore, but git check-ignore must report it as ignored.
 ```
 
-The check is `requireOutsideGit` in `packages/wincode_cli`, tested with a real repository (tracked, ignored, outside) and with a missing or failing git. No command calls it yet: the commands that read these files come in phases 2 and 3.
+The check is `requireOutsideGit` in `packages/wincode_cli`, tested with a real repository (tracked, ignored, outside) and with a missing or failing git. `preflight` and `init` call it (phase 2); `sign` will in phase 3.
 
 The OS credential store that ADR-0009 names, Windows Credential Manager, is not used in these phases: files named by variables are what the scripts used for every real upload. Moving the keys there is a later change with its own decision, and it never makes `wincode.yaml` hold a secret.
 
@@ -338,14 +338,14 @@ The ten most likely failures, with `<…>` filled in at run time:
 - `preflight` calls `requireOutsideGit` for each file of the key folder and for `profile` before it reads them, with a test in which a key lies in a temporary repository, tracked or not ignored;
 - every ID the command learns is registered with the redactor, and a test checks that a run with `--redact`, and one with `CI` set, prints neither ID;
 - `packages/wincode_asc` holds the token and the paged GET requests, and the ES256 known-answer test passes;
-- for the same app, `wincode preflight --dry-run` prints the GET requests of its three checks as `asc_preflight.py --dry-run` prints them (golden);
+- for the same app, `wincode preflight --dry-run` prints the GET requests of `asc_preflight.py --dry-run` (golden), except the script's certificates request, which `preflight` does not send, and the `uuid` that its profiles request also asks for, so that profiles can be linked by UUID; this difference is intended;
 - against the fake server, the three checks pass and fail where the script's do, including the build-number cases of the script's self-test (PR #11), and each local check of the IPA (bundle ID, version, build number, profile, expiry) has a test;
 - no test's output holds the key, the token, the Key ID or the Issuer ID;
 - one real run on the test app record, read-only, gives the same PASS and FAIL lines as the script;
 - `wincode init` writes `wincode.yaml` for the flavored sample in `wincode_core`'s test fixtures, and refuses to overwrite one;
 - CI runs `wincode_asc`, and `wincode_cli` on Windows too.
 
-**Phase 2 as built: `preflight`.** `init` comes in a change of its own, so phase 2 is not accepted yet. What `preflight` does, and where it departs from the sections above:
+**Phase 2 as built: `preflight` and `init`.** What `preflight` does, and where it departs from the sections above:
 - **The checks,** in the order of the report: `key-location`, `api-key`, `app-record`, `builds` (INFO: how many builds and the highest number), `build-number`, `store-profile`, `local-profile`, `ipa`, `signature` and `profile-link`. Each prints PASS, FAIL, WARN or INFO, with the why and the next step of section 6 under a failure or a warning. A failed request stops only the checks in App Store Connect after it; the checks on the PC always run. The exit code is that of the first failure. A profile that expires within 30 days is a warning and does not fail.
 - **The requests** are the script's, with two differences: no `GET /v1/certificates` (the script only listed the certificates in its table, and no check of `preflight` needs them), and `uuid` added to `fields[profiles]` of the profiles request, so that `profile-link` can compare profiles by UUID. `--dry-run` prints the four requests otherwise as the script prints them (golden).
 - **The build number** is compared as in PR #11. One difference: a build number of the IPA that is not one to three numbers joined by dots fails in the `ipa` check even when the app has no build yet, which the script let pass.
@@ -365,6 +365,13 @@ The ten most likely failures, with `<…>` filled in at run time:
   - replaced with `--redact` or `CI`: the bundle ID and the team ID, those of another app or team that the IPA or a profile names, and Apple's IDs of the app record and the App ID.
 - **`--json`:** `checks` holds every finding, each with `check`, `status` and `what`, and with `id`, `why` and `next` for a failure or a warning. `error` holds the first failure (golden).
 - **The real run** on the test app record is recorded in the pull request, without IDs (section 8).
+
+**`init` as built.** `wincode init` writes `wincode.yaml` in the root of the Flutter project (the nearest folder at or above the current one with `pubspec.yaml` and `ios`), or at `--config`. It reads nothing but `ios/Runner.xcodeproj`, the files that project names, `ios/Runner`, and the `.mobileprovision` files directly in a folder the user names. It does not search the disk, read a credential store, or use the network.
+- **Detection.** The bundle ID is the `PRODUCT_BUNDLE_IDENTIFIER` of Release (or `Release-<flavor>` with `--flavor`), resolved as Xcode layers the settings (`wincode_core`'s reader); Debug and Profile must agree with it. A value that is a variable with no value, or that differs between configurations, is not guessed: `init` lists what it found and asks, or in a non-interactive run asks for `--bundle-id`. The team ID comes from the chosen profile and from `DEVELOPMENT_TEAM`; two different ones are asked. The entitlements file is the one the project names, else the only `.entitlements` file of `ios/Runner`. A profile is offered only if it is an App Store profile, has not expired, and is for the bundle ID.
+- **Asking.** At a terminal, each value is shown with what was found, and Enter accepts it; the file is shown and confirmed before it is written. With `--yes`, with `--json`, in CI (`CI` set), or when standard input is not a terminal, nothing is asked: every field comes from an option, or from what was found with `--yes`, and the missing options are listed (`init-input-missing`, exit 64). Options: `--bundle-id`, `--team-id`, `--profile`, `--profile-dir`, `--entitlements`, `--workflow-ref`, `--output`, `--flavor`, `--yes`, `--force`, `--workflow`.
+- **Safety.** An existing file is not replaced without `--force`; `init` prints a diff of what it would change (`config-exists`, exit 1). A profile is checked with `requireOutsideGit` before it is read, so one in an unignored git working tree is refused with the move-it message (exit 78); a profile folder inside the project gets a suggested `.gitignore` line, and `.gitignore` is never edited. `--dry-run` prints the file and writes nothing. IDs are registered with the redactor as soon as they are found, so `--redact` and CI hide them in all output, and the file keeps the real values. The file holds no key and no key folder: it has no field for one, and `WINCODE_ASC_KEY_DIR` is never read by `init`.
+- **The reference workflow.** `--workflow` copies `templates/wincode-ios.yml` to `.github/workflows/wincode-ios.yml`, and refuses to replace it, with or without `--force`. The template is found next to the package's `lib`, so it works from a checkout (`dart run`), not from a compiled `wincode`, which says so (`template-missing`, exit 69). `init` does not write the `workflow:` key unless `--workflow-ref` gives it: the repository and branch are not known without asking GitHub.
+- **After it,** `init` prints the commands to run: `wincode preflight --dry-run` and `wincode preflight`, with `--config` when the file is not `wincode.yaml` in the current folder.
 
 **Phase 3: `sign`.** Accepted when:
 - each check of section 4 has a test, with a throwaway CA, identity and profile, and a fake zsign;

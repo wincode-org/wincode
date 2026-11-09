@@ -9,18 +9,19 @@ import 'package:wincode_core/wincode_core.dart';
 
 import 'src/config.dart';
 import 'src/failure.dart';
+import 'src/init.dart';
 import 'src/preflight.dart';
 import 'src/redact.dart';
 
 export 'src/config.dart' show WincodeConfig, Workflow, loadConfig;
 export 'src/failure.dart' show ExitCode, WincodeException;
 export 'src/key_location.dart' show requireOutsideGit;
+export 'src/init.dart' show ReadLine;
 export 'src/preflight.dart' show AscConnect;
 export 'src/redact.dart' show Redactor, runsInCi;
 
 /// The commands that ADR-0013 designs and later phases implement: name, summary, arguments and phase.
 const _planned = [
-  ('init', 'Write wincode.yaml for the Flutter project in this folder.', '', 2),
   (
     'build',
     "Build the unsigned IPA on the app's macOS runner (GitHub Actions) and download it.",
@@ -53,7 +54,8 @@ const _planned = [
 /// and nothing else. Everything printed passes through a [Redactor], which is active with `--redact` or when [environment]
 /// (default: the process's) sets `CI`.
 ///
-/// [clock] (default: the system's) and [connect] (default: App Store Connect) are there for tests.
+/// [clock] (default: the system's), [connect] (default: App Store Connect), [workingDirectory] (default: the current
+/// folder), [readLine] and [terminal] (default: standard input) are there for tests.
 Future<int> runWincode(
   List<String> args,
   StringSink out,
@@ -61,6 +63,9 @@ Future<int> runWincode(
   Map<String, String>? environment,
   DateTime Function()? clock,
   AscConnect connect = connectToApple,
+  Directory? workingDirectory,
+  ReadLine? readLine,
+  bool? terminal,
 }) async {
   environment ??= Platform.environment;
   // A usage error comes before the arguments are parsed, so the flags can only be looked up in the list itself.
@@ -76,6 +81,16 @@ Future<int> runWincode(
   final runner = _Wincode(
     out,
     _Preflight(out, err, environment, redactor, clock ?? DateTime.now, connect),
+    _Init(
+      out,
+      err,
+      environment,
+      redactor,
+      clock ?? DateTime.now,
+      workingDirectory ?? Directory.current,
+      readLine ?? stdin.readLineSync,
+      terminal ?? stdin.hasTerminal,
+    ),
   );
   var command = '';
 
@@ -140,7 +155,7 @@ Future<int> runWincode(
 }
 
 class _Wincode extends CommandRunner<int> {
-  _Wincode(this.out, _Preflight preflight)
+  _Wincode(this.out, _Preflight preflight, _Init init)
     : super(
         'wincode',
         'Build, sign and upload Flutter iOS apps from Windows.',
@@ -177,6 +192,7 @@ class _Wincode extends CommandRunner<int> {
     }
     addCommand(_Doctor(out));
     addCommand(preflight);
+    addCommand(init);
   }
 
   final StringSink out;
@@ -334,6 +350,134 @@ class _Doctor extends _Command {
       lines.forEach(out.writeln);
     }
     return code.code;
+  }
+}
+
+class _Init extends _Command {
+  _Init(
+    super.out,
+    this.err,
+    this.environment,
+    this.redactor,
+    this.clock,
+    this.workingDirectory,
+    this.readLine,
+    this.terminal,
+  ) {
+    argParser
+      ..addOption(
+        'bundle-id',
+        valueHelp: 'id',
+        help: "The app's bundle ID. Default: read from ios/Runner.xcodeproj.",
+      )
+      ..addOption(
+        'team-id',
+        valueHelp: 'id',
+        help: 'The team ID (10 capital letters and digits). Default: from the profile or the Xcode project.',
+      )
+      ..addOption(
+        'profile',
+        valueHelp: 'file',
+        help: 'The App Store profile (.mobileprovision). It must lie outside git working trees, or be ignored by git.',
+      )
+      ..addOption(
+        'profile-dir',
+        valueHelp: 'folder',
+        help: 'A folder to list the App Store profiles of this app in. Nothing else is searched.',
+      )
+      ..addOption(
+        'entitlements',
+        valueHelp: 'file',
+        help: 'The .entitlements file. Default: the one of the Xcode project.',
+      )
+      ..addOption(
+        'workflow-ref',
+        valueHelp: 'ref',
+        help: 'The CI workflow for wincode build: <owner>/<repository>/.github/workflows/<file>@<branch or tag>.',
+      )
+      ..addOption(
+        'output',
+        valueHelp: 'folder',
+        help: 'Where the IPAs go (default build/wincode).',
+      )
+      ..addOption(
+        'flavor',
+        valueHelp: 'name',
+        help: 'Read the Release-<name> configuration of the Xcode project.',
+      )
+      ..addFlag(
+        'workflow',
+        negatable: false,
+        help: 'Copy the reference workflow to .github/workflows/wincode-ios.yml. It never replaces a file.',
+      )
+      ..addFlag(
+        'yes',
+        abbr: 'y',
+        negatable: false,
+        help: 'Ask nothing: accept what init found.',
+      )
+      ..addFlag(
+        'force',
+        negatable: false,
+        help: 'Replace an existing wincode.yaml.',
+      );
+  }
+
+  final StringSink err;
+  final Map<String, String> environment;
+  final Redactor redactor;
+  final DateTime Function() clock;
+  final Directory workingDirectory;
+  final ReadLine readLine;
+  final bool terminal;
+
+  @override
+  final name = 'init';
+
+  @override
+  final description =
+      'Write wincode.yaml for the Flutter project in this folder.\n\n'
+      'init reads ios/Runner.xcodeproj for the bundle ID and the entitlements, and the .mobileprovision files of a folder '
+      'that you name, shows what it found, and asks you to confirm each value. It never writes a key or the key folder '
+      '(WINCODE_ASC_KEY_DIR), and it never edits .gitignore.\n\n'
+      'It asks only at a terminal. In CI (the CI variable), with --yes or with --json it asks nothing: give every field '
+      'as an option, or --yes to accept what it found. Without --force it does not replace a wincode.yaml.';
+
+  @override
+  Future<int> run() async {
+    final yes = argResults!.flag('yes');
+    final interactive =
+        !yes && !jsonOutput && !runsInCi(environment) && terminal;
+    final report = jsonOutput ? err : out;
+    final result = await Initializer(
+      options: InitOptions(
+        config: globalResults!.wasParsed('config')
+            ? globalResults!.option('config')
+            : null,
+        bundleId: argResults!.option('bundle-id'),
+        teamId: argResults!.option('team-id'),
+        profile: argResults!.option('profile'),
+        profileDir: argResults!.option('profile-dir'),
+        entitlements: argResults!.option('entitlements'),
+        workflowRef: argResults!.option('workflow-ref'),
+        output: argResults!.option('output'),
+        flavor: argResults!.option('flavor'),
+        yes: yes,
+        force: argResults!.flag('force'),
+        copyWorkflow: argResults!.flag('workflow'),
+        dryRun: globalResults!.flag('dry-run'),
+      ),
+      cwd: workingDirectory,
+      redactor: redactor,
+      report: report,
+      readLine: readLine,
+      interactive: interactive,
+      clock: clock,
+    ).execute();
+    if (jsonOutput) {
+      out.writeln(jsonEncode(result));
+    }
+    return ExitCode.ok.code;
   }
 }
 
