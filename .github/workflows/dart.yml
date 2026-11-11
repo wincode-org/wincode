@@ -61,3 +61,69 @@ jobs:
           test ! -e wincode.yaml
           ../compiled/wincode.exe init --workflow --yes --bundle-id com.example.app --team-id TEAM000000
           cmp .github/workflows/wincode-ios.yml ../wc/packages/wincode_cli/templates/wincode-ios.yml
+
+  zsign:
+    # ADR-0013 phase 3a: the zsign that winCode pins signs a generated app with a throwaway certificate, and
+    # wincode sign --verify-only checks the result. wincode sign itself starts zsign through wsl.exe, which this runner
+    # has not; the unit tests cover that part with a fake zsign. Nothing here is Apple's.
+    name: zsign integration
+    runs-on: ubuntu-latest
+    env:
+      # packages/wincode_cli/lib/src/zsign.dart pins these; test/sign_test.dart checks that the two agree.
+      ZSIGN_COMMIT: f6158be9e62a5ce2a53d72b1a6d880880da956c8
+      ZSIGN_SHA256: 423ebe2f4dd3380367461c03e6de3b9e9f31adcbe9a2f0237493c8f0bf9b7c5d
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: wc
+          persist-credentials: false
+      - uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1.8.1
+        with:
+          sdk: 3.13.4
+      # The commands that wincode doctor --sign prints, in a folder outside the checkout.
+      - name: build the pinned zsign
+        run: |
+          set -euo pipefail
+          sudo apt-get update -q
+          sudo apt-get install -y -q make g++ pkg-config libssl-dev
+          mkdir -p "$RUNNER_TEMP/zsign"
+          cd "$RUNNER_TEMP/zsign"
+          curl -fsSL -o "zsign-$ZSIGN_COMMIT.tar.gz" "https://github.com/xtool-org/zsign/archive/$ZSIGN_COMMIT.tar.gz"
+          echo "$ZSIGN_SHA256  zsign-$ZSIGN_COMMIT.tar.gz" | sha256sum -c -
+          tar -xzf "zsign-$ZSIGN_COMMIT.tar.gz"
+          make -s -C "zsign-$ZSIGN_COMMIT/build/linux" VERSION=1.9.0
+          "zsign-$ZSIGN_COMMIT/bin/zsign" -v
+      # A throwaway CA signs the distribution certificate and the profile. zsign takes the certificate as a .p12 with
+      # the CA, since it looks the issuer of a PEM certificate up among Apple's own; an empty password needs no -p.
+      - name: sign a generated app, then check it with wincode sign --verify-only
+        working-directory: wc/packages/wincode_cli
+        run: |
+          set -euo pipefail
+          dart pub get
+          w="$RUNNER_TEMP/work"
+          mkdir -p "$w"
+          (
+            cd "$w"
+            openssl req -x509 -newkey rsa:2048 -nodes -keyout ca.key -out ca.pem -days 90 -subj "/CN=Example Test CA"
+            openssl req -newkey rsa:2048 -nodes -keyout dist.key -out leaf.csr \
+              -subj "/CN=Apple Distribution: Example (TEAM000000)/OU=TEAM000000/O=Example"
+            openssl x509 -req -in leaf.csr -CA ca.pem -CAkey ca.key -CAcreateserial -out leaf.pem -days 90
+            openssl x509 -in leaf.pem -outform DER -out leaf.der
+            openssl pkcs12 -export -inkey dist.key -in leaf.pem -certfile ca.pem -passout pass: -out leaf.p12
+          )
+          dart run tool/zsign_fixture.dart "$w/fixture" "$w/leaf.der"
+          openssl cms -sign -binary -nodetach -outform DER -in "$w/fixture/profile.plist" -signer "$w/ca.pem" \
+            -inkey "$w/ca.key" -out "$w/fixture/profile.mobileprovision"
+          mkdir -p "$w/fixture/build"
+          "$RUNNER_TEMP/zsign/zsign-$ZSIGN_COMMIT/bin/zsign" -k "$w/leaf.p12" -m "$w/fixture/profile.mobileprovision" \
+            -e "$w/fixture/entitlements.plist" -z 9 -o "$w/fixture/build/signed.ipa" "$w/fixture/unsigned.ipa"
+          export WINCODE_DIST_KEY="$w/dist.key"
+          dart run bin/wincode.dart sign --verify-only --config "$w/fixture/wincode.yaml"
+          # A file changed after signing must fail the check.
+          mkdir -p "$w/changed/Payload/Example.app/assets"
+          echo changed > "$w/changed/Payload/Example.app/assets/hello.txt"
+          (cd "$w/changed" && zip -q "$w/fixture/build/signed.ipa" Payload/Example.app/assets/hello.txt)
+          if dart run bin/wincode.dart sign --verify-only --config "$w/fixture/wincode.yaml"; then
+            echo "a changed IPA passed the check"
+            exit 1
+          fi

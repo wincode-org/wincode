@@ -242,33 +242,9 @@ class Preflight {
     return (findings, key, profileRefused);
   }
 
-  /// The API key in [key], with its Key ID and Issuer ID registered with the redactor before anything can print them.
-  AscKey _loadKey(AscKeyFiles key) {
-    final (:keyId, :issuer, :p8) = readAscKeyIds(key, redactor);
-    final notAKey = ascKeyInvalid(
-      'the .p8 in ${key.source} is not an App Store Connect API key',
-      why: 'an App Store Connect API key is an EC P-256 private key in PEM, as App Store Connect delivered it.',
-      next:
-          'use the .p8 as it was downloaded. App Store Connect delivers a key once: if the file is lost or damaged, '
-          'revoke the key and make a new one (Users and Access, Integrations).',
-    );
-    try {
-      return AscKey.parse(
-        readKeyText(p8) ?? (throw notAKey),
-        keyId: keyId,
-        issuerId: issuer,
-      );
-    } on FormatException {
-      throw notAKey;
-    }
-  }
+  AscKey _loadKey(AscKeyFiles key) => loadAscKey(key, redactor);
 
-  /// A new token of [key], registered with the redactor before anything can print it.
-  String _token(AscKey key) {
-    final token = key.token(clock());
-    redactor.secret(token, '<token>');
-    return token;
-  }
+  String _token(AscKey key) => ascToken(key, clock, redactor);
 
   // App Store Connect.
 
@@ -366,7 +342,7 @@ class Preflight {
       found.add(_storeProfile(appIds, profiles, now));
     } on AscException catch (e) {
       found
-        ..add(Finding.fail(check, _ascProblem(e)))
+        ..add(Finding.fail(check, ascProblem(e, keySource: _keySource)))
         ..add(
           const Finding.info(
             'app-store-connect',
@@ -427,63 +403,28 @@ class Preflight {
     );
   }
 
-  /// The failure of a request, with Apple's own words as sent (ADR-0013, section 6).
-  WincodeException _ascProblem(AscException e) {
-    final said = [
-      for (final error in e.errors)
-        [error['code'], error['detail'] ?? error['title']].nonNulls.join(': '),
-    ].join('; ');
-    final answer = said.isEmpty ? e.message : '${e.message} $said';
-    return switch (e.failure) {
-      AscFailure.unauthorized => WincodeException(
-        ExitCode.permission,
-        'asc-unauthorized',
-        'App Store Connect refused the API key: $answer',
-        why:
-            "the key was revoked, the Key ID or the Issuer ID does not belong to the .p8, or this PC's clock is off "
-            'by minutes (the token carries the time).',
-        next:
-            'check that $_keySource holds AuthKey_<Key ID>.p8 as downloaded and issuer-id with the Issuer '
-            'ID (Users and Access, Integrations); set the clock right; make a new key if this one was revoked.',
-      ),
-      AscFailure.forbidden => WincodeException(
-        ExitCode.permission,
-        'asc-forbidden',
-        'App Store Connect refused ${e.request} to the API key: $answer',
-        why: "the key's role may not do this, or an agreement waits to be accepted in App Store Connect.",
-        next:
-            'accept the agreements in App Store Connect (Business), or use a key whose role may read apps, builds '
-            'and profiles (Users and Access, Integrations).',
-      ),
-      AscFailure.offline => WincodeException(
-        ExitCode.unavailable,
-        'offline',
-        'cannot reach api.appstoreconnect.apple.com: ${e.message}',
-        why: "there is no network, a proxy or a firewall is in the way, or Apple's service is down.",
-        next:
-            "check the connection (and HTTPS_PROXY, if you use one) and Apple's system status page, then run the "
-            'command again. Nothing was sent.',
-      ),
-      AscFailure.unavailable => WincodeException(
-        ExitCode.unavailable,
-        'asc-unavailable',
-        'App Store Connect kept answering ${e.request} with $answer',
-        why: "Apple's service is down or overloaded.",
-        next: "check Apple's system status page, then run the command again.",
-      ),
-      AscFailure.refused => WincodeException(
-        ExitCode.failed,
-        'asc-error',
-        "App Store Connect's answer to ${e.request} is not what preflight expects: $answer",
-        why: 'preflight sends only read requests that Apple documents, so this answer is unexpected.',
-        next:
-            'run the command again with --verbose --redact; if the answer comes again, report it with that output '
-            'at https://github.com/wincode-org/wincode/issues.',
-      ),
-    };
+  // The profile in wincode.yaml.
+
+  /// The `local-profile` check alone, for `wincode sign` before it signs. When it does not fail, [profile] is what it
+  /// read.
+  Finding profileCheck() {
+    _registerIds();
+    return _localProfile(clock().toUtc(), refused: false);
   }
 
-  // The profile in wincode.yaml.
+  /// The profile that [profileCheck] or [localChecks] read, when it can sign this app.
+  ProvisioningProfile? get profile => _local;
+
+  /// The checks of [check] that read nothing but this PC: the IPA and its signature, and whether the IPA carries the
+  /// profile in wincode.yaml. `wincode sign` runs them on the IPA it signed, before it keeps it, after it reported
+  /// [profileCheck] itself.
+  List<Finding> localChecks() {
+    _registerIds();
+    final now = clock().toUtc();
+    _localProfile(now, refused: false);
+    final (_, ipaFindings) = _checkIpa(now);
+    return [...ipaFindings, ..._profileLink()];
+  }
 
   /// The `local-profile` check of the profile that `wincode.yaml` names; [refused] when where it lies forbids reading
   /// it.
@@ -968,6 +909,99 @@ class Preflight {
       redactor.hide(value, placeholder);
     }
   }
+}
+
+/// The API key in [key], with its Key ID and Issuer ID registered with [redactor] before anything can print them.
+AscKey loadAscKey(AscKeyFiles key, Redactor redactor) {
+  final (:keyId, :issuer, :p8) = readAscKeyIds(key, redactor);
+  final notAKey = ascKeyInvalid(
+    'the .p8 in ${key.source} is not an App Store Connect API key',
+    why: 'an App Store Connect API key is an EC P-256 private key in PEM, as App Store Connect delivered it.',
+    next:
+        'use the .p8 as it was downloaded. App Store Connect delivers a key once: if the file is lost or damaged, '
+        'revoke the key and make a new one (Users and Access, Integrations).',
+  );
+  try {
+    return AscKey.parse(
+      readKeyText(p8) ?? (throw notAKey),
+      keyId: keyId,
+      issuerId: issuer,
+    );
+  } on FormatException {
+    throw notAKey;
+  }
+}
+
+/// A new token of [key], registered with [redactor] before anything can print it.
+String ascToken(AscKey key, DateTime Function() clock, Redactor redactor) {
+  final token = key.token(clock());
+  redactor.secret(token, '<token>');
+  return token;
+}
+
+/// The failure of a request of [command], with Apple's own words as sent (ADR-0013, section 6). [keySource] names
+/// where the key came from.
+WincodeException ascProblem(
+  AscException e, {
+  required String keySource,
+  String command = 'preflight',
+}) {
+  final said = [
+    for (final error in e.errors)
+      [error['code'], error['detail'] ?? error['title']].nonNulls.join(': '),
+  ].join('; ');
+  final answer = said.isEmpty ? e.message : '${e.message} $said';
+  return switch (e.failure) {
+    AscFailure.unauthorized => WincodeException(
+      ExitCode.permission,
+      'asc-unauthorized',
+      'App Store Connect refused the API key: $answer',
+      why:
+          "the key was revoked, the Key ID or the Issuer ID does not belong to the .p8, or this PC's clock is off "
+          'by minutes (the token carries the time).',
+      next:
+          'check that $keySource holds AuthKey_<Key ID>.p8 as downloaded and issuer-id with the Issuer '
+          'ID (Users and Access, Integrations); set the clock right; make a new key if this one was revoked.',
+    ),
+    AscFailure.forbidden => WincodeException(
+      ExitCode.permission,
+      'asc-forbidden',
+      'App Store Connect refused ${e.request} to the API key: $answer',
+      why: "the key's role may not do this, or an agreement waits to be accepted in App Store Connect.",
+      next: command == 'preflight'
+          ? 'accept the agreements in App Store Connect (Business), or use a key whose role may read apps, builds '
+                'and profiles (Users and Access, Integrations).'
+          : 'accept the agreements in App Store Connect (Business), or use a key whose role may read certificates '
+                '(Users and Access, Integrations).',
+    ),
+    AscFailure.offline => WincodeException(
+      ExitCode.unavailable,
+      'offline',
+      'cannot reach api.appstoreconnect.apple.com: ${e.message}',
+      why: "there is no network, a proxy or a firewall is in the way, or Apple's service is down.",
+      next:
+          "check the connection (and HTTPS_PROXY, if you use one) and Apple's system status page, then run the "
+          'command again${command == 'sign' ? ', or give --offline to sign without asking App Store Connect' : ''}. '
+          'Nothing was sent.',
+    ),
+    AscFailure.unavailable => WincodeException(
+      ExitCode.unavailable,
+      'asc-unavailable',
+      'App Store Connect kept answering ${e.request} with $answer',
+      why: "Apple's service is down or overloaded.",
+      next: "check Apple's system status page, then run the command again.",
+    ),
+    AscFailure.refused => WincodeException(
+      ExitCode.failed,
+      'asc-error',
+      "App Store Connect's answer to ${e.request} is not what $command expects: $answer",
+      why:
+          '$command sends only read requests that Apple documents, so this answer is unexpected.',
+      next:
+          'run the command again with --verbose --redact; if the answer comes again, report it with that output '
+          'at https://github.com/wincode-org/wincode/issues.',
+    ),
+  };
 }
 
 /// The two findings of the build-number check: how many builds the app has and the highest number (INFO), then whether

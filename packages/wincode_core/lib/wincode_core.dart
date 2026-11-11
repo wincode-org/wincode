@@ -9,6 +9,15 @@ export 'src/app_snapshot.dart'
         genSnapshotArguments,
         wrapInFat;
 export 'src/build_settings.dart' show BuildSettings, resolveBuildSettings;
+export 'src/certificate.dart'
+    show
+        Certificate,
+        PrivateKeyException,
+        PrivateKeyProblem,
+        RsaPublicKey,
+        readCertificate,
+        readRsaPrivateKey,
+        verifyRsaSha256;
 export 'src/code_signature.dart'
     show codeSignatureOf, entitlementsOfSignature, readSignedEntitlements;
 export 'src/doctor.dart' show DoctorFinding, checkFlutterSdkLineEndings;
@@ -67,6 +76,8 @@ export 'src/runner.dart'
         sdkVersion,
         writeRunnerPackage;
 export 'src/sdk_stubs.dart' show Hidden, LibraryStub, Previous, readLibraryStub;
+export 'src/signature_check.dart'
+    show SignatureCheck, checkSignedIpa, nestedCodeOf, plistEquals;
 export 'src/swift_build.dart'
     show SwiftBuild, buildSwiftPackage, swiftBuildCommand;
 export 'src/wsl.dart' show toWslPath, wslRunner;

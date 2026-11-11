@@ -9,6 +9,9 @@ import 'dart:typed_data';
 import 'src/plist.dart';
 import 'src/zip.dart';
 
+export 'src/test_signer.dart'
+    show TestRsaKey, pemOf, signTestIpa, testCertificate;
+
 /// A zip archive of [files], in order: deflated when [deflate], else stored. A name that ends in `/` is a folder.
 Uint8List zipOf(Map<String, List<int>> files, {bool deflate = true}) {
   final out = BytesBuilder();

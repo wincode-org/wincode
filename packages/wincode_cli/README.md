@@ -2,7 +2,7 @@
 
 The `wincode` command. Its design is [ADR-0013](../../docs/adr/0013-wincode-cli-build-sign-upload.md).
 
-Status: `doctor`, `preflight` and `init` work. `preflight` and `doctor` read an app's App Store Connect key through its `credentials` reference (ADR-0014; layout below). The other commands are registered; each prints `not implemented yet, see ADR-0013` and exits with 64 until the phase of ADR-0013 that implements it. `wincode.yaml` may describe several apps ([ADR-0014](../../docs/adr/0014-one-project-many-apps.md)): `--app <name>` chooses the app of `preflight`, `doctor` and `init`, `--all` runs `preflight` and `doctor` for every app, and `init --app` adds an app to a file of apps, or moves a flat file under `apps:` (below).
+Status: `doctor`, `preflight`, `init` and `sign` work. `preflight` and `doctor` read an app's App Store Connect key through its `credentials` reference (ADR-0014; layout below), and `sign` its distribution key. `sign` signs with an unencrypted PEM key only (ADR-0013, phase 3a); encrypted keys come in phase 3b. The other commands are registered; each prints `not implemented yet, see ADR-0013` and exits with 64 until the phase of ADR-0013 that implements it. `wincode.yaml` may describe several apps ([ADR-0014](../../docs/adr/0014-one-project-many-apps.md)): `--app <name>` chooses the app of `preflight`, `doctor` and `init`, `--all` runs `preflight` and `doctor` for every app, and `init --app` adds an app to a file of apps, or moves a flat file under `apps:` (below).
 
 ```
 dart run wincode_cli:wincode <command> [arguments]
@@ -12,11 +12,11 @@ dart run wincode_cli:wincode <command> [arguments]
 | --- | --- | --- |
 | `init` | Write `wincode.yaml` for the Flutter project in this folder | works |
 | `preflight [<signed .ipa>]` | Check the signed IPA and App Store Connect before an upload. Read-only | works |
-| `sign [<unsigned .ipa>]` | Sign the IPA for the App Store with zsign | 3 |
+| `sign [<unsigned .ipa>]` | Sign the IPA for the App Store with zsign in WSL2, and check every signature | works (3a) |
 | `upload [<signed .ipa>]` | Upload the signed IPA to App Store Connect and wait for its processing | 4 |
 | `status` | Show the state of the app's latest uploads in App Store Connect. Read-only | 4 |
 | `build` | Build the unsigned IPA on the app's macOS runner (GitHub Actions) and download it | 5 |
-| `doctor` | Check a Mach-O binary against the SDK or a reference build | works |
+| `doctor` | Check the setup (with `--sign`, what `sign` needs), or a Mach-O binary against the SDK or a reference build | works |
 
 ## Global options
 
@@ -112,7 +112,7 @@ apps:
 - `loadSettings` and `parseSettings` return every app in file order (`WincodeSettings`). `loadConfig` returns the one app that existing commands work on, and refuses a file of several with exit 64 (`not-implemented`).
 - With a `Redactor`, the loader registers the names, bundle IDs, team IDs, credentials references, flavors, configurations and the `profile`, `entitlements` and `output` paths as soon as each has passed its checks, so that `--redact` and CI print `app-1`, `<bundle ID 1>`, `credentials-1`, `Release-app-1`, `<profile of app-1>` and `<output of app-1>/signed.ipa` even in an error message (ADR-0014, section 4). `preflight` passes its redactor to the loader.
 
-Secrets come only from environment variables, which name files outside the project: `WINCODE_ASC_KEY_DIR` (the App Store Connect key folder) and `WINCODE_DIST_KEY` (the distribution key on the WSL2 disk). `preflight` reads `WINCODE_ASC_KEY_DIR` (ADR-0013, section 2). A key or profile file inside a git working tree is refused unless git ignores it: `requireOutsideGit` does the check, and `preflight` calls it on each file of the key folder that it reads and on the profile, and `init` on the profile, before reading them.
+Secrets come only from environment variables, which name files outside the project: `WINCODE_ASC_KEY_DIR` (the App Store Connect key folder) and `WINCODE_DIST_KEY` (the distribution key, a file on a Windows drive that zsign reads in place). `preflight` reads `WINCODE_ASC_KEY_DIR` and `sign` both (ADR-0013, section 2). A key or profile file inside a git working tree is refused unless git ignores it: `requireOutsideGit` does the check, and `preflight` calls it on each file of the key folder that it reads and on the profile, `init` on the profile, and `sign` on the distribution key and the profile, before reading them.
 
 ### The keys folder (ADR-0014, section 2)
 
@@ -123,7 +123,7 @@ An app that names `credentials: <reference>` has its keys in a folder of that na
   <reference>\
     AuthKey_<Key ID>.p8    the App Store Connect API key, as App Store Connect delivered it (exactly one)
     issuer-id              one line: the Issuer ID
-    dist.key               the distribution private key (PEM); read by `sign`, which is not built yet
+    dist.key               the distribution private key (unencrypted PEM); read in place by `sign`
 ```
 
 - **The root** is `WINCODE_KEYS_DIR` when it is set, else `.wincode/keys` in the user profile folder (`USERPROFILE`, or `HOME` where there is none).
@@ -237,12 +237,55 @@ With `--json`, the report goes to stderr, and stdout gets one object. `checks` l
 
 With `--dry-run --json`, it is `{"command": "preflight", "ok": true, "exitCode": 0, "dryRun": true, "requests": ["GET https://...", ...]}`. The names of the checks, the statuses and the ids are stable; the texts are not.
 
+## sign
+
+```
+dart run wincode_cli:wincode sign [--app <name>] [--offline] [<unsigned .ipa>]
+dart run wincode_cli:wincode sign --verify-only [<signed .ipa>]
+```
+
+Signs the unsigned IPA (`unsigned.ipa` in the app's `output` folder by default) for the App Store with the pinned zsign in WSL2, and writes `signed.ipa` next to it only when every check of the result passes ([ADR-0013, phase 3a as built](../../docs/adr/0013-wincode-cli-build-sign-upload.md)). Before zsign runs:
+
+| Check | What passes |
+| --- | --- |
+| `input` | The IPA holds one `Payload/<name>.app` of the bundle ID, nothing else, and no app extension or watch app (those need their own profiles: `extensions-unsupported`) |
+| `local-profile` | As in `preflight` |
+| `dist-key` | The app's distribution key (its credentials' `dist.key`, `WINCODE_DIST_KEY_<REF>`, or `WINCODE_DIST_KEY` for a flat file) is an unencrypted RSA key in PEM. An encrypted key or a `.p12` is refused (`key-encrypted`, 78); encrypted keys come in phase 3b |
+| `certificate` | One of the profile's certificates has the key's public key, is an Apple Distribution certificate of the team, and has not expired. No certificate file is configured |
+| `entitlements` | The app's `entitlements` plus `application-identifier`, `com.apple.developer.team-identifier`, `keychain-access-groups` and `get-task-allow` false, built as the spike's `sign.py` builds them, each allowed by the profile. `--verbose` prints them |
+| `certificate-asc` | App Store Connect lists the certificate (`GET /v1/certificates`, by serial number) as a distribution certificate that has not expired. `--offline` skips this request with a WARN |
+| `zsign` | The zsign in WSL2 is the pinned one, with the SHA-256 that `doctor --sign` recorded, and the key is readable there through `wslpath` |
+
+zsign then runs through `wsl.exe --exec` (no shell), with every path translated by `wslpath -u` and the key read in place: nothing key-related is written inside WSL2, and no password is ever passed (`-p` never is). Its files go to a temporary folder in the output folder, deleted whatever happens. After it, `code-signature` checks every signature as [`docs/formats/code-signature-verification.md`](../../docs/formats/code-signature-verification.md) describes, and preflight's local checks (`ipa`, `signature`, `profile-link`) run on the result. A failure leaves no file behind and an earlier `signed.ipa` as it was.
+
+`--verify-only` runs the checks of the profile, the key, the certificate and the entitlements, then `code-signature` and preflight's local checks, on a signed IPA (`signed.ipa` by default). It needs neither WSL2 nor the network, but reads the distribution key to choose the certificate. `--all` is refused. `--dry-run` sends nothing, starts nothing and prints the zsign command with placeholders.
+
+| Exit | Failure ids |
+| --- | --- |
+| 0 | `certificate-not-checked` (`--offline`, a warning), `der-entitlements-missing` (a warning) |
+| 1 | `ipa-missing`, `ipa-unreadable`, `ipa-outside-payload`, `extensions-unsupported`, `bundle-id-mismatch`, `key-not-rsa`, `certificate-not-in-profile`, `certificate-not-distribution`, `certificate-team-mismatch`, `certificate-expired`, `certificate-not-in-asc`, `entitlement-not-allowed`, `zsign-failed`, `zsign-timeout`, `zsign-too-big`, `zsign-changed`, `zsign-unverified`, `signature-invalid`, and the failures of preflight's local checks |
+| 69 | `wsl-missing`, `wsl-unreachable`, `zsign-missing`, `git-unavailable`, `offline`, `asc-unavailable` |
+| 77 | `asc-unauthorized`, `asc-forbidden` |
+| 78 | `profile-not-configured`, `dist-key-missing`, `dist-key-unreadable`, `dist-key-unreachable`, `key-encrypted`, `key-invalid`, `entitlements-unreadable`, `path-unreachable`, `asc-key-dir-missing`, `key-in-git-tree`, `key-in-onedrive` |
+
+### The pinned zsign
+
+`xtool-org/zsign` 1.9.0 at commit `f6158be9e62a5ce2a53d72b1a6d880880da956c8`, the one `third_party/xtool/Package.resolved` pins; GitHub's archive of it has the SHA-256 `423ebe2f4dd3380367461c03e6de3b9e9f31adcbe9a2f0237493c8f0bf9b7c5d`. zsign is MIT-licensed; it builds its own zlib and minizip (zlib licence) and links OpenSSL 3 (Apache-2.0). winCode ships none of them: `wincode doctor --sign` prints the commands that build it at `~/.wincode/zsign` in the distribution, and you run them. Set `WINCODE_WSL_DISTRO` when that is not the default distribution.
+
 ## doctor
 
 ```
-dart run wincode_cli:wincode doctor
+dart run wincode_cli:wincode doctor [--sign]
 dart run wincode_cli:wincode doctor --binary <Mach-O file> [--sdk <iPhoneOS.sdk folder>] [--reference <Mach-O file>]
 ```
+
+With `--sign`, `doctor` also checks, per app, what `sign` needs, each failure with its next step:
+- WSL2 is installed, and the distribution (`WINCODE_WSL_DISTRO`, else the default one) exists, runs on WSL 2 and starts.
+- The pinned zsign is built and prints its version; when it is missing, `doctor` prints the commands that build it.
+- Its SHA-256 is the one recorded in `%LOCALAPPDATA%\wincode\zsign.json`. The first `doctor --sign` that finds it records it there; `sign` refuses to run before that, or once the binary changes.
+- The app's distribution key is found, and WSL2 can read it through `wslpath`.
+
+`doctor --sign` runs only read-only commands in WSL2 (`wslpath`, `printenv`, `test`, `sha256sum`, `zsign -v`), never `sudo` and never an install. It has no `--dry-run`, since it records the hash.
 
 Without options, `doctor` checks the setup of the app in `wincode.yaml` and sends nothing (ADR-0014, section 3): `settings` (the file loads) and `credentials` (the App Store Connect key folder holds one `AuthKey_<Key ID>.p8` and an `issuer-id` with an Issuer ID, outside git working trees and OneDrive; the key itself is not read). Each check prints PASS or FAIL with the why and the next step, `--json` gives `checks` and `error` as for `preflight`, and the exit code is that of the first failure. A file of several apps exits with 64 until `--app` exists. This replaces the usage error that `doctor` without options gave before.
 
@@ -263,4 +306,4 @@ It exits with 0 when the checks pass, 1 when one fails or a file cannot be read,
 dart test
 ```
 
-`test/goldens/help.txt` holds the `--help` output of every command. `test/goldens/config-flat.txt` holds what the loader says about a flat `wincode.yaml`, case by case; it was first written from the loader as it was before ADR-0014, so a change in it is a change in how a flat file is read. `test/init_migrate_test.dart` covers the in-place edits (`test/goldens/init-edit.txt` holds a hand-kept file before and after), the migration with and without a backup (`test/goldens/init-migration.txt`, redacted) and the rollback of a write that would not load. `test/apps_select_test.dart` covers `--app`, `--all` and `init --app` with files of three apps, and `test/goldens/apps-json.txt` holds the `--json` documents of one app and of `--all`, redacted too. `test/credentials_test.dart` uses real temporary git repositories for the keys-root rule, records every program that the resolution starts (only `git`), and reads the two messages of ADR-0014 that this change implements from the ADR itself. `test/config_apps_test.dart` reads the worked example and the duplicate-bundle-ID message from ADR-0014 itself, so the ADR and the code cannot drift. The tests of `init` build Flutter projects in a temporary folder, with a scripted standard input, and use a real temporary git repository for the profile rule. `test/goldens/init-messages.txt` holds what `init` prints when it cannot ask. `test/workflow_template_test.dart` fails if the embedded workflow (`lib/src/workflow_template.g.dart`) and `templates/wincode-ios.yml` differ by a byte. `test/goldens/preflight.txt` holds `preflight` reports and its `--dry-run` requests, and `test/goldens/preflight.json` its `--json` object, all from a fake App Store Connect on 127.0.0.1 with made-up IDs. After a deliberate change, `UPDATE_GOLDENS=1 dart test` rewrites them; review the diff before committing. No test reaches the network.
+`test/goldens/help.txt` holds the `--help` output of every command. `test/goldens/config-flat.txt` holds what the loader says about a flat `wincode.yaml`, case by case; it was first written from the loader as it was before ADR-0014, so a change in it is a change in how a flat file is read. `test/init_migrate_test.dart` covers the in-place edits (`test/goldens/init-edit.txt` holds a hand-kept file before and after), the migration with and without a backup (`test/goldens/init-migration.txt`, redacted) and the rollback of a write that would not load. `test/apps_select_test.dart` covers `--app`, `--all` and `init --app` with files of three apps, and `test/goldens/apps-json.txt` holds the `--json` documents of one app and of `--all`, redacted too. `test/credentials_test.dart` uses real temporary git repositories for the keys-root rule, records every program that the resolution starts (only `git`), and reads the two messages of ADR-0014 that this change implements from the ADR itself. `test/config_apps_test.dart` reads the worked example and the duplicate-bundle-ID message from ADR-0014 itself, so the ADR and the code cannot drift. The tests of `init` build Flutter projects in a temporary folder, with a scripted standard input, and use a real temporary git repository for the profile rule. `test/goldens/init-messages.txt` holds what `init` prints when it cannot ask. `test/workflow_template_test.dart` fails if the embedded workflow (`lib/src/workflow_template.g.dart`) and `templates/wincode-ios.yml` differ by a byte. `test/goldens/preflight.txt` holds `preflight` reports and its `--dry-run` requests, and `test/goldens/preflight.json` its `--json` object, all from a fake App Store Connect on 127.0.0.1 with made-up IDs. `test/sign_test.dart` runs `sign` and `doctor --sign` against a fake `wsl.exe` and a fake zsign that signs, fails, hangs, writes garbage or grows, with throwaway RSA keys, self-made certificates and made-up profiles from `wincode_core`'s `testing.dart`, and checks that nothing is left behind after a failure; `test/goldens/sign.txt` holds a redacted report. The CI job `zsign integration` builds the pinned zsign on Ubuntu, signs an app that `tool/zsign_fixture.dart` generates with a throwaway CA, and runs `sign --verify-only` on it. After a deliberate change, `UPDATE_GOLDENS=1 dart test` rewrites them; review the diff before committing. No test reaches the network.
