@@ -250,7 +250,7 @@ Signs the unsigned IPA (`unsigned.ipa` in the app's `output` folder by default) 
 | --- | --- |
 | `input` | The IPA holds one `Payload/<name>.app` of the bundle ID, nothing else, and no app extension or watch app (those need their own profiles: `extensions-unsupported`) |
 | `local-profile` | As in `preflight` |
-| `dist-key` | The app's distribution key (its credentials' `dist.key`, `WINCODE_DIST_KEY_<REF>`, or `WINCODE_DIST_KEY` for a flat file) is an unencrypted RSA key in PEM. An encrypted key or a `.p12` is refused (`key-encrypted`, 78); encrypted keys come in phase 3b |
+| `dist-key` | The app's distribution key (its credentials' `dist.key`, `WINCODE_DIST_KEY_<REF>`, or `WINCODE_DIST_KEY` for a flat file) is an unencrypted RSA key in PEM. An encrypted key or a `.p12` is refused (`key-encrypted`, 78); encrypted keys come in phase 3b. A key on the WSL2 disk (`\\wsl.localhost\...`) is refused too (`dist-key-unreachable`, 78), with where to move it |
 | `certificate` | One of the profile's certificates has the key's public key, is an Apple Distribution certificate of the team, and has not expired. No certificate file is configured |
 | `entitlements` | The app's `entitlements` plus `application-identifier`, `com.apple.developer.team-identifier`, `keychain-access-groups` and `get-task-allow` false, built as the spike's `sign.py` builds them, each allowed by the profile. `--verbose` prints them |
 | `certificate-asc` | App Store Connect lists the certificate (`GET /v1/certificates`, by serial number) as a distribution certificate that has not expired. `--offline` skips this request with a WARN |
@@ -258,7 +258,7 @@ Signs the unsigned IPA (`unsigned.ipa` in the app's `output` folder by default) 
 
 The first five checks read local files and all run, so one report lists every local problem. App Store Connect is asked, and zsign is started, only when none of them failed. zsign then runs through `wsl.exe --exec` (no shell), with every path translated by `wslpath -u` and the key read in place: nothing key-related is written inside WSL2, and no password is ever passed (`-p` never is). Its files go to a temporary folder in the output folder, deleted whatever happens. After it, `code-signature` checks every signature as [`docs/formats/code-signature-verification.md`](../../docs/formats/code-signature-verification.md) describes, and preflight's local checks (`ipa`, `signature`, `profile-link`) run on the result. A failure leaves no file behind and an earlier `signed.ipa` as it was.
 
-`--verify-only` runs the checks of the profile, the key, the certificate and the entitlements, then `code-signature` and preflight's local checks, on a signed IPA (`signed.ipa` by default). It needs neither WSL2 nor the network, but reads the distribution key to choose the certificate. `--all` is refused. `--dry-run` sends nothing, starts nothing and prints the zsign command with placeholders.
+`--verify-only` runs the checks of the profile, the certificate and the entitlements, then `code-signature` and preflight's local checks, on a signed IPA (`signed.ipa` by default). It reads no private key: the certificate is the one that signed the app's executable, which must be one of the profile's certificates. App Store Connect is asked about it unless `--offline` is given. It needs no WSL2. `--all` is refused. `--dry-run` sends nothing, starts nothing and prints the zsign command with placeholders.
 
 | Exit | Failure ids |
 | --- | --- |

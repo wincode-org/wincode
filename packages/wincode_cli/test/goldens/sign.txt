@@ -5,10 +5,10 @@ PASS  the key's certificate in the profile is an Apple Distribution certificate 
 PASS  the app's executable gets 4 entitlements, each allowed by the profile: application-identifier, com.apple.developer.team-identifier, get-task-allow, keychain-access-groups
 WARN  App Store Connect was not asked whether the certificate is still valid (--offline)
   why: Apple refuses a build signed with a certificate that was revoked.
-  next: run wincode sign without --offline before an upload.
+  next: run the command again without --offline before an upload.
 PASS  zsign 1.9.0 (f6158be9) in Ubuntu-test, with the SHA-256 that doctor recorded
 PASS  zsign signed the IPA
-PASS  every signature checks out: 2 Mach-O files and 2 bundles, signed for team <team ID> with the certificate of the key and the profile in wincode.yaml
+PASS  every signature checks out: 2 Mach-O files and 2 bundles, signed for team <team ID> with the certificate checked above and the profile in wincode.yaml
 PASS  the IPA holds <bundle ID>, version 1.0, build 14
 PASS  the IPA is signed as <team ID>.<bundle ID> with an App Store profile, valid until 2027-09-07
 PASS  the IPA is signed with the profile in wincode.yaml (same UUID)

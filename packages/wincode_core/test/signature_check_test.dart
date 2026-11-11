@@ -236,6 +236,44 @@ void main() {
     });
   });
 
+  group("the signer's certificate, read from the CMS signature", () {
+    Certificate signer(Map<String, List<int>> files) {
+      final file = File('${temp.path}/app.ipa')..writeAsBytesSync(zipOf(files));
+      final zip = ZipArchive.open(file);
+      try {
+        return signerCertificateOf(zip);
+      } finally {
+        zip.close();
+      }
+    }
+
+    test("is the certificate that signed the app's executable", () {
+      expect(signer(signed()).der, certificate);
+      final other = testCertificate(
+        TestRsaKey(),
+        notAfter: _expires,
+        serial: BigInt.from(7),
+      );
+      expect(signer(signed(withCertificate: other)).der, other);
+    });
+
+    test('an unsigned executable or no app has none', () {
+      final unsigned = signed()
+        ..['Payload/Runner.app/Runner'] = executable(signed: false);
+      expect(
+        () => signer(unsigned),
+        throwsA(
+          isA<FormatException>().having(
+            (e) => e.message,
+            'message',
+            "the app's executable: not signed",
+          ),
+        ),
+      );
+      expect(() => signer({'Payload/': []}), throwsA(isA<FormatException>()));
+    });
+  });
+
   test('app extensions and watch apps are refused, not checked', () {
     final files = signed()
       ..['Payload/Runner.app/PlugIns/Share.appex/Share'] = executable(

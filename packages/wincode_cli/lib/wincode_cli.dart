@@ -891,8 +891,9 @@ class _Sign extends _Command {
         negatable: false,
         help:
             'Sign nothing: check the signatures of a signed IPA (signed.ipa in the output folder by default) against '
-            'the profile, the certificate of the distribution key and the entitlements, then run preflight\'s local '
-            'checks. Needs no WSL2 and no network.',
+            'the profile, the certificate that signed it (one of the profile\'s, and listed in App Store Connect '
+            'unless --offline) and the entitlements, then run preflight\'s local checks. Needs no WSL2 and no '
+            'private key.',
       );
   }
 
@@ -952,12 +953,18 @@ class _Sign extends _Command {
       log: globalResults!.flag('verbose') ? err.writeln : null,
     );
     final verifyOnly = argResults!.flag('verify-only');
+    final offline = argResults!.flag('offline');
+    final dryRun = globalResults!.flag('dry-run');
     final findings = verifyOnly
-        ? await signer.verify(rest.isEmpty ? signer.output : File(rest.single))
+        ? await signer.verify(
+            rest.isEmpty ? signer.output : File(rest.single),
+            offline: offline,
+            dryRun: dryRun,
+          )
         : await signer.sign(
             rest.isEmpty ? signer.defaultInput : File(rest.single),
-            offline: argResults!.flag('offline'),
-            dryRun: globalResults!.flag('dry-run'),
+            offline: offline,
+            dryRun: dryRun,
           );
     // With --json, stdout carries the JSON object only.
     writeReport(findings, jsonOutput ? err : out, command: name);

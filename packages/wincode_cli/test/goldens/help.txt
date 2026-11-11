@@ -106,7 +106,7 @@ Before zsign runs: the unsigned IPA (unsigned.ipa in the output folder by defaul
 Usage: wincode sign [<unsigned .ipa>]
 -h, --help           Print this usage information.
     --offline        Do not ask App Store Connect whether the certificate is still a valid distribution certificate. The run warns that it was not asked.
-    --verify-only    Sign nothing: check the signatures of a signed IPA (signed.ipa in the output folder by default) against the profile, the certificate of the distribution key and the entitlements, then run preflight's local checks. Needs no WSL2 and no network.
+    --verify-only    Sign nothing: check the signatures of a signed IPA (signed.ipa in the output folder by default) against the profile, the certificate that signed it (one of the profile's, and listed in App Store Connect unless --offline) and the entitlements, then run preflight's local checks. Needs no WSL2 and no private key.
 
 Run "wincode help" to see global options.
 

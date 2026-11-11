@@ -155,29 +155,7 @@ class Signer {
     findings.add(_checkInput(input));
     final inputs = await _identity(findings, now);
     if (inputs != null) {
-      if (dryRun) {
-        findings.add(
-          const Finding.info(
-            'certificate-asc',
-            'App Store Connect was not asked about the certificate (--dry-run)',
-          ),
-        );
-      } else if (offline) {
-        findings.add(
-          Finding.warn(
-            'certificate-asc',
-            const WincodeException(
-              ExitCode.ok,
-              'certificate-not-checked',
-              'App Store Connect was not asked whether the certificate is still valid (--offline)',
-              why: 'Apple refuses a build signed with a certificate that was revoked.',
-              next: 'run wincode sign without --offline before an upload.',
-            ),
-          ),
-        );
-      } else if (!failed()) {
-        findings.add(await _ascCertificate(inputs.certificate, now));
-      }
+      await _askAsc(findings, inputs.certificate, now, offline, dryRun);
     }
     if (failed() || inputs == null) {
       return findings;
@@ -199,15 +177,16 @@ class Signer {
     return findings;
   }
 
-  /// `wincode sign --verify-only`: the checks that follow zsign, on [ipa], against the profile, the certificate of the
-  /// distribution key and the entitlements.
-  Future<List<Finding>> verify(File ipa) async {
+  /// `wincode sign --verify-only`: the checks that follow zsign, on [ipa], against the profile, the certificate that
+  /// signed it (which must be one of the profile's) and the entitlements. It reads no private key. With [offline] or
+  /// [dryRun], App Store Connect is not asked about the certificate.
+  Future<List<Finding>> verify(
+    File ipa, {
+    required bool offline,
+    required bool dryRun,
+  }) async {
     redactor.hide(ipa.path, '<signed IPA>');
     final findings = <Finding>[];
-    final inputs = await _identity(findings, clock().toUtc());
-    if (inputs == null || findings.any((f) => f.status == 'FAIL')) {
-      return findings;
-    }
     if (!ipa.existsSync()) {
       return findings..add(
         Finding.fail(
@@ -222,10 +201,53 @@ class Signer {
         ),
       );
     }
+    final now = clock().toUtc();
+    final inputs = await _identity(findings, now, signed: ipa);
+    if (inputs == null || findings.any((f) => f.status == 'FAIL')) {
+      return findings;
+    }
+    await _askAsc(findings, inputs.certificate, now, offline, dryRun);
+    if (findings.any((f) => f.status == 'FAIL')) {
+      return findings;
+    }
     findings
       ..addAll(_checkSignatures(ipa, inputs))
       ..addAll(_preflight(ipa).localChecks());
     return findings;
+  }
+
+  /// The `certificate-asc` step: asks App Store Connect about [certificate] unless [offline] or [dryRun] say not to,
+  /// and only when nothing has failed.
+  Future<void> _askAsc(
+    List<Finding> findings,
+    Certificate certificate,
+    DateTime now,
+    bool offline,
+    bool dryRun,
+  ) async {
+    if (dryRun) {
+      findings.add(
+        const Finding.info(
+          'certificate-asc',
+          'App Store Connect was not asked about the certificate (--dry-run)',
+        ),
+      );
+    } else if (offline) {
+      findings.add(
+        Finding.warn(
+          'certificate-asc',
+          const WincodeException(
+            ExitCode.ok,
+            'certificate-not-checked',
+            'App Store Connect was not asked whether the certificate is still valid (--offline)',
+            why: 'Apple refuses a build signed with a certificate that was revoked.',
+            next: 'run the command again without --offline before an upload.',
+          ),
+        ),
+      );
+    } else if (!findings.any((f) => f.status == 'FAIL')) {
+      findings.add(await _ascCertificate(certificate, now));
+    }
   }
 
   // The unsigned IPA.
@@ -338,9 +360,14 @@ class Signer {
 
   // The profile, the key, the certificate and the entitlements.
 
-  /// Checks the profile, the key, its certificate and the entitlements, adding a finding for each. Returns them when
-  /// none failed.
-  Future<_Identity?> _identity(List<Finding> findings, DateTime now) async {
+  /// Checks the profile, the certificate and the entitlements, adding a finding for each, and returns them when none
+  /// failed. The certificate is the profile's certificate of the distribution key, or, for the [signed] IPA of
+  /// `--verify-only`, the one that signed it, which no key is read for.
+  Future<_Identity?> _identity(
+    List<Finding> findings,
+    DateTime now, {
+    File? signed,
+  }) async {
     final profileFile = config.profile;
     if (profileFile == null) {
       findings.add(
@@ -374,11 +401,13 @@ class Signer {
     final pre = _preflight(output);
     findings.add(pre.profileCheck());
     final profile = pre.profile;
-    final key = await _key(findings);
-    if (profile == null || key == null) {
+    final key = signed == null ? await _key(findings) : null;
+    if (profile == null || (signed == null && key == null)) {
       return null;
     }
-    final certificate = _certificate(findings, profile, key.public, now);
+    final certificate = key != null
+        ? _certificate(findings, profile, now, key: key.public)
+        : _certificate(findings, profile, now, signedIpa: signed);
     final entitlements = _entitlements(findings, profile);
     if (certificate == null || entitlements == null) {
       return null;
@@ -386,7 +415,7 @@ class Signer {
     return (
       profile: profile,
       profileBytes: profileFile.readAsBytesSync(),
-      keyFile: key.file,
+      keyFile: key?.file,
       certificate: certificate,
       entitlements: entitlements,
     );
@@ -502,44 +531,89 @@ class Signer {
     }
   }
 
-  /// The certificate of the profile whose public key is [key], checked: an Apple distribution certificate of the team,
-  /// not expired.
+  /// The certificate to check the signature against: the profile's certificate whose public key is [key], or the one
+  /// that signed [signedIpa], which must be one of the profile's. Either is checked: an Apple distribution certificate
+  /// of the team, not expired.
   Certificate? _certificate(
     List<Finding> findings,
     ProvisioningProfile profile,
-    RsaPublicKey key,
-    DateTime now,
-  ) {
+    DateTime now, {
+    RsaPublicKey? key,
+    File? signedIpa,
+  }) {
     void fail(String id, String what, String why, String next) => findings.add(
       Finding.fail(
         'certificate',
         WincodeException(ExitCode.failed, id, what, why: why, next: next),
       ),
     );
+    final whose = signedIpa == null
+        ? "the key's certificate"
+        : "the IPA's signing certificate";
     final remake =
         'make the App Store profile for $_bundleId again in the developer portal (Profiles) with the distribution '
         'certificate of this key, download it, and point profile in wincode.yaml at it';
     Certificate? found;
-    for (final der in profile.developerCertificates) {
+    if (signedIpa != null) {
+      ZipArchive? zip;
       try {
-        final c = readCertificate(der);
-        if (c.rsa == key) {
-          found = c;
-          break;
-        }
-      } on FormatException {
-        // A certificate that cannot be read is not the key's.
+        zip = ZipArchive.open(signedIpa);
+        found = signerCertificateOf(zip);
+      } on FormatException catch (e) {
+        fail(
+          'signature-invalid',
+          '${_name(signedIpa)} has no signing certificate to check: ${e.message}',
+          "sign --verify-only checks the IPA against the certificate in the signature of the app's executable.",
+          'sign the IPA again with wincode sign.',
+        );
+        return null;
+      } on FileSystemException catch (e) {
+        fail(
+          'signature-invalid',
+          '${_name(signedIpa)} cannot be read: ${e.osError?.message ?? e.message}',
+          'sign --verify-only reads the signed IPA.',
+          'check the file and its permissions.',
+        );
+        return null;
+      } finally {
+        zip?.close();
       }
-    }
-    if (found == null) {
-      fail(
-        'certificate-not-in-profile',
-        'the distribution key of $_keySource matches no certificate in the profile',
-        'zsign signs with the certificate of the key, and Apple refuses a build whose certificate the profile does '
-            'not list.',
-        '$remake; or use the key of a certificate that the profile lists.',
-      );
-      return null;
+      // A certificate is plist data in the profile, so plistEquals compares it byte for byte.
+      final signer = found;
+      if (!profile.developerCertificates.any(
+        (der) => plistEquals(der, signer.der),
+      )) {
+        fail(
+          'certificate-not-in-profile',
+          'the IPA is signed with a certificate that the profile does not list',
+          'Apple refuses a build whose certificate the profile does not list.',
+          'sign the IPA again with wincode sign, with the profile in wincode.yaml; or point profile in wincode.yaml at '
+              'the profile it was signed with.',
+        );
+        return null;
+      }
+    } else {
+      for (final der in profile.developerCertificates) {
+        try {
+          final c = readCertificate(der);
+          if (c.rsa == key) {
+            found = c;
+            break;
+          }
+        } on FormatException {
+          // A certificate that cannot be read is not the key's.
+        }
+      }
+      if (found == null) {
+        fail(
+          'certificate-not-in-profile',
+          'the distribution key of $_keySource matches no certificate in the profile',
+          'zsign signs with the certificate of the key, and Apple refuses a build whose certificate the profile does '
+              'not list.',
+          '$remake; or use the key of a certificate that the profile lists.',
+        );
+        return null;
+      }
     }
     final name = found.commonName ?? '';
     final kind = name.split(':').first;
@@ -547,7 +621,7 @@ class Signer {
         !name.startsWith('iPhone Distribution:')) {
       fail(
         'certificate-not-distribution',
-        'the certificate of the key is not a distribution certificate ($kind)',
+        '$whose is not a distribution certificate ($kind)',
         'App Store Connect accepts only builds signed with an Apple Distribution certificate.',
         'make an Apple Distribution certificate (Certificates, +) with this key, then $remake.',
       );
@@ -579,7 +653,7 @@ class Signer {
     findings.add(
       Finding.pass(
         'certificate',
-        "the key's certificate in the profile is an $kind certificate of team $_teamId, valid until $date",
+        '$whose in the profile is an $kind certificate of team $_teamId, valid until $date',
       ),
     );
     return found;
@@ -720,7 +794,7 @@ class Signer {
           check,
           problem(
             'certificate-not-in-asc',
-            "App Store Connect does not list the key's certificate",
+            'App Store Connect does not list the certificate',
             'it was revoked or belongs to another team, and Apple refuses a build signed with it.',
           ),
         );
@@ -731,7 +805,7 @@ class Signer {
           check,
           problem(
             'certificate-not-distribution',
-            "App Store Connect lists the key's certificate as $type, not as a distribution certificate",
+            'App Store Connect lists the certificate as $type, not as a distribution certificate',
             'App Store Connect accepts only builds signed with a distribution certificate.',
           ),
         );
@@ -744,15 +818,15 @@ class Signer {
           problem(
             'certificate-expired',
             expires == null
-                ? "App Store Connect gives no expiry date for the key's certificate"
-                : "App Store Connect says the key's certificate expired on ${expires.toIso8601String().substring(0, 10)}",
+                ? 'App Store Connect gives no expiry date for the certificate'
+                : 'App Store Connect says the certificate expired on ${expires.toIso8601String().substring(0, 10)}',
             'Apple refuses a build signed with an expired certificate.',
           ),
         );
       }
       return Finding.pass(
         check,
-        "App Store Connect lists the key's certificate as $type, valid until ${expires.toIso8601String().substring(0, 10)}",
+        'App Store Connect lists the certificate as $type, valid until ${expires.toIso8601String().substring(0, 10)}',
       );
     } on WincodeException catch (e) {
       return Finding.fail(check, e);
@@ -800,7 +874,7 @@ class Signer {
       final work = Directory(inTemp('zsign'))..createSync();
       final signed = File(inTemp(_signedName));
 
-      final keyPath = await wsl.translate(inputs.keyFile.absolute.path);
+      final keyPath = await wsl.translate(inputs.keyFile!.absolute.path);
       if (keyPath != null) {
         redactor.secret(keyPath, '<distribution key>');
       }
@@ -1001,7 +1075,7 @@ class Signer {
           Finding.pass(
             check,
             'every signature checks out: ${result.machOs} Mach-O files and ${result.bundles} bundles, signed for team '
-            '$_teamId with the certificate of the key and the profile in wincode.yaml',
+            '$_teamId with the certificate checked above and the profile in wincode.yaml',
           ),
       ];
     } on FormatException catch (e) {
@@ -1039,7 +1113,7 @@ class Signer {
 typedef _Identity = ({
   ProvisioningProfile profile,
   Uint8List profileBytes,
-  File keyFile,
+  File? keyFile,
   Certificate certificate,
   PlistMap entitlements,
 });

@@ -73,6 +73,8 @@ After the 8-byte header, a DER `ContentInfo` of type `signedData` (1.2.840.11354
 - `certificates` holds the signing certificate, its issuer and the root.
 - One `SignerInfo`: `sid` is the issuer and serial number of the signing certificate; `digestAlgorithm` is SHA-256 (2.16.840.1.101.3.4.2.1); `signedAttrs` hold `contentType` (`data`), `signingTime`, `messageDigest` (SHA-256 of the code directory of slot 0), Apple's `cdhashes` (1.2.840.113635.100.9.1: an OCTET STRING holding an XML property list `{cdhashes: [data, ...]}`, one entry per code directory in slot order, each the first 20 bytes of that code directory's hash with its own hash type) and Apple's second hash attribute (1.2.840.113635.100.9.2); `signature` is RSA PKCS #1 v1.5 with SHA-256 over the DER of `signedAttrs`, with its tag set to SET (0x31) as RFC 5652, section 5.4, says.
 
+The chosen certificate is the profile's certificate of the distribution key in `wincode sign`. `wincode sign --verify-only` has no key: it takes the certificate of `certificates` whose issuer and serial number are the `sid` of the app executable's signer (the first slice of a fat file), and requires it to be one of the profile's `DeveloperCertificates`, byte for byte.
+
 winCode checks: one signer; its issuer and serial number are those of the chosen certificate, which is in `certificates` byte for byte; `messageDigest` and `cdhashes` match the code directories; the RSA signature verifies with the chosen certificate's public key. It does not check 1.2.840.113635.100.9.2, the signing time or the chain to Apple's root: App Store Connect checks the chain when it processes the upload.
 
 ## `_CodeSignature/CodeResources`

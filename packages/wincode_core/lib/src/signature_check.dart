@@ -224,47 +224,13 @@ void _checkSlice(
 ) {
   void fail(String what) => check._fail('$name: $what');
   try {
-    final data = ByteData.sublistView(slice);
-    final magic = data.getUint32(0, Endian.little);
-    if (magic != 0xFEEDFACF && magic != 0xFEEDFACE) {
-      return fail('not a little-endian Mach-O file');
+    final ({Map<int, Uint8List> blobs, int codeEnd}) signature;
+    try {
+      signature = _signatureOf(slice);
+    } on _Unsigned catch (e) {
+      return fail(e.what);
     }
-    ({int offset, int size})? found;
-    var at = magic == 0xFEEDFACF ? 32 : 28;
-    for (var i = data.getUint32(16, Endian.little); i > 0; i--) {
-      final size = data.getUint32(at + 4, Endian.little);
-      if (size < 8) {
-        return fail('a load command is shorter than 8 bytes');
-      }
-      if (data.getUint32(at, Endian.little) == 0x1D) {
-        found = (
-          offset: data.getUint32(at + 8, Endian.little),
-          size: data.getUint32(at + 12, Endian.little),
-        );
-      }
-      at += size;
-    }
-    if (found == null) {
-      return fail('not signed');
-    }
-    final signature = Uint8List.sublistView(
-      slice,
-      found.offset,
-      found.offset + found.size,
-    );
-    final sig = ByteData.sublistView(signature);
-    if (sig.getUint32(0) != 0xFADE0CC0) {
-      return fail('the signature is not an embedded signature');
-    }
-    final blobs = <int, Uint8List>{};
-    for (var i = 0; i < sig.getUint32(8); i++) {
-      final offset = sig.getUint32(16 + 8 * i);
-      blobs[sig.getUint32(12 + 8 * i)] = Uint8List.sublistView(
-        signature,
-        offset,
-        offset + sig.getUint32(offset + 4),
-      );
-    }
+    final blobs = signature.blobs;
     final directories = [
       for (final slot in [0, 0x1000, 0x1001, 0x1002, 0x1003, 0x1004])
         ?blobs[slot],
@@ -288,7 +254,7 @@ void _checkSlice(
         fail,
         directory,
         slice,
-        codeEnd: found.offset,
+        codeEnd: signature.codeEnd,
         expect: expect,
         specials: specials,
       );
@@ -310,6 +276,131 @@ void _checkSlice(
     fail('the signature is cut short');
   } on FormatException catch (e) {
     fail('the signature cannot be read: ${e.message}');
+  }
+}
+
+/// Why a slice has no signature to read.
+class _Unsigned implements Exception {
+  _Unsigned(this.what);
+  final String what;
+}
+
+/// The blobs of the embedded signature of [slice] by slot, and where its code ends (the signature's offset). Throws
+/// [_Unsigned] when it has none, and [RangeError] when it is cut short.
+({Map<int, Uint8List> blobs, int codeEnd}) _signatureOf(Uint8List slice) {
+  final data = ByteData.sublistView(slice);
+  final magic = data.getUint32(0, Endian.little);
+  if (magic != 0xFEEDFACF && magic != 0xFEEDFACE) {
+    throw _Unsigned('not a little-endian Mach-O file');
+  }
+  ({int offset, int size})? found;
+  var at = magic == 0xFEEDFACF ? 32 : 28;
+  for (var i = data.getUint32(16, Endian.little); i > 0; i--) {
+    final size = data.getUint32(at + 4, Endian.little);
+    if (size < 8) {
+      throw _Unsigned('a load command is shorter than 8 bytes');
+    }
+    if (data.getUint32(at, Endian.little) == 0x1D) {
+      found = (
+        offset: data.getUint32(at + 8, Endian.little),
+        size: data.getUint32(at + 12, Endian.little),
+      );
+    }
+    at += size;
+  }
+  if (found == null) {
+    throw _Unsigned('not signed');
+  }
+  final signature = Uint8List.sublistView(
+    slice,
+    found.offset,
+    found.offset + found.size,
+  );
+  final sig = ByteData.sublistView(signature);
+  if (sig.getUint32(0) != 0xFADE0CC0) {
+    throw _Unsigned('the signature is not an embedded signature');
+  }
+  final blobs = <int, Uint8List>{};
+  for (var i = 0; i < sig.getUint32(8); i++) {
+    final offset = sig.getUint32(16 + 8 * i);
+    blobs[sig.getUint32(12 + 8 * i)] = Uint8List.sublistView(
+      signature,
+      offset,
+      offset + sig.getUint32(offset + 4),
+    );
+  }
+  return (blobs: blobs, codeEnd: found.offset);
+}
+
+/// The certificate that signed the app's executable in the IPA in [zip] (its first slice, in a fat file): the one of
+/// the CMS signature's `certificates` whose issuer and serial number its single signer names
+/// (`docs/formats/code-signature-verification.md`). It is not checked against anything here. Throws a
+/// [FormatException] that says why when there is none.
+Certificate signerCertificateOf(ZipArchive zip) {
+  final apps = [
+    for (final n in zip.names)
+      if (RegExp(r'^Payload/[^/]+\.app/Info\.plist$').hasMatch(n))
+        n.substring(0, n.length - 'Info.plist'.length),
+  ];
+  if (apps.length != 1) {
+    throw const FormatException('the IPA holds no single Payload/<name>.app');
+  }
+  final executable = switch (_plistOf(zip, '${apps.single}Info.plist')) {
+    {'CFBundleExecutable': final String name} => '${apps.single}$name',
+    _ => null,
+  };
+  if (executable == null || !zip.names.contains(executable)) {
+    throw const FormatException("the app's executable is missing");
+  }
+  try {
+    var slice = zip.read(executable);
+    final head = ByteData.sublistView(slice);
+    if (head.getUint32(0) == 0xCAFEBABE) {
+      final offset = head.getUint32(16);
+      slice = Uint8List.sublistView(slice, offset, offset + head.getUint32(20));
+    }
+    final cms = _signatureOf(slice).blobs[0x10000];
+    if (cms == null ||
+        cms.length <= 8 ||
+        ByteData.sublistView(cms).getUint32(0) != 0xFADE0B01) {
+      throw const FormatException("the app's executable has no CMS signature");
+    }
+    final info = Der.whole(Uint8List.sublistView(cms, 8)).items();
+    if (info[0].oid != _oidSignedData || info[1].tag != 0xA0) {
+      throw const FormatException('the CMS signature is not signed data');
+    }
+    final signed = info[1].children.single.items();
+    final signers = signed.last.items(set: true);
+    if (signers.length != 1) {
+      throw FormatException('the CMS signature has ${signers.length} signers');
+    }
+    final sid = signers.single.items()[1];
+    if (sid.tag != 0x30) {
+      throw const FormatException(
+        'the CMS signer is not named by issuer and serial number',
+      );
+    }
+    final certificates = signed.where((e) => e.tag == 0xA0).firstOrNull;
+    for (final c in certificates?.children ?? const <Der>[]) {
+      try {
+        final certificate = readCertificate(c.encoded);
+        if (_sameBytes(sid.items()[0].encoded, certificate.issuer) &&
+            sid.items()[1].integer == certificate.serial) {
+          return certificate;
+        }
+      } on FormatException {
+        // Another certificate of the chain, which need not be one winCode reads.
+      }
+    }
+    throw const FormatException(
+      "the CMS signature does not carry its signer's certificate",
+    );
+  } on _Unsigned catch (e) {
+    throw FormatException("the app's executable: ${e.what}");
+  } on RangeError {
+    throw const FormatException(
+      "the app's executable's signature is cut short",
+    );
   }
 }
 

@@ -513,11 +513,31 @@ void main() {
         );
       }
 
-      // The result passes --verify-only, which needs no WSL2.
+      // The result passes --verify-only, which needs no WSL2 and no private key: the certificate comes from the
+      // signature.
       final before = wsl.commands.length;
-      final (verified, verifyOut, _) = await wincode(['sign', '--verify-only']);
+      environment.remove('WINCODE_DIST_KEY');
+      distKey.deleteSync();
+      final (verified, verifyOut, _) = await wincode([
+        'sign',
+        '--verify-only',
+        '--offline',
+      ]);
       expect(verified, 0, reason: verifyOut);
       expect(wsl.commands.length, before);
+      expect(verifyOut, isNot(contains('distribution key')));
+      expect(
+        verifyOut,
+        contains(
+          "PASS  the IPA's signing certificate in the profile is an Apple Distribution certificate of team $_team",
+        ),
+      );
+      expect(
+        verifyOut,
+        contains(
+          'WARN  App Store Connect was not asked whether the certificate is still valid (--offline)',
+        ),
+      );
     });
 
     test('the report under --redact is test/goldens/sign.txt (UPDATE_GOLDENS=1 rewrites it)', () async {
@@ -705,6 +725,37 @@ void main() {
         expect(await fails(78), 'dist-key-unreachable');
       });
 
+      test('a key on the WSL2 disk, refused before anything reads it, with where it belongs', () async {
+        for (final path in [
+          r'\\wsl.localhost\Ubuntu-24.04\home\me\.keys\dist.key',
+          r'\\WSL$\Ubuntu\home\me\dist.key',
+        ]) {
+          environment['WINCODE_DIST_KEY'] = path;
+          final (code, out, err) = await wincode([
+            'sign',
+            '--offline',
+            '--json',
+          ]);
+          expect(code, 78, reason: err);
+          final error =
+              (jsonDecode(out) as Map<String, Object?>)['error']!
+                  as Map<String, Object?>;
+          expect(error['id'], 'dist-key-unreachable');
+          expect(
+            error['what'],
+            'WINCODE_DIST_KEY puts the distribution key inside WSL2',
+          );
+          expect(error['why'], contains('ADR-0014'));
+          expect(error['why'], contains('snapshots'));
+          expect(error['next'], contains(r'%USERPROFILE%\.wincode\dist.key'));
+          expect(error['next'], contains('wincode doctor --sign'));
+          expect('$out$err', isNot(contains(r'home\me')));
+          // Refused from the path alone: nothing ran in WSL2, and zsign did not start.
+          expect(started, isEmpty);
+          expect(wsl.commands, isEmpty);
+        }
+      });
+
       test('no zsign, an unrecorded one, a changed one, no WSL2', () async {
         wsl.zsignVersion = null;
         expect(await fails(69), 'zsign-missing');
@@ -741,8 +792,9 @@ void main() {
         tearDown(() async => apple?.close());
 
         Future<(int, String)> signAgainst(
-          List<Map<String, Object?>> certificates,
-        ) async {
+          List<Map<String, Object?>> certificates, {
+          List<String> args = const ['sign', '--json'],
+        }) async {
           final server = apple = await FakeAppStoreConnect.start(
             (request) => request.path == '/v1/certificates'
                 ? FakeAnswer.page(certificates)
@@ -751,7 +803,7 @@ void main() {
             now: () => _now,
           );
           final (code, out, _) = await wincode(
-            ['sign', '--json'],
+            args,
             connect: (token, log) =>
                 HttpAscClient(api: server.uri, token: token, log: log),
           );
@@ -808,6 +860,20 @@ void main() {
             expect(started, isEmpty);
           });
         }
+
+        test('--verify-only asks about the certificate that signed the IPA, without the key', () async {
+          expect((await wincode(['sign', '--offline'])).$1, 0);
+          environment.remove('WINCODE_DIST_KEY');
+          const verify = ['sign', '--verify-only', '--json'];
+          final (code, out) = await signAgainst([
+            listed('DISTRIBUTION', _expires),
+          ], args: verify);
+          expect(code, 0, reason: out);
+          await apple?.close();
+          final (notListed, json) = await signAgainst([], args: verify);
+          expect(notListed, 1);
+          expect(errorId(json), 'certificate-not-in-asc');
+        });
       },
     );
 
@@ -871,6 +937,47 @@ void main() {
       test('without --app, sign does not choose', () async {
         expect((await wincode(['sign', '--offline'])).$1, 64);
       });
+
+      test('a key on the WSL2 disk gets the folder of its own reference as where it belongs', () async {
+        Future<Map<String, Object?>> error() async {
+          final (code, out, _) = await wincode([
+            'sign',
+            '--app',
+            'alpha',
+            '--offline',
+            '--json',
+          ]);
+          expect(code, 78);
+          return (jsonDecode(out) as Map<String, Object?>)['error']!
+              as Map<String, Object?>;
+        }
+
+        environment['WINCODE_DIST_KEY_TEAM_ONE'] =
+            r'\\wsl.localhost\Ubuntu-24.04\home\me\dist.key';
+        var e = await error();
+        expect(e['id'], 'dist-key-unreachable');
+        expect(
+          e['what'],
+          'WINCODE_DIST_KEY_TEAM_ONE puts the distribution key inside WSL2',
+        );
+        expect(
+          e['next'],
+          startsWith(
+            r'move the key to %WINCODE_KEYS_DIR%\team-one\dist.key and unset WINCODE_DIST_KEY_TEAM_ONE.',
+          ),
+        );
+        environment
+          ..remove('WINCODE_DIST_KEY_TEAM_ONE')
+          ..['WINCODE_KEYS_DIR'] = r'\\wsl$\Ubuntu-24.04\home\me\keys';
+        e = await error();
+        expect(
+          e['what'],
+          'WINCODE_KEYS_DIR puts the distribution key inside WSL2',
+        );
+        expect(e['next'], contains(r'%USERPROFILE%\.wincode\keys'));
+        expect(e['next'], contains(r'team-one\dist.key'));
+        expect(started, isEmpty);
+      });
     });
 
     test('--verify-only finds a changed IPA and says why', () async {
@@ -880,9 +987,29 @@ void main() {
           signed: false,
         );
       signed().writeAsBytesSync(zipOf(files));
-      final (code, out, _) = await wincode(['sign', '--verify-only', '--json']);
+      final (code, out, _) = await wincode([
+        'sign',
+        '--verify-only',
+        '--offline',
+        '--json',
+      ]);
       expect(code, 1);
       expect(errorId(out), 'signature-invalid');
+    });
+
+    test('--verify-only refuses an IPA signed with a certificate that the profile does not list', () async {
+      expect((await wincode(['sign', '--offline'])).$1, 0);
+      profile.writeAsBytesSync(
+        _profile([testCertificate(TestRsaKey(), notAfter: _expires)]),
+      );
+      final (code, out, _) = await wincode([
+        'sign',
+        '--verify-only',
+        '--offline',
+        '--json',
+      ]);
+      expect(code, 1);
+      expect(errorId(out), 'certificate-not-in-profile');
     });
   });
 
@@ -972,6 +1099,18 @@ void main() {
           'FAIL  the distribution key of WINCODE_DIST_KEY lies where WSL2 cannot read it',
         ),
       );
+      environment['WINCODE_DIST_KEY'] =
+          r'\\wsl.localhost\Ubuntu-24.04\home\me\dist.key';
+      final (code, out) = await doctor();
+      expect(code, 78);
+      expect(
+        out,
+        contains(
+          'FAIL  WINCODE_DIST_KEY puts the distribution key inside WSL2',
+        ),
+      );
+      expect(out, contains(r'%USERPROFILE%\.wincode\dist.key'));
+      expect(out, isNot(contains(r'home\me')));
       environment.remove('WINCODE_DIST_KEY');
       expect(
         (await doctor()).$2,

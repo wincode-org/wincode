@@ -77,7 +77,12 @@ export 'src/runner.dart'
         writeRunnerPackage;
 export 'src/sdk_stubs.dart' show Hidden, LibraryStub, Previous, readLibraryStub;
 export 'src/signature_check.dart'
-    show SignatureCheck, checkSignedIpa, nestedCodeOf, plistEquals;
+    show
+        SignatureCheck,
+        checkSignedIpa,
+        nestedCodeOf,
+        plistEquals,
+        signerCertificateOf;
 export 'src/swift_build.dart'
     show SwiftBuild, buildSwiftPackage, swiftBuildCommand;
 export 'src/wsl.dart' show toWslPath, wslRunner;

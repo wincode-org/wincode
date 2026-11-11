@@ -117,13 +117,14 @@ jobs:
           mkdir -p "$w/fixture/build"
           "$RUNNER_TEMP/zsign/zsign-$ZSIGN_COMMIT/bin/zsign" -k "$w/leaf.p12" -m "$w/fixture/profile.mobileprovision" \
             -e "$w/fixture/entitlements.plist" -z 9 -o "$w/fixture/build/signed.ipa" "$w/fixture/unsigned.ipa"
-          export WINCODE_DIST_KEY="$w/dist.key"
-          dart run bin/wincode.dart sign --verify-only --config "$w/fixture/wincode.yaml"
+          # --verify-only reads no private key, and --offline keeps it from asking App Store Connect.
+          rm "$w/dist.key"
+          dart run bin/wincode.dart sign --verify-only --offline --config "$w/fixture/wincode.yaml"
           # A file changed after signing must fail the check.
           mkdir -p "$w/changed/Payload/Example.app/assets"
           echo changed > "$w/changed/Payload/Example.app/assets/hello.txt"
           (cd "$w/changed" && zip -q "$w/fixture/build/signed.ipa" Payload/Example.app/assets/hello.txt)
-          if dart run bin/wincode.dart sign --verify-only --config "$w/fixture/wincode.yaml"; then
+          if dart run bin/wincode.dart sign --verify-only --offline --config "$w/fixture/wincode.yaml"; then
             echo "a changed IPA passed the check"
             exit 1
           fi
