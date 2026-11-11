@@ -1,0 +1,48 @@
+# before: wincode.yaml
+# My project
+bundle_id: com.example.alpha   # the app that shipped
+team_id: TEAM000001
+
+profile: signing/alpha.mobileprovision
+output: out/alpha
+# wincode init --app alpha --bundle-id com.example.alpha --credentials team-one --flavor alpha --yes --redact
+note: ios/Runner.xcodeproj/project.pbxproj was not found, so nothing was read from the Xcode project.
+Moving wincode.yaml under apps: as the app that it describes. Changes init would make (- is in the file, + is what init found):
+- # My project
+- bundle_id: <bundle ID 1>   # the app that shipped
+- team_id: <team ID 1>
++ # wincode.yaml: 1 app, no secrets. Paths are relative to this file.
++ # Written by wincode init. Each app names a credentials reference: its keys are read from the folder of that name
++ # of your keys folder (ADR-0014), never from this file.
+- profile: <profile of app-1>
+- output: <output of app-1>
++ apps:
++   app-1:
++     bundle_id: <bundle ID 1>
++     team_id: <team ID 1>
++     profile: <profile of app-1>
++     output: <output of app-1>
++     flavor: app-1
++     credentials: credentials-1
+Kept the original as wincode.yaml.bak.
+Wrote wincode.yaml.
+
+Next:
+  1. Put AuthKey_<Key ID>.p8, as App Store Connect delivered it, and a file issuer-id with the Issuer ID in the folder credentials-1 of your keys folder (%USERPROFILE%\.wincode\keys, or the folder that WINCODE_KEYS_DIR names). init never stores them.
+  2. wincode preflight --app app-1 --dry-run
+  3. wincode preflight --app app-1    (checks signed.ipa in the output folder; name another IPA as the last argument)
+# after: wincode.yaml
+# wincode.yaml: 1 app, no secrets. Paths are relative to this file.
+# Written by wincode init. Each app names a credentials reference: its keys are read from the folder of that name
+# of your keys folder (ADR-0014), never from this file.
+
+apps:
+  alpha:
+    bundle_id: com.example.alpha
+    team_id: TEAM000001
+    profile: signing/alpha.mobileprovision
+    output: out/alpha
+    flavor: alpha
+    credentials: team-one
+# after: wincode.yaml.bak is the file before, byte for byte
+true

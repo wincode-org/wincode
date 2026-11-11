@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:wincode_core/wincode_core.dart';
 import 'package:yaml/yaml.dart';
+import 'package:yaml_edit/yaml_edit.dart';
 
 import 'config.dart';
 import 'failure.dart';
@@ -92,6 +93,7 @@ class Initializer {
     required this.interactive,
     required this.clock,
     this.run = runProcess,
+    this.writeFile = _writeText,
   });
 
   final InitOptions options;
@@ -104,6 +106,9 @@ class Initializer {
   final bool interactive;
   final DateTime Function() clock;
   final RunProcess run;
+
+  /// Writes the text of `wincode.yaml`. Tests replace it to see that a file that does not load is rolled back.
+  final void Function(File file, String text) writeFile;
 
   /// The options that a non-interactive run needs and did not get, with what was found for them.
   final _missing = <String>[];
@@ -118,6 +123,10 @@ class Initializer {
   /// so that the placeholders of the IDs are those the loader gives (ADR-0014, section 4).
   var _appIndex = 1;
   var _teams = const <String>[];
+
+  /// Whether the file that was there began with a byte order mark and used CRLF, so that a write keeps both.
+  var _bom = false;
+  var _crlf = false;
 
   /// Runs the command, and returns the object for `--json`.
   Future<Map<String, Object?>> execute() async {
@@ -157,16 +166,29 @@ class Initializer {
       }
     }
     // The file as it is. For an app it must be valid, and it decides what --app means.
-    final existingText = target.existsSync()
-        ? target.readAsStringSync().replaceAll('\r\n', '\n')
-        : null;
+    // Dart's reader drops a byte order mark, so it is looked for in the bytes. Both it and CRLF are put back on a write.
+    final bytes = target.existsSync() ? target.readAsBytesSync() : null;
+    _bom =
+        bytes != null &&
+        bytes.length >= 3 &&
+        bytes[0] == 0xEF &&
+        bytes[1] == 0xBB &&
+        bytes[2] == 0xBF;
+    final decoded = bytes == null ? null : utf8.decode(bytes);
+    final onDisk = decoded != null && decoded.startsWith('\uFEFF')
+        ? decoded.substring(1)
+        : decoded;
+    _crlf = onDisk?.contains('\r\n') ?? false;
+    final existingText = onDisk?.replaceAll('\r\n', '\n');
     WincodeSettings? existing;
     if (existingText != null) {
       if (app != null) {
+        // A flat file is about to become the one app of a file of apps, whose placeholders are numbered: it registers
+        // nothing itself, so that the new text gives them first.
         existing = parseSettings(
           existingText,
           path: target.path,
-          redactor: redactor,
+          redactor: _hasApps(existingText) ? redactor : null,
         );
       } else if (_hasApps(existingText)) {
         throw appRequired(target.path, [
@@ -179,22 +201,39 @@ class Initializer {
         ], readOnly: false);
       }
     }
-    if (app != null && existing != null && existing.isFlat) {
-      throw WincodeException(
-        ExitCode.usage,
-        'not-implemented',
-        '$name describes one app without a name, and moving it under apps: is not implemented yet, see ADR-0014 (pull request 4)',
-        why: 'init --app on a flat wincode.yaml proposes a migration to apps:, which a later change adds.',
-        next: 'leave --app out to keep working on the flat file.',
-      );
+    // init --app on a flat file moves the file under apps: with its values unchanged (ADR-0014, section 5).
+    final migrating = app != null && existing != null && existing.isFlat;
+    if (migrating) {
+      for (final (option, value) in [
+        ('team-id', options.teamId),
+        ('profile', options.profile),
+        ('profile-dir', options.profileDir),
+        ('entitlements', options.entitlements),
+        ('workflow-ref', options.workflowRef),
+        ('output', options.output),
+      ]) {
+        if (value != null) {
+          throw WincodeException(
+            ExitCode.usage,
+            'init-value-invalid',
+            '--$option: init --app moves the values of the flat $name under apps: unchanged',
+            why: 'a migration changes the shape of the file and nothing else, so that what it shows is easy to check.',
+            next:
+                'leave --$option out, then change the value with wincode init --app $app --$option <value> --force once the file has an apps: map.',
+          );
+        }
+      }
     }
     final entry = app == null ? null : existing?.app(app);
-    _appIndex = entry != null
+    _appIndex = migrating
+        ? 1
+        : entry != null
         ? existing!.apps.indexOf(entry) + 1
         : (existing?.apps.length ?? 0) + 1;
-    _teams = {
-      for (final a in existing?.apps ?? const <WincodeConfig>[]) a.teamId,
-    }.toList();
+    _teams = migrating
+        ? const []
+        : {for (final a in existing?.apps ?? const <WincodeConfig>[]) a.teamId}
+              .toList();
     // An existing file is never replaced without --force. Nothing is asked: the summary shows what init found. A file of
     // apps is changed instead, after a diff and a confirmation.
     final preview = app == null && target.existsSync() && !options.force;
@@ -285,6 +324,19 @@ class Initializer {
     );
     if (bundleId != null) {
       _hideId(bundleId, 'bundle ID');
+    }
+    if (migrating) {
+      return _migrate(
+        target: target,
+        name: name,
+        app: app,
+        flat: existing.apps.single,
+        existingText: existingText!,
+        bundleId: bundleId,
+        flavor: flavor,
+        configuration: configuration,
+        workflowTarget: File('${root.path}/.github/workflows/wincode-ios.yml'),
+      );
     }
 
     final profile = await _profile(bundleId, preview: preview);
@@ -385,18 +437,7 @@ class Initializer {
       }
     }
 
-    if (_missing.isNotEmpty) {
-      throw WincodeException(
-        ExitCode.usage,
-        'init-input-missing',
-        'init cannot ask here, and ${_missing.length == 1 ? 'one value is' : '${_missing.length} values are'} not '
-            'settled. ${_missing.join('. ')}.',
-        why:
-            'init asks questions only at a terminal, and not in CI, with --yes or with --json; there it takes every '
-            'field from the options, and what it detected only with --yes.',
-        next: 'give the missing options, add --yes to accept what init found, or run wincode init in a terminal.',
-      );
-    }
+    _failIfMissing();
 
     final yamlFolder = target.parent.path;
     String? inYaml(String? path) => path == null
@@ -503,8 +544,7 @@ class Initializer {
         );
       }
     } else {
-      target.parent.createSync(recursive: true);
-      target.writeAsStringSync(text);
+      _commit(target, text);
       report.writeln('Wrote $name.');
       if (options.copyWorkflow) {
         workflowTarget.parent.createSync(recursive: true);
@@ -559,6 +599,7 @@ class Initializer {
     required bool written,
     required String? workflow,
     required Map<String, String> values,
+    String? backup,
   }) => {
     'command': 'init',
     'app': options.app,
@@ -566,6 +607,7 @@ class Initializer {
     'exitCode': ExitCode.ok.code,
     'dryRun': options.dryRun,
     'written': written,
+    'backup': ?backup,
     'config': values,
     'configuration': ?_readConfiguration,
     'warnings': ?(_warnings.isEmpty ? null : _warnings),
@@ -616,12 +658,81 @@ class Initializer {
 
   // A file of apps (ADR-0014, section 5).
 
+  /// Throws when a run that cannot ask has values that are not settled, listing each with where it was found.
+  void _failIfMissing() {
+    if (_missing.isEmpty) {
+      return;
+    }
+    throw WincodeException(
+      ExitCode.usage,
+      'init-input-missing',
+      'init cannot ask here, and ${_missing.length == 1 ? 'one value is' : '${_missing.length} values are'} not '
+          'settled. ${_missing.join('. ')}.',
+      why:
+          'init asks questions only at a terminal, and not in CI, with --yes or with --json; there it takes every '
+          'field from the options, and what it detected only with --yes.',
+      next: 'give the missing options, add --yes to accept what init found, or run wincode init in a terminal.',
+    );
+  }
+
+  /// Writes [text] as the new `wincode.yaml` (and the original to [backup]), loads the file again with the normal
+  /// loader, and puts everything back if that fails: init never leaves a file that does not load (ADR-0014, section 5).
+  void _commit(File target, String text, {File? backup}) {
+    final previous = target.existsSync() ? target.readAsBytesSync() : null;
+    final previousBackup = backup != null && backup.existsSync()
+        ? backup.readAsBytesSync()
+        : null;
+    void restore() {
+      if (previous == null) {
+        if (target.existsSync()) {
+          target.deleteSync();
+        }
+      } else {
+        target.writeAsBytesSync(previous);
+      }
+      if (backup != null) {
+        if (previousBackup != null) {
+          backup.writeAsBytesSync(previousBackup);
+        } else if (backup.existsSync()) {
+          backup.deleteSync();
+        }
+      }
+    }
+
+    final name = target.uri.pathSegments.last;
+    final onDisk =
+        '${_bom ? '\uFEFF' : ''}${_crlf ? text.replaceAll('\n', '\r\n') : text}';
+    try {
+      target.parent.createSync(recursive: true);
+      if (backup != null && previous != null) {
+        backup.writeAsBytesSync(previous);
+      }
+      writeFile(target, onDisk);
+      loadSettings(target.path);
+    } on Object catch (e) {
+      Object? restoreError;
+      try {
+        restore();
+      } on Object catch (r) {
+        restoreError = r;
+      }
+      throw WincodeException(
+        ExitCode.internal,
+        'init-wrote-invalid',
+        'init wrote a $name that does not load: ${e is WincodeException ? e.what : e}',
+        why:
+            'this is a bug in winCode: init checks the text before it writes it. '
+            '${restoreError == null ? 'The previous file was restored${backup == null ? '' : ', and the backup undone'}.' : 'The previous file could not be restored, so check it by hand.'}',
+        next: 'report it at https://github.com/wincode-org/wincode/issues with the command line and this message.',
+      );
+    }
+  }
+
   /// Adds the app [app] to the file of apps at [target], or updates its entry, with the [values] that init found: only a
-  /// value that the entry does not inherit from `defaults` goes into it. An existing file is changed after a diff and a
-  /// confirmation (`--yes` where init cannot ask), and a value that the entry already has is replaced only with `--force`.
-  ///
-  /// This is the interim writer of pull request 3: the file is rendered again, so comments written by hand are lost (the
-  /// diff shows them going). Pull request 4 edits in place instead.
+  /// value that the entry does not inherit from `defaults` goes into it. An existing file is edited in place, so its
+  /// comments, blank lines and key order stay, and only the entry changes. It is changed after a diff and a confirmation
+  /// (`--yes` where init cannot ask), and a value that the entry already has is replaced only with `--force`. A file
+  /// that does not exist is written with the one app.
   Future<Map<String, Object?>> _writeApps({
     required File target,
     required String name,
@@ -632,31 +743,26 @@ class Initializer {
     required ({File file, ProvisioningProfile profile})? profile,
     required Map<String, String> values,
   }) async {
-    final raw = existingText == null
-        ? (
-            defaults: <String, Object?>{},
-            apps: <(String, Map<String, Object?>)>[],
-          )
-        : _rawApps(existingText);
-    final index = raw.apps.indexWhere((a) => a.$1 == app);
-    final entry = index < 0 ? <String, Object?>{} : raw.apps[index].$2;
+    final raw = existingText == null ? null : _rawApps(existingText);
+    final index = raw == null ? -1 : raw.apps.indexWhere((a) => a.$1 == app);
+    final entry = index < 0 ? const <String, Object?>{} : raw!.apps[index].$2;
     final replaced = <String>[];
+    final changes = <String, String>{};
     for (final MapEntry(:key, :value) in values.entries) {
       final current = entry[key];
-      if (current != null && current != value) {
-        replaced.add(key);
-      }
-      if (current == null && raw.defaults[key] == value && key != 'bundle_id') {
+      if (current == value) {
         continue;
       }
-      entry[key] = value;
+      if (current != null) {
+        replaced.add(key);
+      } else if (raw?.defaults[key] == value && key != 'bundle_id') {
+        continue;
+      }
+      changes[key] = value;
     }
-    final apps = [
-      for (final a in raw.apps)
-        if (a.$1 != app) a else (app, entry),
-      if (index < 0) (app, entry),
-    ];
-    final text = renderApps(raw.defaults, apps);
+    final text = existingText == null
+        ? renderApps({}, [(app, changes)])
+        : _edit(existingText, name, app, isNew: index < 0, changes: changes);
     final unchanged = existingText != null && text == existingText;
     if (existingText != null) {
       report.writeln(
@@ -689,6 +795,210 @@ class Initializer {
         ..write(text)
         ..writeln('---');
     }
+    _requireFreeWorkflow(workflowTarget);
+    if (!unchanged &&
+        !options.dryRun &&
+        !_goAhead(name, existing: existingText != null)) {
+      return _jsonOfApp(
+        written: false,
+        workflow: null,
+        values: _valuesOfApp(values, profile),
+      );
+    }
+    final wrote = !options.dryRun && !unchanged;
+    if (options.dryRun) {
+      report.writeln('Dry run: nothing was written.');
+    }
+    if (wrote) {
+      _commit(target, text);
+      report.writeln('Wrote $name.');
+    }
+    final workflow = _workflowStep(workflowTarget);
+    _nextSteps(target, credentials: values['credentials']);
+    return _jsonOfApp(
+      written: wrote,
+      workflow: workflow,
+      values: _valuesOfApp(values, profile),
+    );
+  }
+
+  /// [text] with the [changes] made to the entry of [app] by `yaml_edit`, which keeps the comments, the blank lines and
+  /// the order of everything else.
+  String _edit(
+    String text,
+    String name,
+    String app, {
+    required bool isNew,
+    required Map<String, String> changes,
+  }) {
+    if (changes.isEmpty) {
+      return text;
+    }
+    YamlNode node(String v) => YamlScalar.wrap(
+      v,
+      style: _scalar(v) == v ? ScalarStyle.PLAIN : ScalarStyle.SINGLE_QUOTED,
+    );
+    try {
+      final editor = YamlEditor(text);
+      if (isNew) {
+        editor.update(
+          ['apps', app],
+          wrapAsYamlNode({
+            for (final c in changes.entries) c.key: node(c.value),
+          }),
+        );
+      } else {
+        for (final MapEntry(:key, :value) in changes.entries) {
+          editor.update(['apps', app, key], node(value));
+        }
+      }
+      return editor.toString();
+    } on Object catch (e) {
+      throw WincodeException(
+        ExitCode.failed,
+        'init-edit-failed',
+        'init cannot edit $name safely: $e',
+        why: 'the layout of the file is one that the editor cannot change without risking the rest of it.',
+        next: 'add the entry by hand, or simplify the layout (block maps, no anchors) and run wincode init again.',
+      );
+    }
+  }
+
+  /// Moves the flat `wincode.yaml` under `apps:` as the app [app] (ADR-0014, section 5), with its values unchanged and
+  /// the original kept as `wincode.yaml.bak`. Never silent: the diff comes first, and a yes (`--yes` where init cannot
+  /// ask). The file is rendered again here, because its shape changes; the backup keeps its comments.
+  Future<Map<String, Object?>> _migrate({
+    required File target,
+    required String name,
+    required String app,
+    required WincodeConfig flat,
+    required String existingText,
+    required String? bundleId,
+    required String? flavor,
+    required String? configuration,
+    required File workflowTarget,
+  }) async {
+    if (bundleId != null &&
+        bundleId.toLowerCase() != flat.bundleId.toLowerCase()) {
+      throw WincodeException(
+        ExitCode.failed,
+        'config-is-another-app',
+        '$name describes another app',
+        why:
+            'init --app moves the flat $name under apps: only for the app that the file describes. One change per run, '
+            'and no app is named after a guess.',
+        next:
+            'name the app of the file first: wincode init --app <its name> --flavor <its flavor>, then add $app with a '
+            'second run.',
+      );
+    }
+    final credentials = await _choose(
+      label: 'Credentials',
+      key: 'credentials',
+      flagName: 'credentials',
+      flag: options.credentials,
+      candidates: [
+        if (flat.credentials case final c?)
+          (value: c, display: c, name: c, source: 'the app in $name'),
+      ],
+      preview: false,
+      validate: (v) => nameProblem(v) == null ? null : 'it is not a name: 3 to 32 lower-case letters, digits and hyphens, not an ordinary word',
+    );
+    _failIfMissing();
+    final recordConfiguration =
+        configuration != null && configuration != _defaultConfiguration(flavor)
+        ? configuration
+        : null;
+    final entry = _plain(loadYaml(existingText) as YamlMap);
+    if (flavor != null) {
+      entry['flavor'] = flavor;
+    }
+    if (recordConfiguration != null) {
+      entry['configuration'] = recordConfiguration;
+    }
+    if (credentials != null) {
+      entry['credentials'] = credentials;
+    }
+    entry.putIfAbsent('output', () => 'build/wincode');
+    final text = renderApps({}, [(app, entry)]);
+    // The same checks that every other command makes, before anything is written; they register the names and paths.
+    parseSettings(text, path: target.path, redactor: redactor);
+    report
+      ..writeln(
+        'Moving $name under apps: as the app that it describes. Changes init would make (- is in the file, + is what init '
+        'found):',
+      )
+      ..writeln(
+        diffLines(existingText.split('\n'), text.split('\n')).join('\n'),
+      );
+    final backup = File('${target.path}.bak');
+    final backupName = '$name.bak';
+    if (backup.existsSync() && !options.force) {
+      throw WincodeException(
+        ExitCode.failed,
+        'backup-exists',
+        '$backupName already exists',
+        why:
+            'init keeps the original of a flat $name as $backupName, and never replaces an earlier backup unasked.',
+        next:
+            'move or delete $backupName, or run the command again with --force to replace it.',
+      );
+    }
+    _requireFreeWorkflow(workflowTarget);
+    final values = {
+      'bundle_id': flat.bundleId,
+      'team_id': flat.teamId,
+      'flavor': ?flavor,
+      'configuration': ?recordConfiguration,
+      'credentials': ?credentials,
+    };
+    if (!options.dryRun && !_goAhead(name, existing: true, migration: true)) {
+      return _jsonOfApp(written: false, workflow: null, values: values);
+    }
+    if (options.dryRun) {
+      report.writeln('Dry run: nothing was written, and no backup was made.');
+    } else {
+      _commit(target, text, backup: backup);
+      report
+        ..writeln('Kept the original as $backupName.')
+        ..writeln('Wrote $name.');
+    }
+    final workflow = _workflowStep(workflowTarget);
+    _nextSteps(target, credentials: credentials);
+    return _jsonOfApp(
+      written: !options.dryRun,
+      workflow: workflow,
+      values: values,
+      backup: options.dryRun ? null : backupName,
+    );
+  }
+
+  /// Whether to go on with a change to the file: a yes at a terminal, or `--yes`. For a file that exists, init cannot go
+  /// on without one of them (`init-input-missing`); a new file needs only an answer at a terminal. `--force` is not a yes
+  /// to a migration: it means "replace this file".
+  bool _goAhead(String name, {required bool existing, bool migration = false}) {
+    if (interactive) {
+      final answer = _ask('Write $name? [Y/n] ').toLowerCase();
+      if (answer == 'n' || answer == 'no') {
+        report.writeln('Nothing was written.');
+        return false;
+      }
+      return true;
+    }
+    if (existing && !options.yes) {
+      throw WincodeException(
+        ExitCode.usage,
+        'init-input-missing',
+        'init changes an existing $name only after you confirm, and it cannot ask here',
+        why:
+            'init asks questions only at a terminal, and not in CI, with --yes or with --json.${migration ? ' --force is not a yes: it means replace this file.' : ''}',
+        next: 'read the changes above, then run the command again with --yes, or run wincode init in a terminal.',
+      );
+    }
+    return true;
+  }
+
+  void _requireFreeWorkflow(File workflowTarget) {
     if (options.copyWorkflow && workflowTarget.existsSync()) {
       throw WincodeException(
         ExitCode.failed,
@@ -700,57 +1010,25 @@ class Initializer {
             'run init again.',
       );
     }
-    final changing = existingText != null && !unchanged;
-    if (!options.dryRun && !unchanged) {
-      if (interactive) {
-        final answer = _ask('Write $name? [Y/n] ').toLowerCase();
-        if (answer == 'n' || answer == 'no') {
-          report.writeln('Nothing was written.');
-          return _jsonOfApp(
-            written: false,
-            workflow: null,
-            values: _valuesOfApp(values, profile),
-          );
-        }
-      } else if (changing && !options.yes) {
-        throw WincodeException(
-          ExitCode.usage,
-          'init-input-missing',
-          'init changes an existing $name only after you confirm, and it cannot ask here',
-          why: 'init asks questions only at a terminal, and not in CI, with --yes or with --json.',
-          next: 'read the changes above, then run the command again with --yes, or run wincode init in a terminal.',
-        );
-      }
+  }
+
+  /// Copies the reference workflow, or says that it would, when `--workflow` was given. Returns what `--json` calls it.
+  String? _workflowStep(File workflowTarget) {
+    if (!options.copyWorkflow) {
+      return null;
     }
     if (options.dryRun) {
-      report.writeln('Dry run: nothing was written.');
-      if (options.copyWorkflow) {
-        report.writeln(
-          'It would copy the reference workflow to .github/workflows/wincode-ios.yml.',
-        );
-      }
-    } else {
-      if (!unchanged) {
-        target.parent.createSync(recursive: true);
-        target.writeAsStringSync(text);
-        report.writeln('Wrote $name.');
-      }
-      if (options.copyWorkflow) {
-        workflowTarget.parent.createSync(recursive: true);
-        workflowTarget.writeAsBytesSync(utf8.encode(workflowTemplate));
-        report.writeln(
-          'Copied the reference workflow to .github/workflows/wincode-ios.yml.',
-        );
-      }
+      report.writeln(
+        'It would copy the reference workflow to .github/workflows/wincode-ios.yml.',
+      );
+      return 'would-copy';
     }
-    _nextSteps(target, credentials: values['credentials']);
-    return _jsonOfApp(
-      written: !options.dryRun && !unchanged,
-      workflow: !options.copyWorkflow
-          ? null
-          : (options.dryRun ? 'would-copy' : 'copied'),
-      values: _valuesOfApp(values, profile),
+    workflowTarget.parent.createSync(recursive: true);
+    workflowTarget.writeAsBytesSync(utf8.encode(workflowTemplate));
+    report.writeln(
+      'Copied the reference workflow to .github/workflows/wincode-ios.yml.',
     );
+    return 'copied';
   }
 
   Map<String, String> _valuesOfApp(
@@ -1090,9 +1368,18 @@ String renderConfig({
 /// [v] as YAML text: plain when YAML reads it as the text it is, else in single quotes (a team ID of digits only would
 /// become a number).
 String _scalar(String v) =>
-    RegExp(r'^(\.\.?/)*[A-Za-z][A-Za-z0-9._/@-]*$').hasMatch(v)
+    RegExp(r'^(\.\.?/)*[A-Za-z][A-Za-z0-9._/@-]*$').hasMatch(v) &&
+        !const {'true', 'false', 'null'}.contains(v)
     ? v
     : "'${v.replaceAll("'", "''")}'";
+
+void _writeText(File file, String text) => file.writeAsStringSync(text);
+
+/// [map] as plain data in file order: text, or a map of text for `workflow_inputs`.
+Map<String, Object?> _plain(YamlMap map) => {
+  for (final MapEntry(:key, :value) in map.entries)
+    '$key': value is YamlMap ? _plain(value) : '$value',
+};
 
 /// The configuration that `wincode.yaml` means when it names none: `Release-<flavor>`, or `Release`.
 String _defaultConfiguration(String? flavor) =>
@@ -1113,20 +1400,16 @@ bool _hasApps(String text) {
 /// value is text, or a map of text for `workflow_inputs`.
 ({Map<String, Object?> defaults, List<(String, Map<String, Object?>)> apps})
 _rawApps(String text) {
-  Map<String, Object?> plain(YamlMap map) => {
-    for (final MapEntry(:key, :value) in map.entries)
-      '$key': value is YamlMap ? plain(value) : '$value',
-  };
   final root =
       loadYaml(text.startsWith('﻿') ? text.substring(1) : text) as YamlMap;
   return (
     defaults: switch (root['defaults']) {
-      final YamlMap d => plain(d),
+      final YamlMap d => _plain(d),
       _ => <String, Object?>{},
     },
     apps: [
       for (final MapEntry(:key, :value) in (root['apps'] as YamlMap).entries)
-        ('$key', plain(value as YamlMap)),
+        ('$key', _plain(value as YamlMap)),
     ],
   );
 }

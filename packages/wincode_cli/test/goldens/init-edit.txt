@@ -1,0 +1,62 @@
+# before
+# My apps. Do not reorder.
+defaults:
+  team_id: TEAM000001   # the team of all of them
+  credentials: team-one
+
+# alpha is the first one that shipped.
+apps:
+  alpha:
+    # the flavor comes first on purpose
+    flavor: alpha
+    bundle_id: com.example.alpha
+
+  beta:
+    bundle_id: com.example.beta   # beta's id
+    flavor: beta
+
+# Nothing below this line.
+# after adding gamma (team and credentials inherited)
+# My apps. Do not reorder.
+defaults:
+  team_id: TEAM000001   # the team of all of them
+  credentials: team-one
+
+# alpha is the first one that shipped.
+apps:
+  alpha:
+    # the flavor comes first on purpose
+    flavor: alpha
+    bundle_id: com.example.alpha
+
+  beta:
+    bundle_id: com.example.beta   # beta's id
+    flavor: beta
+  gamma:
+    bundle_id: com.example.gamma
+    flavor: gamma
+
+# Nothing below this line.
+# after giving beta a team of digits only, and its own credentials
+# My apps. Do not reorder.
+defaults:
+  team_id: TEAM000001   # the team of all of them
+  credentials: team-one
+
+# alpha is the first one that shipped.
+apps:
+  alpha:
+    # the flavor comes first on purpose
+    flavor: alpha
+    bundle_id: com.example.alpha
+
+  beta:
+    bundle_id: com.example.beta   # beta's id
+    credentials: team-two
+    flavor: beta
+    team_id: '0123456789'
+  gamma:
+    bundle_id: com.example.gamma
+    flavor: gamma
+
+# Nothing below this line.
