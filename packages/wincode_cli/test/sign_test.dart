@@ -24,7 +24,7 @@ final _expires = _now.add(const Duration(days: 300));
 const _team = 'TEAM000000';
 const _bundleId = 'com.example.app';
 const _distro = 'Ubuntu-test';
-const _home = '/home/alpha';
+const _home = '/home/me';
 final _hash = 'a' * 64;
 
 /// The unsigned app of [bundleId], as the reference workflow packs it.
