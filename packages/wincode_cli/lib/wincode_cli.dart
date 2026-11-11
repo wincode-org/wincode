@@ -619,9 +619,11 @@ class _Init extends _Command {
       '(WINCODE_ASC_KEY_DIR), and it never edits .gitignore.\n\n'
       'It asks only at a terminal. In CI (the CI variable), with --yes or with --json it asks nothing: give every field '
       'as an option, or --yes to accept what it found. Without --force it does not replace a wincode.yaml.\n\n'
-      'With --app <name> it adds that app to a file of apps (or starts one), or updates its entry, after showing the '
-      'changes and asking you to confirm (--yes where it cannot ask); a value that the entry already has is replaced only '
-      'with --force. Moving a flat wincode.yaml to apps: is not implemented yet (ADR-0014).';
+      'With --app <name> it adds that app to a file of apps (or starts one), or updates its entry in place, keeping the '
+      'comments and the layout of the rest, after showing the changes and asking you to confirm (--yes where it cannot '
+      'ask); a value that the entry already has is replaced only with --force. On a flat wincode.yaml, --app moves the '
+      'file under apps: as the app that it describes, keeps the original as wincode.yaml.bak, and needs a yes too '
+      '(ADR-0014). After a write, init loads the file again and puts the old one back if it does not load.';
 
   @override
   Future<int> run() async {

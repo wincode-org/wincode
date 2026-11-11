@@ -668,7 +668,7 @@ void main() {
       expect(loadSettings(yamlFile().path).apps, hasLength(2));
     });
 
-    test('keeps defaults and the other apps, and leaves out a value the entry inherits', () async {
+    test('keeps defaults, comments and the other apps, and leaves out a value the entry inherits', () async {
       yamlFile().writeAsStringSync(
         '# my notes\ndefaults:\n  team_id: TEAM000001\n  credentials: team-one\n'
         'apps:\n  alpha:\n    bundle_id: com.example.alpha\n    flavor: alpha\n',
@@ -696,9 +696,7 @@ void main() {
       final beta = text.substring(text.indexOf('  beta:'));
       expect(beta, isNot(contains('team_id')));
       expect(beta, isNot(contains('credentials')));
-      // The interim writer renders the file again: the comment goes, and the diff says so.
-      expect(text, isNot(contains('my notes')));
-      expect(out, contains('- # my notes'));
+      // The file is edited in place: the comment stays, and the diff lists added lines only.\n      expect(text, startsWith('# my notes\n'));\n      expect(out, isNot(contains('- ')));
     });
 
     test(
@@ -784,7 +782,7 @@ void main() {
       expect(yaml(), before);
     });
 
-    test('an apps file without --app is app-required, and a flat file with --app waits for the migration', () async {
+    test('an apps file without --app is app-required', () async {
       yamlFile().writeAsStringSync(three);
       final (code, _, err) = await init(['--yes']);
       expect(code, 64);
@@ -793,22 +791,6 @@ void main() {
         contains('has 3 apps, and the command does not say which one'),
       );
       expect(err, isNot(contains('--all')));
-      yamlFile().writeAsStringSync(
-        'bundle_id: com.example.alpha\nteam_id: TEAM000001\n',
-      );
-      final flat = yaml();
-      final (migrate, _, merr) = await init([
-        ...values('alpha', 'TEAM000001', 'team-one'),
-        '--yes',
-      ]);
-      expect(migrate, 64);
-      expect(
-        merr,
-        contains(
-          'moving it under apps: is not implemented yet, see ADR-0014 (pull request 4)',
-        ),
-      );
-      expect(yaml(), flat);
     });
 
     test(
