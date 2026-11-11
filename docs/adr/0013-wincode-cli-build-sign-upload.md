@@ -392,7 +392,7 @@ The ten most likely failures, with `<…>` filled in at run time:
 - a hybrid-lane IPA signed by `wincode sign` is uploaded, with the maintainer's yes, and processed as valid.
 
 **Phase 3a as built: `sign` with an unencrypted PEM key, and `doctor --sign`.** What was built, and where it departs from the sections above:
-- **Order of `wincode sign`,** each step a check of the report, and nothing run once one fails:
+- **Order of `wincode sign`,** each step a check of the report. Steps 1 to 5 read local files and all run, so one report lists every local problem. Step 6 and later run only when none of them failed:
   1. `input`: the unsigned IPA (`<output>/unsigned.ipa` by default) holds one `Payload/<name>.app` of `bundle_id`, nothing outside `Payload/`, and no app extension (`PlugIns/*.appex`) or nested app (a watch app). Those need their own profiles and entitlements, so they fail with `extensions-unsupported` instead of being signed with the app's profile.
   2. `local-profile`: preflight's check of the profile in `wincode.yaml`, after `requireOutsideGit`.
   3. `dist-key`: the key comes only from the app's credentials reference, or `WINCODE_DIST_KEY` for a flat file without one (ADR-0014's `resolveDistKey`), and must be an unencrypted RSA key in PEM, PKCS #8 or PKCS #1. An encrypted PEM key or a `.p12` fails with `key-encrypted` (78), another kind of key with `key-not-rsa` (1). Its path is a secret in every output.
