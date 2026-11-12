@@ -4,7 +4,7 @@ import 'dart:io';
 import 'package:test/test.dart';
 import 'package:wincode_cli/wincode_cli.dart';
 
-const _planned = ['build', 'sign', 'status', 'upload'];
+const _planned = ['build', 'status', 'upload'];
 
 /// (exit code, stdout, stderr) of `wincode` with [args].
 Future<(int, String, String)> wincode(List<String> args) async {
@@ -24,6 +24,7 @@ void main() {
         'doctor',
         'init',
         'preflight',
+        'sign',
       ]..sort())
         ['help', command],
     ]) {
@@ -57,13 +58,27 @@ void main() {
     'the global options are accepted before and after the command',
     () async {
       for (final args in [
-        ['sign', '--config', 'other.yaml', '--verbose', '--dry-run', 'app.ipa'],
-        ['--config', 'other.yaml', '--verbose', '--dry-run', 'sign', 'app.ipa'],
+        [
+          'upload',
+          '--config',
+          'other.yaml',
+          '--verbose',
+          '--dry-run',
+          'app.ipa',
+        ],
+        [
+          '--config',
+          'other.yaml',
+          '--verbose',
+          '--dry-run',
+          'upload',
+          'app.ipa',
+        ],
       ]) {
         expect(await wincode(args), (
           64,
           '',
-          'wincode sign: not implemented yet, see ADR-0013\n',
+          'wincode upload: not implemented yet, see ADR-0013\n',
         ), reason: '$args');
       }
     },

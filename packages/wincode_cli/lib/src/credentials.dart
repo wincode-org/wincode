@@ -140,6 +140,14 @@ Future<File?> resolveDistKey(
     if (variable.isEmpty) {
       return null;
     }
+    _refuseInsideWsl(
+      variable,
+      _legacyDist,
+      redactor,
+      move:
+          'move the key to a file on a Windows drive, outside git working trees and OneDrive (such as '
+          '%USERPROFILE%\\.wincode\\dist.key), and set $_legacyDist to that file.',
+    );
     final file = File(variable).absolute;
     redactor.secret(file.path, '<$_legacyDist>');
     _refuseOneDrive(file.path, _legacyDist);
@@ -148,7 +156,16 @@ Future<File?> resolveDistKey(
   }
   final variable = distOverrideVariable(reference);
   final override = environment[variable] ?? '';
+  final rootVariable = environment[keysRootVariable] ?? '';
+  final target =
+      '${rootVariable.isEmpty ? r'%USERPROFILE%\.wincode\keys' : '%$keysRootVariable%'}\\$reference\\dist.key';
   if (override.isNotEmpty) {
+    _refuseInsideWsl(
+      override,
+      variable,
+      redactor,
+      move: 'move the key to $target and unset $variable.',
+    );
     final file = File(override).absolute;
     redactor.secret(file.path, '<distribution key>');
     _refuseOneDrive(file.path, variable);
@@ -160,6 +177,14 @@ Future<File?> resolveDistKey(
     );
     return file;
   }
+  _refuseInsideWsl(
+    rootVariable,
+    keysRootVariable,
+    redactor,
+    move:
+        'set $keysRootVariable to a folder on a Windows drive, or unset it to use %USERPROFILE%\\.wincode\\keys, and '
+        'move the key to $reference\\dist.key in that folder.',
+  );
   final folder = await _referenceFolder(
     app,
     reference,
@@ -379,6 +404,32 @@ void _refuseOneDrive(String path, String name, {bool variable = true}) {
     next: variable
         ? 'move it outside OneDrive, such as %USERPROFILE%\\.wincode\\keys, and point $name at the new place.'
         : 'move the user profile folder\'s .wincode out of OneDrive, or set $keysRootVariable to a folder outside it.',
+  );
+}
+
+/// Refuses a distribution key whose [path], as [name] gives it, is on the WSL2 disk (`\\wsl.localhost\...` or
+/// `\\wsl$\...`): ADR-0014 keeps keys on the Windows side. [move] says where it belongs.
+void _refuseInsideWsl(
+  String path,
+  String name,
+  Redactor redactor, {
+  required String move,
+}) {
+  if (!RegExp(
+    r'^[\\/]{2}wsl(\.localhost|\$)[\\/]',
+    caseSensitive: false,
+  ).hasMatch(path)) {
+    return;
+  }
+  redactor.secret(path, '<distribution key>');
+  throw WincodeException(
+    ExitCode.config,
+    'dist-key-unreachable',
+    '$name puts the distribution key inside WSL2',
+    why:
+        'ADR-0014 keeps keys on the Windows side, outside WSL2: a WSL2 disk is one file that backups, exports and '
+        'snapshots copy whole, key included. zsign reads the key in place from the Windows side.',
+    next: '$move Let only your user read it, then run wincode doctor --sign.',
   );
 }
 

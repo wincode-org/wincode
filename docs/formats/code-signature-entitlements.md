@@ -31,11 +31,10 @@ Each blob starts with its own magic (4 bytes) and its length (4 bytes, these 8 b
 
 The blob of slot 5: its magic must be 0xFADE7171, and the bytes after its 8-byte header, up to its length, are an XML property list whose top level is a dictionary. A signature without slot 5 carries no entitlements, as each framework of an app does. The other slots are skipped: their hashes and the CMS signature are not checked, so this tells what a binary claims, not that its signature is valid.
 
-## Not covered
+## Not covered here
 
 - Fat files: the main executable of an App Store build has one architecture, arm64. A fat file is refused.
-- Checking the code directory's hashes, the requirements or the CMS signature. Apple checks them when it processes the upload.
-- The DER entitlements of slot 7.
+- Checking the code directory's hashes, the requirements, the DER entitlements of slot 7 or the CMS signature: `wincode sign` does, see [code-signature-verification.md](code-signature-verification.md).
 
 ## Provenance
 

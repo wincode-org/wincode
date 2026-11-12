@@ -12,6 +12,8 @@ class ProvisioningProfile {
     required this.applicationIdentifier,
     required this.expirationDate,
     required this.isForAppStore,
+    this.entitlements = const {},
+    this.developerCertificates = const [],
   });
 
   /// `UUID`: what App Store Connect calls the profile's `uuid`, and what the signed app's embedded copy carries.
@@ -30,6 +32,12 @@ class ProvisioningProfile {
   /// Whether it is an App Store distribution profile: it lists no devices (development and ad hoc profiles do), does
   /// not provision every device (enterprise profiles do), and does not allow `get-task-allow` (development).
   final bool isForAppStore;
+
+  /// `Entitlements`: what the profile allows the app to be signed with.
+  final PlistMap entitlements;
+
+  /// `DeveloperCertificates`: the DER certificates that may sign with this profile.
+  final List<Uint8List> developerCertificates;
 }
 
 /// Reads the profile [bytes], as the developer portal delivers it. Throws a [FormatException] when it holds no property
@@ -70,6 +78,14 @@ ProvisioningProfile readProvisioningProfile(Uint8List bytes) {
           !profile.containsKey('ProvisionedDevices') &&
           profile['ProvisionsAllDevices'] != true &&
           entitlements['get-task-allow'] != true,
+      entitlements: entitlements,
+      developerCertificates: switch (profile['DeveloperCertificates']) {
+        final List<Object?> list => [
+          for (final c in list)
+            if (c is Uint8List) c,
+        ],
+        _ => const [],
+      },
     );
   }
   throw const FormatException(
