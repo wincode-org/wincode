@@ -28,7 +28,7 @@
 | `build` | Starts the app's macOS workflow at the configured branch or tag, waits for it, downloads the unsigned IPA to `<output>/unsigned.ipa` and checks it (section 3) | GitHub, through `gh` | 5 |
 | `sign [<ipa>]` | Signs for the App Store with zsign, from `<output>/unsigned.ipa` to `<output>/signed.ipa` by default. Checks the inputs first and every signature after (section 4) | nothing | 3 |
 | `preflight [<ipa>]` | Read-only checks before an upload. On the IPA (`<output>/signed.ipa` by default): the bundle ID, the version and build number, a signature with an App Store profile that has not expired. In App Store Connect: the key works, the app record exists, the build number is above every existing build's | App Store Connect, GET only | 2 |
-| `upload [<ipa>]` | Runs `preflight` and stops if it fails, then uploads through the Build Uploads API and waits up to 15 minutes for Apple's processing result, printing each of Apple's messages as sent | App Store Connect | 4 |
+| `upload [<ipa>]` | Runs `preflight` and stops if it fails, then uploads through the Build Uploads API and waits up to 15 minutes for Apple's processing result, printing each of Apple's messages as sent. *As built, the wait is 20 minutes by default (`--timeout`), `preflight` runs in strict mode, and the run asks for the app's name first: "Phase 4 as built" in section 10* | App Store Connect | 4 |
 | `status` | The state of the app's latest build uploads and builds, with Apple's messages, for an upload that `upload` stopped waiting for | App Store Connect, GET only | 4 |
 | `doctor` | Exists: checks a Mach-O against the SDK's text stubs or a reference build. Each later phase adds the checks of its own setup (zsign, `gh`, the environment variables) | nothing | done |
 
@@ -51,8 +51,10 @@
 | 0 | Done |
 | 1 | The work failed: a check found a problem, an input is wrong, or Apple or GitHub refused the work |
 | 64 | The command line is wrong, or the command is not implemented yet |
+| 65 | `upload` only: Apple took the file and then failed its processing, so the IPA's content is wrong and the build number is used up (`processing-failed`). EX_DATAERR |
 | 69 | Something winCode needs is not there: a tool (zsign, `gh`), the SDK, or the network |
 | 70 | A bug in winCode; the message asks for a report |
+| 75 | `upload` only: the file was sent, and Apple had not finished its processing within `--timeout` (`processing-timeout`). Not a failure yet: the build may still become valid. EX_TEMPFAIL |
 | 77 | Apple or GitHub refused the credentials (HTTP 401 or 403, `gh` not logged in) |
 | 78 | The setup is wrong: `wincode.yaml`, or an environment variable that winCode reads |
 
@@ -305,7 +307,7 @@ The ten most likely failures, with `<…>` filled in at run time:
 - **Keys stay out of git working trees** unless git ignores them (section 2).
 - **The token** is ES256 with a lifetime of 10 minutes (Apple refuses more than 20), and a new one is made for each request. It is sent only to `api.appstoreconnect.apple.com`, never after a redirect, and never to the upload URLs.
 - **Temporary files:** zsign's entitlements and the certificate taken from the profile go to a temporary folder that is deleted after the run. The key is passed to zsign by its path, never copied. No password is passed to a process or written to a file (section 4). *As built in phase 3a, the temporary folder is `.wincode-sign-<random>` in the app's output folder, on the Windows side, so nothing is written to the WSL2 disk; it holds the certificate, the entitlements, zsign's work folder and the signed IPA until the checks pass.*
-- **Writes:** only `upload` writes to Apple. As in `asc_upload.py`, nothing is retried after an error, because a repeated request could make a second upload.
+- **Writes:** only `upload` writes to Apple. As in `asc_upload.py`, nothing is retried after an error, because a repeated request could make a second upload. *Amended in phase 4: the requests that create or change something at Apple (`POST /v1/buildUploads`, `POST /v1/buildUploadFiles`, `PATCH /v1/buildUploadFiles/{id}`) are never retried. Two kinds of request are, with a bounded backoff, because repeating them changes nothing: the parts of the file, which land in the same place when sent twice, and the reads that wait for the processing result.*
 - **Supply chain:** zsign as in section 4; `gh` is the user's own install; the Dart dependencies are the pure-Dart packages of section 5.
 
 ### 8. Tests
@@ -442,11 +444,47 @@ The ten most likely failures, with `<…>` filled in at run time:
 - This is the only place a key may appear inside WSL2. The password lives only in winCode's memory, and is never logged.
 
 **Phase 4: `upload` and `status`.** Accepted when:
-- the fake-server cases of section 8 pass: nothing is retried, the parts rebuild the IPA byte for byte, the token never goes to a part's URL, and no hidden value is printed;
+- the fake-server cases of section 8 pass: nothing is retried, the parts rebuild the IPA byte for byte, the token never goes to a part's URL, and no hidden value is printed (*as built, the parts and the reads of the state are retried and the writes are not: section 7*);
 - `wincode upload --dry-run` prints the same requests as `asc_upload.py --dry-run` (golden);
 - `upload` runs `preflight` first and stops when it fails;
 - `upload` runs `preflight` in strict mode, in which an unsigned IPA fails: no `embedded.mobileprovision`, a profile that is not the one in `wincode.yaml`, or an executable without the signed `application-identifier` stops the upload with exit 1 and the next step "run wincode sign". Standalone `wincode preflight` reports an unsigned IPA as INFO. A test covers each of the two modes;
 - one real upload, with the maintainer's yes, is processed as valid, and its output shows the same steps as spike C's run; `wincode status` then shows it.
+
+**Phase 4 as built: `upload`.** `wincode upload` is built and tested against a fake App Store Connect. It has not been exercised against the real one from wincode: that run waits for the maintainer's word (below). `wincode status` is not part of this slice. What was built, and where it departs from the sections above:
+- **The command:** `wincode upload [--ipa <file>] [<file>] [--timeout <minutes>] [--yes] [--dry-run]`, with the global `--app`, `--config`, `--json`, `--redact` and `--verbose`. The IPA is `<output>/signed.ipa` unless named, once. `--all` is refused, like every command that writes.
+- **Checks, all read-only, all before the first write.** The first group that has a FAIL stops the run, prints `INFO nothing was uploaded: a check above failed`, and exits with that failure's code:
+  1. `Preflight` in strict mode: its checks (key location, API key, app record, the build number above every existing build's, the App ID's active profile, the profile of `wincode.yaml`, the IPA, the signature, the profile link), except that an IPA with no `embedded.mobileprovision` is a FAIL (`ipa-unsigned`, next step "sign the IPA with wincode sign"), not an INFO.
+  2. The verification of `sign --verify-only`, without repeating the lines of 1: the certificate that signed the IPA is one of the profile's, an Apple Distribution certificate of the team that has not expired, and App Store Connect lists it as `DISTRIBUTION` (`GET /v1/certificates`); the entitlements are allowed by the profile; and every signature checks out (`docs/formats/code-signature-verification.md`).
+- **The plan** is printed after the checks: the app, the version and build number (from the IPA's `Info.plist`, not from a file), the file's name and size, its MD5 and its SHA-256, read in one pass. The MD5 is the checksum that is committed to Apple; the SHA-256 is for the person.
+- **The confirmation** (reverses the last bullet of Consequences). Unless `--yes` is given, `upload` asks the person to type the name of the app (the bundle ID for a `wincode.yaml` without names), and anything else cancels it (`upload-cancelled`, exit 1, nothing uploaded). It asks only at a terminal: without `--yes`, `--json`, `CI` or no terminal is `confirmation-required` (exit 64), refused before any request. `--dry-run` asks nothing.
+- **The requests** are those of `asc_upload.py`, in its order, with its bodies (App Store Connect API 4.5.1), the version and build number taken from the IPA:
+  1. `GET /v1/apps?filter[bundleId]=…&fields[apps]=bundleId&limit=200`, for the app record's ID;
+  2. `POST /v1/buildUploads`, with `cfBundleShortVersionString`, `cfBundleVersion` and `platform` `IOS`;
+  3. `POST /v1/buildUploadFiles`, with `fileName`, `fileSize`, `uti` `com.apple.ipa` and `assetType` `ASSET`, which answers with `uploadOperations`;
+  4. each operation of that answer: its `method` to its `url` with its `requestHeaders`, and the bytes of its `offset` and `length`, read from the file one part at a time;
+  5. `PATCH /v1/buildUploadFiles/{id}` with `uploaded: true` and the MD5 in `sourceFileChecksums`;
+  6. `GET /v1/buildUploads/{id}?include=build,assetFile&fields[builds]=processingState&fields[buildUploadFiles]=assetDeliveryState` every 30 seconds, until the upload or its file is `FAILED`, or the build is `FAILED`, `INVALID` or `VALID`.
+- **Retries.** The three writes (2, 3, 5) are never retried: a request that got no answer may have been done, and a repeat could make a second upload or a second file. A part (4) is retried after a connection error, no answer within ten minutes, HTTP 5xx, 408 or 429, after 2, 4, 8 and 16 seconds, since a part sent twice lands in the same place; another status, a redirect, or the end of the delays stops the run. A read of the state (6) is retried twice by the client, and a read that fails after that is asked again up to twice more before the wait gives up. A 4xx stops the run at once, in every step.
+- **The wait** starts at the commit and ends at `--timeout` (20 minutes by default, 15 in the script; a number of minutes, or seconds with an `s`). Only the changes of state are printed, each with its UTC time as in the script, and each message of Apple's (`errors`, `warnings` and `infos` of the upload and of its file) once, as sent.
+- **Exit codes** (section 1): 0 when the build is `VALID`; 1 when a check fails, or Apple or the store refuses a request; 65 when Apple fails the processing (`processing-failed`); 75 when the wait ends (`processing-timeout`), which differs from 65 because the build may still become valid; 69 when there is no network, or Apple's service is down, in any step; 77 for HTTP 401 and 403. After the build upload exists, every failure's next step says that the build number is used, and not to upload it again; for a write that got no answer, it also says that the last request may have been done.
+
+  | `id` | Exit | When |
+  | --- | --- | --- |
+  | `confirmation-required` | 64 | no `--yes`, and no terminal to ask at |
+  | `upload-cancelled` | 1 | what was typed is not the app's name |
+  | `ipa-unsigned`, and the other failures of `preflight` | 1 | a check above |
+  | `app-record-missing` | 1 | the app record went away after the check |
+  | `upload-refused` | 1 | Apple refused creating the upload or the file, or the commit, with a 4xx; the message is Apple's, as sent |
+  | `upload-part-refused` | 1 | the upload store refused a part with a 4xx |
+  | `upload-answer-invalid` | 1 | Apple's answer has no id, no operation, or an operation that cannot be sent |
+  | `ipa-unreadable`, `ipa-changed` | 1 | the IPA could not be read, or is shorter than planned |
+  | `processing-failed` | 65 | the upload, its file or its build is `FAILED` or `INVALID` |
+  | `offline`, `asc-unavailable`, `upload-part-unavailable` | 69 | no answer, or HTTP 5xx, after the retries |
+  | `processing-timeout` | 75 | no result within `--timeout` |
+  | `asc-unauthorized`, `asc-forbidden` | 77 | HTTP 401 or 403 |
+- **Secrets.** The token, the key, the Key ID and the Issuer ID are never printed, as before. The link of a part and its signed headers are registered with the redactor as secrets when they arrive, and the code that handles them never prints them: the client's log names a part as `PUT part 3 (5242880 bytes)`, an exception's text carries no link (not Dart's `HttpException` text, which does), and of the upload store's own error, which can echo the signed link and its signature, only its `Code` and `Message` are kept, with anything that looks like a link replaced by `<URL>`. The token is never sent to a part's link, and a link on another scheme than the API's is refused. The IDs that Apple gives (app record, build upload, file) are hidden with `--redact` and in CI.
+- **Tests,** with no network: a fake App Store Connect and a second fake for the upload store, on `127.0.0.1`, and a signed IPA that a throwaway key signed. They cover a normal run (the requests in order and their bodies, the parts rebuilding the IPA byte for byte, the headers of the parts, no token on a part); a failed processing; the timeout; a part that fails once and is sent again, a part that never succeeds, and a part that the store refuses with an error that echoes its link; a read of the state that fails once, and one that keeps failing; a 4xx, a 5xx and no answer on the writes, none repeated; a refused key; each check that stops the run with no write (unsigned IPA, a build number that is not higher, a signature that does not verify, a certificate that is not a distribution certificate or not listed, another profile, no IPA); `--dry-run` making no request; the confirmation (no terminal, `--json`, CI, the right name, another answer, a file of apps); and that no secret, token, link or signed header appears in any output, `--verbose` included. The CI job on Ubuntu also runs `wincode upload --dry-run` on the IPA that the pinned zsign signed.
+- **Not built, and still to do:** `wincode status`; and the real run on the throwaway test app, which uploads build 15 only when the maintainer sends the word `UPLOAD`. This is recorded in the pull request, without IDs.
 
 **Phase 5: `build`.** Accepted when:
 - against a fake `gh`, the run is found by its URL and by its title, waited for and downloaded, and each failure gives its message: `gh` missing (69), not logged in (77), a failed run (1), a missing artifact (1), a wrong bundle ID (1);
@@ -455,6 +493,13 @@ The ten most likely failures, with `<…>` filled in at run time:
 
 **Follow-ups,** not phases, and not started:
 - **F1. A native Windows zsign build,** after phase 4 is accepted, so that signing and uploading work through WSL2 first. It follows the route in section 4 (a CI build against a pinned OpenSSL, a published hash, equal code directory hashes with the WSL2 build, one VALID upload). It is done when `wincode sign` can use it without WSL2, and the WSL2 checks of `doctor` become optional. The interim decision of section 4 ends here.
+
+### 11. Platforms
+
+*Added with phase 4.* The CLI runs on Windows, where this ADR began, and on Linux: a Linux server is a supported target, since Studio will build iOS apps on one.
+- **What runs on both.** `preflight`, `sign --verify-only` and `upload` are pure Dart, and talk to Apple over plain HTTPS. They use `Platform.pathSeparator` and `dart:io` for paths, and start no program but `git` (for the key-location rule). `upload` needs neither WSL2 nor a Windows API, and it holds no file open while it waits. The `wincode_cli` job of `dart.yml` runs the tests on Ubuntu and on Windows, so a Windows-only assumption fails there.
+- **Signing on Linux needs a native zsign runner.** `wincode sign` starts zsign through `wsl.exe` (section 4), which a Linux machine has not: `sign` stops there with `wsl-missing`. A runner that starts zsign directly, built from the same pinned source, is **not part of phase 4** and is the next slice. It also decides where the record of zsign's hash lives on Linux, since phase 3a keeps it in `%LOCALAPPDATA%`. Until then a Linux server uploads an IPA that was signed elsewhere, checked by `upload` as any other, and the CI job on Ubuntu checks one that the pinned zsign signed.
+- **The keys root on a shared machine** is a private folder owned by a dedicated user: mode 0700 for the keys root and the folder of each reference, 0600 for the files in them, and no other user able to read them. The default root is `.wincode/keys` in the user's profile folder (`HOME` where `USERPROFILE` is not set), which suits a dedicated account that runs `wincode`. winCode does not check these modes yet, and does not change them. A `doctor` check on POSIX systems could, and is not part of this slice.
 
 ## Consequences
 
@@ -480,4 +525,4 @@ The ten most likely failures, with `<…>` filled in at run time:
 - **JSON or TOML for the settings:** Flutter projects already use YAML (`pubspec.yaml`), and YAML takes comments, which `init` uses to explain each key.
 - **Secrets in `wincode.yaml`, even encrypted:** the file goes with the project, and an encrypted secret still needs a key from somewhere else, which is what the variables are.
 - **An exit code per failure:** too many to remember; the `id` in `--json` tells failures apart.
-- **A question before `upload`:** running `upload` is the decision, `--dry-run` shows what it would send, and the preflight runs first. A prompt would also stop CI.
+- **A question before `upload`:** running `upload` is the decision, `--dry-run` shows what it would send, and the preflight runs first. A prompt would also stop CI. *Reversed in phase 4, at the maintainer's request: a build number that Apple has taken cannot be given back, so `upload` shows its plan and asks for the app's name, and CI says yes with `--yes`: "Phase 4 as built" in section 10.*

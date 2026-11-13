@@ -122,12 +122,33 @@ List<int> _bytes32(BigInt value) => [
 ];
 
 /// A request that [FakeAppStoreConnect] received.
-typedef FakeRequest = ({
-  String method,
-  String path,
-  Map<String, String> query,
-  String? authorization,
-});
+class FakeRequest {
+  const FakeRequest({
+    required this.method,
+    required this.path,
+    required this.query,
+    required this.authorization,
+    this.headers = const {},
+    this.body = const [],
+  });
+
+  final String method;
+  final String path;
+  final Map<String, String> query;
+  final String? authorization;
+
+  /// Every header, by its lower-case name.
+  final Map<String, String> headers;
+
+  /// The body as it was sent.
+  final List<int> body;
+
+  /// The body as text, such as the JSON of a write.
+  String get text => utf8.decode(body, allowMalformed: true);
+
+  /// The body as the JSON object that a write sends.
+  Map<String, Object?> get json => jsonDecode(text) as Map<String, Object?>;
+}
 
 /// What [FakeAppStoreConnect] answers to one request.
 class FakeAnswer {
@@ -137,7 +158,12 @@ class FakeAnswer {
     this.status = 200,
     this.delay = Duration.zero,
     this.location,
+    this.raw,
   });
+
+  /// [text] with [status], as it is: what the upload store answers, which is not Apple's JSON.
+  const FakeAnswer.raw(String text, {int status = 200})
+    : this(null, status: status, raw: text);
 
   /// Apple's error answer: one error with [status], [code], a title and a detail.
   FakeAnswer.error(int status, String code)
@@ -169,6 +195,9 @@ class FakeAnswer {
 
   /// The `Location` header of a redirect.
   final String? location;
+
+  /// The body as text, instead of [json].
+  final String? raw;
 }
 
 /// A resource as App Store Connect sends one.
@@ -217,11 +246,20 @@ class FakeAppStoreConnect {
     final authorization = request.headers.value(
       HttpHeaders.authorizationHeader,
     );
-    final received = (
+    final headers = <String, String>{};
+    request.headers.forEach(
+      (name, values) => headers[name] = values.join(', '),
+    );
+    final received = FakeRequest(
       method: request.method,
       path: request.uri.path,
       query: request.uri.queryParameters,
       authorization: authorization,
+      headers: headers,
+      body: await request.fold<List<int>>(
+        [],
+        (all, chunk) => all..addAll(chunk),
+      ),
     );
     requests.add(received);
     final token = authorization?.startsWith('Bearer ') ?? false
@@ -239,8 +277,10 @@ class FakeAppStoreConnect {
           answer.location!,
         );
       }
-      request.response.headers.contentType = ContentType.json;
-      request.response.write(jsonEncode(answer.json));
+      request.response.headers.contentType = answer.raw == null
+          ? ContentType.json
+          : ContentType.text;
+      request.response.write(answer.raw ?? jsonEncode(answer.json));
       await request.response.close();
     } on Object {
       // The client gave up waiting.

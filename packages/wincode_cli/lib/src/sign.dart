@@ -104,9 +104,9 @@ class Signer {
     required this.clock,
     required this.connect,
     required this.run,
-    required this.runner,
+    ZsignRunner? runner,
     this.log,
-  });
+  }) : runner = runner ?? ZsignRunner();
 
   final WincodeConfig config;
   final Map<String, String> environment;
@@ -114,6 +114,8 @@ class Signer {
   final DateTime Function() clock;
   final AscConnect connect;
   final RunProcess run;
+
+  /// Starts zsign. `verify` never does, so a caller that only verifies may leave it out.
   final ZsignRunner runner;
 
   /// Gets each step with `--verbose`.
@@ -180,10 +182,14 @@ class Signer {
   /// `wincode sign --verify-only`: the checks that follow zsign, on [ipa], against the profile, the certificate that
   /// signed it (which must be one of the profile's) and the entitlements. It reads no private key. With [offline] or
   /// [dryRun], App Store Connect is not asked about the certificate.
+  ///
+  /// With [withPreflight] false, the profile line and preflight's local checks (`ipa`, `signature`, `profile-link`)
+  /// are left out, for `wincode upload`, which ran them in its own preflight.
   Future<List<Finding>> verify(
     File ipa, {
     required bool offline,
     required bool dryRun,
+    bool withPreflight = true,
   }) async {
     redactor.hide(ipa.path, '<signed IPA>');
     final findings = <Finding>[];
@@ -202,7 +208,12 @@ class Signer {
       );
     }
     final now = clock().toUtc();
-    final inputs = await _identity(findings, now, signed: ipa);
+    final inputs = await _identity(
+      findings,
+      now,
+      signed: ipa,
+      profileLine: withPreflight,
+    );
     if (inputs == null || findings.any((f) => f.status == 'FAIL')) {
       return findings;
     }
@@ -210,9 +221,10 @@ class Signer {
     if (findings.any((f) => f.status == 'FAIL')) {
       return findings;
     }
-    findings
-      ..addAll(_checkSignatures(ipa, inputs))
-      ..addAll(_preflight(ipa).localChecks());
+    findings.addAll(_checkSignatures(ipa, inputs));
+    if (withPreflight) {
+      findings.addAll(_preflight(ipa).localChecks());
+    }
     return findings;
   }
 
@@ -367,6 +379,7 @@ class Signer {
     List<Finding> findings,
     DateTime now, {
     File? signed,
+    bool profileLine = true,
   }) async {
     final profileFile = config.profile;
     if (profileFile == null) {
@@ -399,7 +412,10 @@ class Signer {
       }
     }
     final pre = _preflight(output);
-    findings.add(pre.profileCheck());
+    final profileFinding = pre.profileCheck();
+    if (profileLine || profileFinding.status == 'FAIL') {
+      findings.add(profileFinding);
+    }
     final profile = pre.profile;
     final key = signed == null ? await _key(findings) : null;
     if (profile == null || (signed == null && key == null)) {

@@ -74,9 +74,14 @@ class Preflight {
     this.connect = connectToApple,
     this.log,
     this.run = runProcess,
+    this.strict = false,
   });
 
   final WincodeConfig config;
+
+  /// The mode of `wincode upload` (ADR-0013, phase 4): an IPA that is not signed fails, where `wincode preflight` says
+  /// INFO, since it can run on the unsigned IPA of `wincode build`.
+  final bool strict;
 
   /// The signed IPA.
   final File ipa;
@@ -690,10 +695,14 @@ class Preflight {
               ExitCode.failed,
               'ipa-missing',
               '${ipa.path} does not exist',
-              why: 'preflight checks the signed IPA that wincode upload sends.',
-              next:
-                  'name the IPA: wincode preflight <file>.ipa. Without one, preflight checks signed.ipa in the '
-                  'output folder of wincode.yaml.',
+              why: strict
+                  ? 'wincode upload sends the signed IPA, and has none to send.'
+                  : 'preflight checks the signed IPA that wincode upload sends.',
+              next: strict
+                  ? 'name the IPA: wincode upload --ipa <file>.ipa. Without one, upload sends signed.ipa in the '
+                        'output folder of wincode.yaml, which wincode sign writes.'
+                  : 'name the IPA: wincode preflight <file>.ipa. Without one, preflight checks signed.ipa in the '
+                        'output folder of wincode.yaml.',
             ),
           ),
         ],
@@ -818,11 +827,24 @@ class Preflight {
   ) {
     const subject = "the IPA's embedded profile";
     if (!zip.names.contains('${app}embedded.mobileprovision')) {
-      return const Finding.info(
-        'signature',
-        'the IPA holds no embedded.mobileprovision, so it is not signed for a device and its signature was not '
-            'checked',
-      );
+      return strict
+          ? Finding.fail(
+              'signature',
+              WincodeException(
+                ExitCode.failed,
+                'ipa-unsigned',
+                'the IPA is not signed: it holds no embedded.mobileprovision',
+                why:
+                    'App Store Connect refuses an app that is not signed with an App Store profile, and wincode upload '
+                    'sends only a signed IPA.',
+                next: 'sign the IPA with wincode sign, then run wincode upload again.',
+              ),
+            )
+          : const Finding.info(
+              'signature',
+              'the IPA holds no embedded.mobileprovision, so it is not signed for a device and its signature was not '
+                  'checked',
+            );
     }
     Finding invalid(String what) => Finding.fail(
       'signature',
@@ -968,11 +990,17 @@ WincodeException ascProblem(
       'asc-forbidden',
       'App Store Connect refused ${e.request} to the API key: $answer',
       why: "the key's role may not do this, or an agreement waits to be accepted in App Store Connect.",
-      next: command == 'preflight'
-          ? 'accept the agreements in App Store Connect (Business), or use a key whose role may read apps, builds '
-                'and profiles (Users and Access, Integrations).'
-          : 'accept the agreements in App Store Connect (Business), or use a key whose role may read certificates '
-                '(Users and Access, Integrations).',
+      next: switch (command) {
+        'preflight' =>
+          'accept the agreements in App Store Connect (Business), or use a key whose role may read apps, builds '
+              'and profiles (Users and Access, Integrations).',
+        'upload' =>
+          'accept the agreements in App Store Connect (Business), or use a key whose role may upload builds, such as '
+              'App Manager or Admin (Users and Access, Integrations).',
+        _ =>
+          'accept the agreements in App Store Connect (Business), or use a key whose role may read certificates '
+              '(Users and Access, Integrations).',
+      },
     ),
     AscFailure.offline => WincodeException(
       ExitCode.unavailable,
@@ -1100,15 +1128,29 @@ class _Requests implements AscClient {
     );
     return const [];
   }
+
+  // Preflight sends list requests only.
+
+  @override
+  Future<Map<String, Object?>> getDocument(
+    String path,
+    Map<String, String> query,
+  ) => throw UnsupportedError('preflight reads collections only');
+
+  @override
+  Future<Map<String, Object?>> write(
+    String method,
+    String path,
+    Map<String, Object?> body,
+  ) => throw UnsupportedError('preflight sends no write');
+
+  @override
+  Future<void> sendPart(AscUploadPart part, List<int> bytes) =>
+      throw UnsupportedError('preflight sends no write');
 }
 
-/// Writes the report of [findings] for people: a line each, why and the next step under a failure or a warning, and a
-/// last line with the outcome.
-void writeReport(
-  List<Finding> findings,
-  StringSink sink, {
-  String command = 'preflight',
-}) {
+/// Writes [findings] for people: a line each, with why and the next step under a failure or a warning.
+void writeFindings(List<Finding> findings, StringSink sink) {
   for (final f in findings) {
     sink.writeln('${f.status}  ${f.what}');
     if (f.problem?.why case final why?) {
@@ -1118,6 +1160,25 @@ void writeReport(
       sink.writeln('  next: $next');
     }
   }
+}
+
+/// Writes the report of [findings] for people: a line each, why and the next step under a failure or a warning, and a
+/// last line with the outcome.
+void writeReport(
+  List<Finding> findings,
+  StringSink sink, {
+  String command = 'preflight',
+}) {
+  writeFindings(findings, sink);
+  writeSummary(findings, sink, command: command);
+}
+
+/// Writes the last line of a report: how many checks failed, or that the run passed.
+void writeSummary(
+  List<Finding> findings,
+  StringSink sink, {
+  String command = 'preflight',
+}) {
   final failed = findings.where((f) => f.status == 'FAIL').length;
   final warned = findings.where((f) => f.status == 'WARN').length;
   sink.writeln(

@@ -2,7 +2,7 @@
 
 The `wincode` command. Its design is [ADR-0013](../../docs/adr/0013-wincode-cli-build-sign-upload.md).
 
-Status: `doctor`, `preflight`, `init` and `sign` work. `preflight` and `doctor` read an app's App Store Connect key through its `credentials` reference (ADR-0014; layout below), and `sign` its distribution key. `sign` signs with an unencrypted PEM key only (ADR-0013, phase 3a); encrypted keys come in phase 3b. The other commands are registered; each prints `not implemented yet, see ADR-0013` and exits with 64 until the phase of ADR-0013 that implements it. `wincode.yaml` may describe several apps ([ADR-0014](../../docs/adr/0014-one-project-many-apps.md)): `--app <name>` chooses the app of `preflight`, `doctor` and `init`, `--all` runs `preflight` and `doctor` for every app, and `init --app` adds an app to a file of apps, or moves a flat file under `apps:` (below).
+Status: `doctor`, `preflight`, `init` and `sign` work, and `upload` is built and tested against a fake App Store Connect, not yet exercised against the real one from `wincode`. `preflight` and `doctor` read an app's App Store Connect key through its `credentials` reference (ADR-0014; layout below), and `sign` its distribution key. `sign` signs with an unencrypted PEM key only (ADR-0013, phase 3a); encrypted keys come in phase 3b. `upload` needs no WSL2 and runs on Linux too. The other commands are registered; each prints `not implemented yet, see ADR-0013` and exits with 64 until the phase of ADR-0013 that implements it. `wincode.yaml` may describe several apps ([ADR-0014](../../docs/adr/0014-one-project-many-apps.md)): `--app <name>` chooses the app of `preflight`, `doctor` and `init`, `--all` runs `preflight` and `doctor` for every app, and `init --app` adds an app to a file of apps, or moves a flat file under `apps:` (below).
 
 ```
 dart run wincode_cli:wincode <command> [arguments]
@@ -13,7 +13,7 @@ dart run wincode_cli:wincode <command> [arguments]
 | `init` | Write `wincode.yaml` for the Flutter project in this folder | works |
 | `preflight [<signed .ipa>]` | Check the signed IPA and App Store Connect before an upload. Read-only | works |
 | `sign [<unsigned .ipa>]` | Sign the IPA for the App Store with zsign in WSL2, and check every signature | works (3a) |
-| `upload [<signed .ipa>]` | Upload the signed IPA to App Store Connect and wait for its processing | 4 |
+| `upload [<signed .ipa>]` | Upload the signed IPA to App Store Connect and wait for its processing | built (4), not yet run against Apple |
 | `status` | Show the state of the app's latest uploads in App Store Connect. Read-only | 4 |
 | `build` | Build the unsigned IPA on the app's macOS runner (GitHub Actions) and download it | 5 |
 | `doctor` | Check the setup (with `--sign`, what `sign` needs), or a Mach-O binary against the SDK or a reference build | works |
@@ -55,8 +55,10 @@ They go before or after the command.
 | 0 | Done |
 | 1 | Failed: a check found a problem, an input is wrong, or Apple or GitHub refused the work |
 | 64 | Usage error, or not implemented yet |
+| 65 | `upload`: Apple took the IPA and then failed its processing |
 | 69 | A tool, the SDK or the network is missing |
 | 70 | A bug in winCode |
+| 75 | `upload`: Apple had not finished its processing within `--timeout` |
 | 77 | Apple or GitHub refused the credentials |
 | 78 | `wincode.yaml` or an environment variable is wrong |
 
@@ -191,7 +193,7 @@ The checks, in the order of the report:
 | `store-profile` | The developer portal has the App ID, and an active App Store profile for it that has not expired |
 | `local-profile` | The profile of `wincode.yaml` is an App Store profile of the team, for the bundle ID, and has not expired |
 | `ipa` | The IPA is a zip archive with one app in `Payload/`, whose bundle ID is that of `wincode.yaml`, and whose version and build number are one to three numbers joined by dots |
-| `signature` | When the IPA holds `embedded.mobileprovision`: that profile passes the `local-profile` checks, and the executable is signed with the `application-identifier` `<team ID>.<bundle ID>`. An IPA without it is reported (INFO), not failed: `upload` will require a signature (ADR-0013, phase 4) |
+| `signature` | When the IPA holds `embedded.mobileprovision`: that profile passes the `local-profile` checks, and the executable is signed with the `application-identifier` `<team ID>.<bundle ID>`. An IPA without it is reported (INFO), not failed: `upload` runs these checks in strict mode, where it fails (`ipa-unsigned`) |
 | `profile-link` | The `UUID` of the profile agrees across App Store Connect, the profile of `wincode.yaml` and the IPA's `embedded.mobileprovision`; no UUID is printed. The file must be an active App Store profile of the App ID in App Store Connect, and a signed IPA must carry the file's profile. An unsigned IPA is an INFO |
 
 Each check prints `PASS`, `FAIL`, `WARN` or `INFO`, and a failure or a warning prints why and the next step under it. A profile that expires within 30 days is a warning. When a request fails, the checks in App Store Connect after it are not run; the checks on this PC always are. The last line sums up, and the exit code is that of the first failure, or 0:
@@ -272,6 +274,40 @@ The first five checks read local files and all run, so one report lists every lo
 
 `xtool-org/zsign` 1.9.0 at commit `f6158be9e62a5ce2a53d72b1a6d880880da956c8`, the one `third_party/xtool/Package.resolved` pins; GitHub's archive of it has the SHA-256 `423ebe2f4dd3380367461c03e6de3b9e9f31adcbe9a2f0237493c8f0bf9b7c5d`. zsign is MIT-licensed; it builds its own zlib and minizip (zlib licence) and links OpenSSL 3 (Apache-2.0). winCode ships none of them: `wincode doctor --sign` prints the commands that build it at `~/.wincode/zsign` in the distribution, and you run them. Set `WINCODE_WSL_DISTRO` when that is not the default distribution.
 
+## upload
+
+```
+dart run wincode_cli:wincode upload [--app <name>] [--ipa <file>] [--timeout <minutes>] [--yes] [<signed .ipa>]
+```
+
+Built, and not yet exercised against App Store Connect from `wincode`: its tests run against a fake one, and the real run on a throwaway test app waits for the maintainer's word ([ADR-0013, phase 4 as built](../../docs/adr/0013-wincode-cli-build-sign-upload.md)). `wincode status` is not built yet.
+
+Uploads the signed IPA (`signed.ipa` in the app's `output` folder, or `--ipa <file>`) through the Build Uploads API and waits for Apple's processing result. It is the only command that writes to Apple.
+
+Before the first write, every check runs, and one that fails stops the command with nothing uploaded:
+
+| Check | What passes |
+| --- | --- |
+| `preflight`, strict | Everything `preflight` checks, and an IPA that is not signed fails (`ipa-unsigned`) where `preflight` says INFO: the key, the app record, a build number above every existing build's, the App ID's active profile, the profile of `wincode.yaml`, the IPA, its signature and the profile link |
+| `certificate`, `certificate-asc`, `code-signature` | What `sign --verify-only` checks: the certificate that signed the IPA is one of the profile's, a distribution certificate of the team that has not expired, and App Store Connect lists it; every signature, hash and seal of the IPA checks out |
+
+Then it prints the plan (app, version and build number, file name and size, MD5 and SHA-256) and asks you to type the name of the app (the bundle ID for a `wincode.yaml` without names). `--yes` skips the question, and is needed without a terminal, in CI (`CI` set) and with `--json`, where `upload` refuses to ask (`confirmation-required`, 64). `--dry-run` sends nothing and asks nothing: it checks what needs no network, and prints the plan and the requests, as `asc_upload.py --dry-run` does.
+
+The requests are the spike's, in its order: `GET /v1/apps`, `POST /v1/buildUploads`, `POST /v1/buildUploadFiles`, the parts of the file that Apple names, `PATCH /v1/buildUploadFiles/{id}` with the MD5, and `GET /v1/buildUploads/{id}` every 30 s until the build is valid or failed, or `--timeout` (minutes, or seconds with an `s`; 20 minutes by default) has passed. Each step and each change of state is printed with its UTC time, and Apple's messages as sent. Nothing that creates or changes something at Apple is retried: a repeat could make a second upload, and a build number that Apple has taken stays used. The parts and the reads of the state are, with a short backoff. The token, the key and the signed links of the parts are never printed.
+
+| Exit | Failure ids |
+| --- | --- |
+| 0 | the build is valid |
+| 1 | `ipa-unsigned` and the other failures of `preflight` and `sign --verify-only`, `upload-cancelled`, `upload-refused`, `upload-part-refused`, `upload-answer-invalid`, `app-record-missing`, `ipa-unreadable`, `ipa-changed` |
+| 64 | `confirmation-required` |
+| 65 | `processing-failed`: Apple took the file and then failed its processing. The build number is used |
+| 69 | `offline`, `asc-unavailable`, `upload-part-unavailable` |
+| 75 | `processing-timeout`: the file was sent and Apple had not finished within `--timeout`. The build may still become valid; do not upload the same build number again |
+| 77 | `asc-unauthorized`, `asc-forbidden` |
+| 78 | `asc-key-dir-missing` and the other key-location failures of `preflight` |
+
+`upload` runs on Linux as well as on Windows; signing on Linux needs a native zsign runner, which is the next slice (ADR-0013, section 11).
+
 ## doctor
 
 ```
@@ -306,4 +342,4 @@ It exits with 0 when the checks pass, 1 when one fails or a file cannot be read,
 dart test
 ```
 
-`test/goldens/help.txt` holds the `--help` output of every command. `test/goldens/config-flat.txt` holds what the loader says about a flat `wincode.yaml`, case by case; it was first written from the loader as it was before ADR-0014, so a change in it is a change in how a flat file is read. `test/init_migrate_test.dart` covers the in-place edits (`test/goldens/init-edit.txt` holds a hand-kept file before and after), the migration with and without a backup (`test/goldens/init-migration.txt`, redacted) and the rollback of a write that would not load. `test/apps_select_test.dart` covers `--app`, `--all` and `init --app` with files of three apps, and `test/goldens/apps-json.txt` holds the `--json` documents of one app and of `--all`, redacted too. `test/credentials_test.dart` uses real temporary git repositories for the keys-root rule, records every program that the resolution starts (only `git`), and reads the two messages of ADR-0014 that this change implements from the ADR itself. `test/config_apps_test.dart` reads the worked example and the duplicate-bundle-ID message from ADR-0014 itself, so the ADR and the code cannot drift. The tests of `init` build Flutter projects in a temporary folder, with a scripted standard input, and use a real temporary git repository for the profile rule. `test/goldens/init-messages.txt` holds what `init` prints when it cannot ask. `test/workflow_template_test.dart` fails if the embedded workflow (`lib/src/workflow_template.g.dart`) and `templates/wincode-ios.yml` differ by a byte. `test/goldens/preflight.txt` holds `preflight` reports and its `--dry-run` requests, and `test/goldens/preflight.json` its `--json` object, all from a fake App Store Connect on 127.0.0.1 with made-up IDs. `test/sign_test.dart` runs `sign` and `doctor --sign` against a fake `wsl.exe` and a fake zsign that signs, fails, hangs, writes garbage or grows, with throwaway RSA keys, self-made certificates and made-up profiles from `wincode_core`'s `testing.dart`, and checks that nothing is left behind after a failure; `test/goldens/sign.txt` holds a redacted report. The CI job `zsign integration` builds the pinned zsign on Ubuntu, signs an app that `tool/zsign_fixture.dart` generates with a throwaway CA, and runs `sign --verify-only` on it. After a deliberate change, `UPDATE_GOLDENS=1 dart test` rewrites them; review the diff before committing. No test reaches the network.
+`test/goldens/help.txt` holds the `--help` output of every command. `test/goldens/config-flat.txt` holds what the loader says about a flat `wincode.yaml`, case by case; it was first written from the loader as it was before ADR-0014, so a change in it is a change in how a flat file is read. `test/init_migrate_test.dart` covers the in-place edits (`test/goldens/init-edit.txt` holds a hand-kept file before and after), the migration with and without a backup (`test/goldens/init-migration.txt`, redacted) and the rollback of a write that would not load. `test/apps_select_test.dart` covers `--app`, `--all` and `init --app` with files of three apps, and `test/goldens/apps-json.txt` holds the `--json` documents of one app and of `--all`, redacted too. `test/credentials_test.dart` uses real temporary git repositories for the keys-root rule, records every program that the resolution starts (only `git`), and reads the two messages of ADR-0014 that this change implements from the ADR itself. `test/config_apps_test.dart` reads the worked example and the duplicate-bundle-ID message from ADR-0014 itself, so the ADR and the code cannot drift. The tests of `init` build Flutter projects in a temporary folder, with a scripted standard input, and use a real temporary git repository for the profile rule. `test/goldens/init-messages.txt` holds what `init` prints when it cannot ask. `test/workflow_template_test.dart` fails if the embedded workflow (`lib/src/workflow_template.g.dart`) and `templates/wincode-ios.yml` differ by a byte. `test/goldens/preflight.txt` holds `preflight` reports and its `--dry-run` requests, and `test/goldens/preflight.json` its `--json` object, all from a fake App Store Connect on 127.0.0.1 with made-up IDs. `test/sign_test.dart` runs `sign` and `doctor --sign` against a fake `wsl.exe` and a fake zsign that signs, fails, hangs, writes garbage or grows, with throwaway RSA keys, self-made certificates and made-up profiles from `wincode_core`'s `testing.dart`, and checks that nothing is left behind after a failure; `test/goldens/sign.txt` holds a redacted report. The CI job `zsign integration` builds the pinned zsign on Ubuntu, signs an app that `tool/zsign_fixture.dart` generates with a throwaway CA, and runs `sign --verify-only` and `upload --dry-run` on it, so that Linux is tested from the start. `test/upload_test.dart` runs `upload` against a fake App Store Connect and a second fake for the upload store (the requests and their bodies, the parts rebuilding the IPA byte for byte, a part that fails and is sent again, a refused create that is not repeated, a failed processing, the timeout, each check that stops the run, `--dry-run` making no request, the confirmation, and that no token, key, link or signed header is ever printed), with an IPA that a throwaway key signed; `test/goldens/upload.txt` holds a redacted report. After a deliberate change, `UPDATE_GOLDENS=1 dart test` rewrites them; review the diff before committing. No test reaches the network.

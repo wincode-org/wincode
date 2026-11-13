@@ -21,7 +21,7 @@ Available commands:
   preflight   Check the signed IPA and App Store Connect before an upload. Read-only.
   sign        Sign the IPA for the App Store with zsign in WSL2, and check the result (ADR-0013, phase 3a).
   status      Show the state of the app's latest uploads in App Store Connect. Read-only.
-  upload      Upload the signed IPA to App Store Connect and wait for its processing.
+  upload      Upload the signed IPA to App Store Connect and wait for its processing (ADR-0013, phase 4). The only command that writes to Apple.
 
 Run "wincode help <command>" for more information about a command.
 Global options go before or after the command.
@@ -30,8 +30,10 @@ Exit codes:
   0   done
   1   failed: a check found a problem, an input is wrong, or Apple or GitHub refused the work
   64  usage error, or not implemented yet
+  65  upload: Apple took the IPA and then failed its processing
   69  a tool, the SDK or the network is missing
   70  a bug in winCode
+  75  upload: Apple had not finished processing within --timeout
   77  Apple or GitHub refused the credentials
   78  wincode.yaml or an environment variable is wrong
 
@@ -121,12 +123,22 @@ Usage: wincode status
 Run "wincode help" to see global options.
 
 $ wincode help upload
-Upload the signed IPA to App Store Connect and wait for its processing.
+Upload the signed IPA to App Store Connect and wait for its processing (ADR-0013, phase 4). The only command that writes to Apple.
 
-Not implemented yet, see ADR-0013 (phase 4).
+Every check runs first, and one that fails stops the command before a single upload request: the IPA (signed.ipa in the output folder by default) must be signed, its signatures must verify against the profile in wincode.yaml and a distribution certificate that App Store Connect lists, and its build number must be above every build the app has. Then it prints what it will send and asks you to type the name of the app (the bundle ID for a file without names); --yes skips that, and without a terminal, in CI or with --json, --yes is required.
 
-Usage: wincode upload [<signed .ipa>]
--h, --help    Print this usage information.
+It then creates the build upload, sends the file in the parts that Apple names, marks it uploaded with its MD5, and asks for the state every 30 s until the build is valid or failed, or --timeout has passed. A build number that Apple has taken stays used, so nothing that creates an upload is repeated; the parts and the questions about the state are, with a short backoff. The token, the key and the signed links of the parts are never printed.
+
+--dry-run sends nothing: it checks what needs no network, and prints the plan and the requests.
+
+Exit codes: 0 valid, 1 a check failed or Apple refused, 65 Apple failed the processing, 69 no network, 75 not finished within --timeout, 77 Apple refused the key.
+
+Usage: wincode upload [--ipa <file>] [<signed .ipa>]
+-h, --help                 Print this usage information.
+    --ipa=<file>           The signed IPA to upload. Default: signed.ipa in the output folder of the app.
+    --timeout=<minutes>    How long to wait for Apple's processing result after the upload: a number of minutes, such as 20, or of seconds with an s, such as 90s. When it passes, the exit code is 75 and the upload is not lost.
+                           (defaults to "20")
+-y, --yes                  Do not ask for the name of the app. Needed in CI, with --json and without a terminal.
 
 Run "wincode help" to see global options.
 

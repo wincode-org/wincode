@@ -1,0 +1,113 @@
+# a valid build
+$ wincode upload --redact
+PASS  the files of WINCODE_ASC_KEY_DIR and the profile lie outside git working trees, or git ignores them
+PASS  App Store Connect accepts the API key
+PASS  App Store Connect has the app record of <bundle ID>
+INFO  2 existing builds, highest build number 14
+PASS  build 15 is higher than 14, the highest existing build
+PASS  App Store Connect has an active App Store profile for <bundle ID>, valid until 2027-09-09
+PASS  the profile in wincode.yaml is an App Store profile of team <team ID> for <bundle ID>, valid until 2027-09-09
+PASS  the IPA holds <bundle ID>, version 1.0, build 15
+PASS  the IPA is signed as <team ID>.<bundle ID> with an App Store profile, valid until 2027-09-09
+PASS  the profile in wincode.yaml is an active App Store profile of <bundle ID> in App Store Connect (same UUID)
+PASS  the IPA is signed with the profile in wincode.yaml (same UUID)
+PASS  the IPA's signing certificate in the profile is an Apple Distribution certificate of team <team ID>, valid until 2027-09-09
+PASS  the app's executable gets 4 entitlements, each allowed by the profile: application-identifier, com.apple.developer.team-identifier, get-task-allow, keychain-access-groups
+PASS  App Store Connect lists the certificate as DISTRIBUTION, valid until 2027-09-09
+PASS  every signature checks out: 2 Mach-O files and 2 bundles, signed for team <team ID> with the certificate checked above and the profile in wincode.yaml
+
+Upload plan:
+  app:      <bundle ID>
+  version:  1.0, build 15
+  file:     signed.ipa, <n> bytes
+  MD5:      <md5>
+  SHA-256:  <sha256>
+
+2026-11-13 12:00:00 UTC  app record found
+2026-11-13 12:00:00 UTC  build upload created: version 1.0, build 15
+2026-11-13 12:00:00 UTC  file reserved: 3 part(s) to send
+2026-11-13 12:00:00 UTC  part 1 sent: <n> bytes
+2026-11-13 12:00:00 UTC  part 2 sent: <n> bytes
+2026-11-13 12:00:00 UTC  part 3 sent: <n> bytes
+2026-11-13 12:00:00 UTC  commit accepted; file: {"state": "COMPLETE", "errors": [], "warnings": []}
+2026-11-13 12:00:00 UTC  upload PROCESSING, file COMPLETE, build not created yet
+2026-11-13 12:00:00 UTC  upload COMPLETE, file COMPLETE, build VALID
+PASS  App Store Connect processed version 1.0 (build 15) as valid
+wincode upload: passed
+
+exit 0
+
+# Apple fails the processing
+$ wincode upload --redact
+PASS  the files of WINCODE_ASC_KEY_DIR and the profile lie outside git working trees, or git ignores them
+PASS  App Store Connect accepts the API key
+PASS  App Store Connect has the app record of <bundle ID>
+INFO  2 existing builds, highest build number 14
+PASS  build 15 is higher than 14, the highest existing build
+PASS  App Store Connect has an active App Store profile for <bundle ID>, valid until 2027-09-09
+PASS  the profile in wincode.yaml is an App Store profile of team <team ID> for <bundle ID>, valid until 2027-09-09
+PASS  the IPA holds <bundle ID>, version 1.0, build 15
+PASS  the IPA is signed as <team ID>.<bundle ID> with an App Store profile, valid until 2027-09-09
+PASS  the profile in wincode.yaml is an active App Store profile of <bundle ID> in App Store Connect (same UUID)
+PASS  the IPA is signed with the profile in wincode.yaml (same UUID)
+PASS  the IPA's signing certificate in the profile is an Apple Distribution certificate of team <team ID>, valid until 2027-09-09
+PASS  the app's executable gets 4 entitlements, each allowed by the profile: application-identifier, com.apple.developer.team-identifier, get-task-allow, keychain-access-groups
+PASS  App Store Connect lists the certificate as DISTRIBUTION, valid until 2027-09-09
+PASS  every signature checks out: 2 Mach-O files and 2 bundles, signed for team <team ID> with the certificate checked above and the profile in wincode.yaml
+
+Upload plan:
+  app:      <bundle ID>
+  version:  1.0, build 15
+  file:     signed.ipa, <n> bytes
+  MD5:      <md5>
+  SHA-256:  <sha256>
+
+2026-11-13 12:00:00 UTC  app record found
+2026-11-13 12:00:00 UTC  build upload created: version 1.0, build 15
+2026-11-13 12:00:00 UTC  file reserved: 2 part(s) to send
+2026-11-13 12:00:00 UTC  part 1 sent: <n> bytes
+2026-11-13 12:00:00 UTC  part 2 sent: <n> bytes
+2026-11-13 12:00:00 UTC  commit accepted; file: {"state": "COMPLETE", "errors": [], "warnings": []}
+2026-11-13 12:00:00 UTC  upload FAILED, file COMPLETE, build not created yet
+2026-11-13 12:00:00 UTC  upload error: {"code": "STATE_ERROR.DUPLICATE", "description": "This bundle is invalid. Café."}
+FAIL  App Store Connect failed the processing of version 1.0 (build 15): upload FAILED, file COMPLETE, build not created yet
+  why: Apple's messages above say why. A build number stays used even when its processing fails.
+  next: fix what they name, raise the build number above 15 (version: x.y.z+N in pubspec.yaml), then build, sign and upload again.
+wincode upload: 1 check failed
+
+exit 65
+
+# --dry-run
+$ wincode upload --redact --dry-run
+PASS  the profile in wincode.yaml is an App Store profile of team <team ID> for <bundle ID>, valid until 2027-09-09
+PASS  the IPA holds <bundle ID>, version 1.0, build 15
+PASS  the IPA is signed as <team ID>.<bundle ID> with an App Store profile, valid until 2027-09-09
+PASS  the IPA is signed with the profile in wincode.yaml (same UUID)
+PASS  the IPA's signing certificate in the profile is an Apple Distribution certificate of team <team ID>, valid until 2027-09-09
+PASS  the app's executable gets 4 entitlements, each allowed by the profile: application-identifier, com.apple.developer.team-identifier, get-task-allow, keychain-access-groups
+INFO  App Store Connect was not asked about the certificate (--dry-run)
+PASS  every signature checks out: 2 Mach-O files and 2 bundles, signed for team <team ID> with the certificate checked above and the profile in wincode.yaml
+
+Upload plan (nothing is sent):
+  app:      <bundle ID>
+  version:  1.0, build 15
+  file:     signed.ipa, <n> bytes
+  MD5:      <md5>
+  SHA-256:  <sha256>
+GET https://api.appstoreconnect.apple.com/v1/apps?filter[bundleId]=<bundle ID>&fields[apps]=bundleId&limit=200
+    Authorization: Bearer <token signed locally, not shown>
+POST https://api.appstoreconnect.apple.com/v1/buildUploads
+    {"data": {"type": "buildUploads", "attributes": {"cfBundleShortVersionString": "1.0", "cfBundleVersion": "15", "platform": "IOS"}, "relationships": {"app": {"data": {"type": "apps", "id": "{id of the app record}"}}}}}
+POST https://api.appstoreconnect.apple.com/v1/buildUploadFiles
+    {"data": {"type": "buildUploadFiles", "attributes": {"assetType": "ASSET", "fileName": "signed.ipa", "fileSize": <n>, "uti": "com.apple.ipa"}, "relationships": {"buildUpload": {"data": {"type": "buildUploads", "id": "{id of the build upload}"}}}}}
+<each uploadOperations entry of the answer>: its method and URL, its byte range of the <n>-byte IPA and its requestHeaders; no token
+PATCH https://api.appstoreconnect.apple.com/v1/buildUploadFiles/{id of the upload file}
+    {"data": {"type": "buildUploadFiles", "id": "{id of the upload file}", "attributes": {"uploaded": true, "sourceFileChecksums": {"file": {"hash": "<md5>", "algorithm": "MD5"}}}}}
+GET https://api.appstoreconnect.apple.com/v1/buildUploads/{id of the build upload}?include=build,assetFile&fields[builds]=processingState&fields[buildUploadFiles]=assetDeliveryState
+    every 30 s, for up to 20 minutes after the commit
+Authorization on every API request: Bearer <token signed locally, not shown>
+INFO  dry run: nothing was sent or uploaded
+wincode upload: passed
+
+exit 0
+
