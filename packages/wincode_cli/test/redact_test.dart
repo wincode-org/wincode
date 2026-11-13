@@ -164,22 +164,22 @@ void main() {
 
     test('accepts --redact before and after the command', () async {
       for (final args in [
-        ['--redact', 'upload'],
-        ['upload', '--redact'],
+        ['--redact', 'build'],
+        ['build', '--redact'],
       ]) {
         expect(await run(args), (
           64,
           '',
-          'wincode upload: not implemented yet, see ADR-0013\n',
+          'wincode build: not implemented yet, see ADR-0013\n',
         ), reason: '$args');
       }
     });
 
     test('behaves the same under CI, with no ID to hide', () async {
-      expect(await run(['upload'], env: {'CI': 'true'}), (
+      expect(await run(['build'], env: {'CI': 'true'}), (
         64,
         '',
-        'wincode upload: not implemented yet, see ADR-0013\n',
+        'wincode build: not implemented yet, see ADR-0013\n',
       ));
     });
   });

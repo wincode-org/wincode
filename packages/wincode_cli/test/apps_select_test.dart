@@ -489,7 +489,7 @@ void main() {
     });
 
     test('the commands that are not built accept --app', () async {
-      for (final command in ['upload', 'build', 'status']) {
+      for (final command in ['build', 'status']) {
         final (code, _, err) = await onConfig(command, ['--app', 'alpha']);
         expect(code, 64, reason: command);
         expect(err, contains('not implemented yet'), reason: command);

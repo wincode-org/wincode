@@ -95,7 +95,7 @@ jobs:
           "zsign-$ZSIGN_COMMIT/bin/zsign" -v
       # A throwaway CA signs the distribution certificate and the profile. zsign takes the certificate as a .p12 with
       # the CA, since it looks the issuer of a PEM certificate up among Apple's own; an empty password needs no -p.
-      - name: sign a generated app, then check it with wincode sign --verify-only
+      - name: sign a generated app, then check it with wincode sign --verify-only and upload --dry-run
         working-directory: wc/packages/wincode_cli
         run: |
           set -euo pipefail
@@ -120,11 +120,25 @@ jobs:
           # --verify-only reads no private key, and --offline keeps it from asking App Store Connect.
           rm "$w/dist.key"
           dart run bin/wincode.dart sign --verify-only --offline --config "$w/fixture/wincode.yaml"
-          # A file changed after signing must fail the check.
+          # wincode upload runs on Linux too. With --dry-run it checks the IPA that zsign signed, prints the plan and the
+          # requests, and sends nothing; it needs no App Store Connect key for that.
+          dart run bin/wincode.dart upload --dry-run --config "$w/fixture/wincode.yaml" | tee "$w/upload-dry-run.txt"
+          grep -F "Upload plan (nothing is sent):" "$w/upload-dry-run.txt"
+          grep -F "POST https://api.appstoreconnect.apple.com/v1/buildUploads" "$w/upload-dry-run.txt"
+          # An IPA that is not signed is refused.
+          if dart run bin/wincode.dart upload --dry-run --ipa "$w/fixture/unsigned.ipa" --config "$w/fixture/wincode.yaml"; then
+            echo "an unsigned IPA passed the check of upload"
+            exit 1
+          fi
+          # A file changed after signing must fail the check, and upload refuses that IPA too.
           mkdir -p "$w/changed/Payload/Example.app/assets"
           echo changed > "$w/changed/Payload/Example.app/assets/hello.txt"
           (cd "$w/changed" && zip -q "$w/fixture/build/signed.ipa" Payload/Example.app/assets/hello.txt)
           if dart run bin/wincode.dart sign --verify-only --offline --config "$w/fixture/wincode.yaml"; then
             echo "a changed IPA passed the check"
+            exit 1
+          fi
+          if dart run bin/wincode.dart upload --dry-run --config "$w/fixture/wincode.yaml"; then
+            echo "a changed IPA passed the check of upload"
             exit 1
           fi
