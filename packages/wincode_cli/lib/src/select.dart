@@ -32,7 +32,8 @@ Never refuseAll(String command, String reason) => throw WincodeException(
 /// What each command that writes does, for the message of [refuseAll].
 const writesOf = {
   'sign': 'writes a signed IPA',
-  'upload': 'uploads to Apple, and nothing is retried after an error',
+  'upload':
+      'uploads to Apple, and an upload that was sent cannot be taken back',
   'build': 'starts a run on a paid macOS runner',
   'init': 'writes the settings of the apps',
 };

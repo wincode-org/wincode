@@ -22,6 +22,7 @@ export 'src/code_signature.dart'
     show codeSignatureOf, entitlementsOfSignature, readSignedEntitlements;
 export 'src/doctor.dart' show DoctorFinding, checkFlutterSdkLineEndings;
 export 'src/entitlements.dart' show buildEntitlements;
+export 'src/file_digest.dart' show digestsOfFile;
 export 'src/flutter_assets.dart'
     show
         PackageRoots,

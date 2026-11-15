@@ -15,6 +15,7 @@ import 'src/preflight.dart';
 import 'src/redact.dart';
 import 'src/select.dart';
 import 'src/sign.dart';
+import 'src/upload.dart';
 import 'src/zsign.dart';
 
 export 'src/config.dart'
@@ -44,6 +45,7 @@ export 'src/init.dart' show ReadLine;
 export 'src/preflight.dart' show AscConnect;
 export 'src/redact.dart' show Redactor, runsInCi;
 export 'src/sign.dart' show permits, signingEntitlements;
+export 'src/upload.dart' show defaultUploadTimeout;
 export 'src/zsign.dart'
     show
         StartProcess,
@@ -66,12 +68,6 @@ const _planned = [
     5,
   ),
   (
-    'upload',
-    'Upload the signed IPA to App Store Connect and wait for its processing.',
-    '[<signed .ipa>]',
-    4,
-  ),
-  (
     'status',
     "Show the state of the app's latest uploads in App Store Connect. Read-only.",
     '',
@@ -86,8 +82,9 @@ const _planned = [
 /// (default: the process's) sets `CI`.
 ///
 /// [clock] (default: the system's), [connect] (default: App Store Connect), [workingDirectory] (default: the current
-/// folder), [readLine] and [terminal] (default: standard input), [run] (default: starts the program) and [zsign]
-/// (default: runs zsign through `wsl.exe`) are there for tests.
+/// folder), [readLine] and [terminal] (default: standard input), [run] (default: starts the program), [zsign]
+/// (default: runs zsign through `wsl.exe`) and [pollInterval] (default: 30 s, how often `upload` asks Apple for the
+/// state of the processing) are there for tests.
 Future<int> runWincode(
   List<String> args,
   StringSink out,
@@ -100,6 +97,7 @@ Future<int> runWincode(
   bool? terminal,
   RunProcess run = runProcess,
   ZsignRunner? zsign,
+  Duration pollInterval = const Duration(seconds: 30),
 }) async {
   environment ??= Platform.environment;
   // A usage error comes before the arguments are parsed, so the flags can only be looked up in the list itself.
@@ -143,6 +141,18 @@ Future<int> runWincode(
       connect,
       run,
       zsign ?? ZsignRunner(),
+    ),
+    _Upload(
+      out,
+      err,
+      environment,
+      redactor,
+      clock ?? DateTime.now,
+      connect,
+      run,
+      readLine ?? stdin.readLineSync,
+      terminal ?? stdin.hasTerminal,
+      pollInterval,
     ),
   );
   var command = '';
@@ -214,6 +224,7 @@ class _Wincode extends CommandRunner<int> {
     _Preflight preflight,
     _Init init,
     _Sign sign,
+    _Upload upload,
   ) : super(
         'wincode',
         'Build, sign and upload Flutter iOS apps from Windows.',
@@ -266,6 +277,7 @@ class _Wincode extends CommandRunner<int> {
     addCommand(preflight);
     addCommand(init);
     addCommand(sign);
+    addCommand(upload);
   }
 
   final StringSink out;
@@ -278,8 +290,10 @@ Exit codes:
   0   done
   1   failed: a check found a problem, an input is wrong, or Apple or GitHub refused the work
   64  usage error, or not implemented yet
+  65  upload: Apple took the IPA and then failed its processing
   69  a tool, the SDK or the network is missing
   70  a bug in winCode
+  75  upload: Apple had not finished processing within --timeout
   77  Apple or GitHub refused the credentials
   78  wincode.yaml or an environment variable is wrong''';
 
@@ -977,6 +991,158 @@ class _Sign extends _Command {
       );
     }
     return exitCodeOf(findings).code;
+  }
+}
+
+class _Upload extends _Command {
+  _Upload(
+    super.out,
+    this.err,
+    this.environment,
+    this.redactor,
+    this.clock,
+    this.connect,
+    this.runProcess,
+    this.readLine,
+    this.terminal,
+    this.pollInterval,
+  ) {
+    argParser
+      ..addOption(
+        'ipa',
+        valueHelp: 'file',
+        help: 'The signed IPA to upload. Default: signed.ipa in the output folder of the app.',
+      )
+      ..addOption(
+        'timeout',
+        valueHelp: 'minutes',
+        defaultsTo: '${defaultUploadTimeout.inMinutes}',
+        help:
+            "How long to wait for Apple's processing result after the upload: a number of minutes, such as 20, or of "
+            'seconds with an s, such as 90s. When it passes, the exit code is 75 and the upload is not lost.',
+      )
+      ..addFlag(
+        'yes',
+        abbr: 'y',
+        negatable: false,
+        help: 'Do not ask for the name of the app. Needed in CI, with --json and without a terminal.',
+      );
+  }
+
+  final StringSink err;
+  final Map<String, String> environment;
+  final Redactor redactor;
+  final DateTime Function() clock;
+  final AscConnect connect;
+  final RunProcess runProcess;
+  final ReadLine readLine;
+  final bool terminal;
+  final Duration pollInterval;
+
+  @override
+  final name = 'upload';
+
+  @override
+  final description =
+      'Upload the signed IPA to App Store Connect and wait for its processing (ADR-0013, phase 4). The only command that '
+      'writes to Apple.\n\n'
+      'Every check runs first, and one that fails stops the command before a single upload request: the IPA (signed.ipa '
+      'in the output folder by default) must be signed, its signatures must verify against the profile in wincode.yaml '
+      'and a distribution certificate that App Store Connect lists, and its build number must be above every build the '
+      'app has. Then it prints what it will send and asks you to type the name of the app (the bundle ID for a file '
+      'without names); --yes skips that, and without a terminal, in CI or with --json, --yes is required.\n\n'
+      'It then creates the build upload, sends the file in the parts that Apple names, marks it uploaded with its MD5, '
+      'and asks for the state every 30 s until the build is valid or failed, or --timeout has passed. A build number '
+      'that Apple has taken stays used, so nothing that creates an upload is repeated; the parts and the questions '
+      'about the state are, with a short backoff. The token, the key and the signed links of the parts are never '
+      'printed.\n\n'
+      '--dry-run sends nothing: it checks what needs no network, and prints the plan and the requests.\n\n'
+      'Exit codes: 0 valid, 1 a check failed or Apple refused, 65 Apple failed the processing, 69 no network, 75 not '
+      'finished within --timeout, 77 Apple refused the key.';
+
+  @override
+  String get invocation => 'wincode upload [--ipa <file>] [<signed .ipa>]';
+
+  @override
+  Future<int> run() async {
+    if (globalResults!.flag('all')) {
+      refuseAll(name, writesOf[name]!);
+    }
+    final rest = argResults!.rest;
+    if (rest.length > 1) {
+      usageException('Give at most one IPA.');
+    }
+    if (rest.isNotEmpty && argResults!.wasParsed('ipa')) {
+      usageException('Name the IPA once: either --ipa <file> or <file>.');
+    }
+    final timeout = _timeout(argResults!.option('timeout')!);
+    final path = globalResults!.option('config')!;
+    final settings = loadSettings(path, redactor: redactor);
+    final app = selectApps(
+      settings,
+      path: path,
+      app: globalResults!.option('app'),
+      all: false,
+      readOnly: false,
+      redactor: redactor,
+    ).single;
+    final dryRun = globalResults!.flag('dry-run');
+    final yes = argResults!.flag('yes');
+    final interactive =
+        !yes && !jsonOutput && !runsInCi(environment) && terminal;
+    if (!dryRun && !yes && !interactive) {
+      throw const WincodeException(
+        ExitCode.usage,
+        'confirmation-required',
+        'upload needs your confirmation, and cannot ask here',
+        why:
+            'an upload cannot be taken back: the build number is used from the moment Apple has the file. upload asks '
+            'you to type the name of the app, but only at a terminal, and not in CI or with --json.',
+        next:
+            'run wincode upload --dry-run to read the plan, then run it in a terminal, or give --yes. Nothing was '
+            'uploaded.',
+      );
+    }
+    final ipa =
+        argResults!.option('ipa') ??
+        rest.firstOrNull ??
+        '${app.output.path}${Platform.pathSeparator}signed.ipa';
+    // With --json, stdout carries the JSON object only.
+    final report = jsonOutput ? err : out;
+    final result = await Uploader(
+      config: app,
+      environment: environment,
+      redactor: redactor,
+      clock: clock,
+      connect: connect,
+      run: runProcess,
+      report: report,
+      readLine: readLine,
+      timeout: timeout,
+      pollInterval: pollInterval,
+      log: globalResults!.flag('verbose') ? err.writeln : null,
+    ).upload(File(ipa), dryRun: dryRun, yes: yes);
+    if (jsonOutput) {
+      out.writeln(
+        jsonEncode({
+          ...jsonOf(result.findings, command: name, app: app.name),
+          ...result.json,
+        }),
+      );
+    }
+    return exitCodeOf(result.findings).code;
+  }
+
+  /// `--timeout`: minutes, or seconds with an `s`.
+  Duration _timeout(String text) {
+    final match = RegExp(r'^(\d+)(s?)$').firstMatch(text.trim());
+    final n = int.tryParse(match?[1] ?? '');
+    if (match == null || n == null || n == 0) {
+      usageException(
+        '--timeout is a number of minutes, such as 20, or of seconds with an s, such as 90s: got $text',
+      );
+    }
+    return match[2] == 's' ? Duration(seconds: n) : Duration(minutes: n);
   }
 }
 

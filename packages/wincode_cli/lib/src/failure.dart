@@ -9,11 +9,19 @@ enum ExitCode {
   /// The command line is wrong, or the command is not implemented yet.
   usage(64),
 
+  /// `wincode upload`: Apple took the upload and then failed its processing, so the IPA's content is wrong. The build
+  /// number is used up: it needs a new one. EX_DATAERR.
+  rejected(65),
+
   /// Something winCode needs is not there: a tool (zsign, gh), the SDK, or the network.
   unavailable(69),
 
   /// A bug in winCode.
   internal(70),
+
+  /// `wincode upload`: the upload was sent, and Apple had not finished its processing within `--timeout`. Not a
+  /// failure yet: the build may still become valid. EX_TEMPFAIL.
+  pending(75),
 
   /// Apple or GitHub refused the credentials.
   permission(77),

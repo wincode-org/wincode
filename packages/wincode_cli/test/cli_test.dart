@@ -4,7 +4,7 @@ import 'dart:io';
 import 'package:test/test.dart';
 import 'package:wincode_cli/wincode_cli.dart';
 
-const _planned = ['build', 'status', 'upload'];
+const _planned = ['build', 'status'];
 
 /// (exit code, stdout, stderr) of `wincode` with [args].
 Future<(int, String, String)> wincode(List<String> args) async {
@@ -25,6 +25,7 @@ void main() {
         'init',
         'preflight',
         'sign',
+        'upload',
       ]..sort())
         ['help', command],
     ]) {
@@ -59,7 +60,7 @@ void main() {
     () async {
       for (final args in [
         [
-          'upload',
+          'build',
           '--config',
           'other.yaml',
           '--verbose',
@@ -71,14 +72,14 @@ void main() {
           'other.yaml',
           '--verbose',
           '--dry-run',
-          'upload',
+          'build',
           'app.ipa',
         ],
       ]) {
         expect(await wincode(args), (
           64,
           '',
-          'wincode upload: not implemented yet, see ADR-0013\n',
+          'wincode build: not implemented yet, see ADR-0013\n',
         ), reason: '$args');
       }
     },
@@ -87,10 +88,10 @@ void main() {
   test(
     'with --json, stdout is one JSON object that carries the failure',
     () async {
-      final (code, out, err) = await wincode(['upload', '--json']);
+      final (code, out, err) = await wincode(['build', '--json']);
       expect(code, 64);
       expect(jsonDecode(out), {
-        'command': 'upload',
+        'command': 'build',
         'ok': false,
         'exitCode': 64,
         'error': {
@@ -98,7 +99,7 @@ void main() {
           'what': 'not implemented yet, see ADR-0013',
         },
       });
-      expect(err, 'wincode upload: not implemented yet, see ADR-0013\n');
+      expect(err, 'wincode build: not implemented yet, see ADR-0013\n');
     },
   );
 
