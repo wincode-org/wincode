@@ -11,6 +11,11 @@ class XcconfigEntry {
   final String value;
 }
 
+/// Reads the text of the file at [path], a path from the Xcode project's folder with `/` between its parts, such as
+/// `Flutter/Release.xcconfig`; null when there is no such file. [resolveBuildSettings] and [readXcconfigIn] read the
+/// project through one, so that a commit's files can stand in for the disk (ADR-0015, section 2).
+typedef ReadProjectFile = String? Function(String path);
+
 final _assignment = RegExp(
   r'^([A-Za-z_][A-Za-z0-9_]*)((?:\[[^\]]*\])*)\s*=\s*(.*)$',
 );
@@ -41,21 +46,105 @@ List<XcconfigEntry> readXcconfig(
   }
   return _parse(
     file.readAsStringSync(),
-    file.parent,
     file.path,
     virtualFiles,
     depth,
     [...including, key],
+    (target, depth, including) {
+      final included = File('${file.parent.path}/$target');
+      return included.existsSync()
+          ? readXcconfig(
+              included,
+              virtualFiles: virtualFiles,
+              depth: depth,
+              including: including,
+            )
+          : null;
+    },
   );
 }
 
+/// [readXcconfig] for the file at [path] of a project that [read] reads (see [ReadProjectFile]), not the disk. An
+/// include is looked up from the including file's folder, with `.` and `..` resolved; a file that [read] does not know
+/// is missing. The same limits apply, and so do the same messages, with the paths of the project in place of disk paths.
+List<XcconfigEntry> readXcconfigIn(
+  ReadProjectFile read,
+  String path, {
+  Map<String, String> virtualFiles = const {},
+  int depth = 0,
+  List<String> including = const [],
+}) {
+  final id = normalizeProjectPath(path);
+  final text = read(id);
+  if (text == null) {
+    throw FormatException('$id does not exist');
+  }
+  return _readIn(read, id, text, virtualFiles, depth, including);
+}
+
+List<XcconfigEntry> _readIn(
+  ReadProjectFile read,
+  String id,
+  String text,
+  Map<String, String> virtualFiles,
+  int depth,
+  List<String> including,
+) {
+  if (depth > 16) {
+    throw FormatException('$id: #include nests too deeply');
+  }
+  if (including.contains(id)) {
+    throw FormatException(
+      '${id.split('/').last}: #include is circular: it includes itself, directly or through other files',
+    );
+  }
+  final folder = id.contains('/') ? id.substring(0, id.lastIndexOf('/')) : '';
+  return _parse(text, id, virtualFiles, depth, [...including, id], (
+    target,
+    depth,
+    including,
+  ) {
+    final included = normalizeProjectPath(
+      folder.isEmpty ? target : '$folder/$target',
+    );
+    final includedText = read(included);
+    return includedText == null
+        ? null
+        : _readIn(read, included, includedText, virtualFiles, depth, including);
+  });
+}
+
+/// [path] with `\` read as `/`, empty and `.` parts dropped, and `..` resolved against the part before it. A `..`
+/// that has nothing before it stays, so that a path out of the project is not found.
+String normalizeProjectPath(String path) {
+  final parts = <String>[];
+  for (final part in path.replaceAll(r'\', '/').split('/')) {
+    if (part.isEmpty || part == '.') {
+      continue;
+    }
+    if (part == '..' && parts.isNotEmpty && parts.last != '..') {
+      parts.removeLast();
+    } else {
+      parts.add(part);
+    }
+  }
+  return parts.join('/');
+}
+
+/// Reads [text], the contents of the file called [name]. [includeFile] gives the entries of the file that an `#include`
+/// names, or null when there is none.
 List<XcconfigEntry> _parse(
   String text,
-  Directory folder,
   String name,
   Map<String, String> virtualFiles,
   int depth,
   List<String> including,
+  List<XcconfigEntry>? Function(
+    String target,
+    int depth,
+    List<String> including,
+  )
+  includeFile,
 ) {
   final entries = <XcconfigEntry>[];
   var number = 0;
@@ -73,24 +162,17 @@ List<XcconfigEntry> _parse(
         entries.addAll(
           _parse(
             virtualFiles[base]!,
-            folder,
             base,
             virtualFiles,
             depth + 1,
             including,
+            includeFile,
           ),
         );
       } else {
-        final included = File('${folder.path}/$target');
-        if (included.existsSync()) {
-          entries.addAll(
-            readXcconfig(
-              included,
-              virtualFiles: virtualFiles,
-              depth: depth + 1,
-              including: including,
-            ),
-          );
+        final included = includeFile(target, depth + 1, including);
+        if (included != null) {
+          entries.addAll(included);
         } else if (include.group(1) == null) {
           throw FormatException(
             '$name:$number: the included file $target does not exist',

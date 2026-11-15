@@ -32,7 +32,13 @@ export 'src/flutter_assets.dart'
         shaderSource;
 export 'src/info_plist.dart' show SdkKeys, buildInfoPlist;
 export 'src/ios_flavor.dart'
-    show IosFlavorInputs, flutterGeneratedSettings, readIosFlavor;
+    show
+        FlutterBuildChoice,
+        IosFlavorInputs,
+        buildConfigurationNames,
+        flutterBuildChoice,
+        flutterGeneratedSettings,
+        readIosFlavor;
 export 'src/macho_check.dart' show Violation, checkAgainstSdk;
 export 'src/macho_diff.dart' show diffMachO;
 export 'src/macho_edit.dart' show removeRpaths, setInstallName;
@@ -87,5 +93,11 @@ export 'src/signature_check.dart'
 export 'src/swift_build.dart'
     show SwiftBuild, buildSwiftPackage, swiftBuildCommand;
 export 'src/wsl.dart' show toWslPath, wslRunner;
-export 'src/xcconfig.dart' show XcconfigEntry, readXcconfig;
+export 'src/xcconfig.dart'
+    show
+        ReadProjectFile,
+        XcconfigEntry,
+        normalizeProjectPath,
+        readXcconfig,
+        readXcconfigIn;
 export 'src/zip.dart' show ZipArchive, ZipLimits;

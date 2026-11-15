@@ -123,15 +123,22 @@ Map<String, String> _defaults(
 ///
 /// [generated] stands for Flutter's `Generated.xcconfig`, which only exists on the Mac that builds: the
 /// `FLUTTER_*` settings that the project's xcconfig files include.
+///
+/// The files are read from [iosDir] on the disk. With [read], they are read through it instead, by their path from the
+/// project's folder (ADR-0015, section 2), and [iosDir] only gives `SRCROOT` its value.
 BuildSettings resolveBuildSettings({
   required Directory iosDir,
   required String configuration,
   String target = 'Runner',
   Map<String, String> generated = const {},
+  ReadProjectFile? read,
 }) {
-  final projectFile = File('${iosDir.path}/Runner.xcodeproj/project.pbxproj');
-  final root =
-      parseOpenStep(projectFile.readAsStringSync()) as Map<String, Object?>;
+  const projectPath = 'Runner.xcodeproj/project.pbxproj';
+  final projectText = read == null
+      ? File('${iosDir.path}/$projectPath').readAsStringSync()
+      : read(projectPath) ??
+            (throw FormatException('$projectPath does not exist'));
+  final root = parseOpenStep(projectText) as Map<String, Object?>;
   final objects = root['objects']! as Map<String, Object?>;
   Map<String, Object?> object(Object? id) =>
       objects[id]! as Map<String, Object?>;
@@ -206,8 +213,12 @@ BuildSettings resolveBuildSettings({
     if (ref == null) {
       return;
     }
-    final file = File('${iosDir.path}/${pathOf(ref)}');
-    final entries = readXcconfig(file, virtualFiles: virtual);
+    final entries = read == null
+        ? readXcconfig(
+            File('${iosDir.path}/${pathOf(ref)}'),
+            virtualFiles: virtual,
+          )
+        : readXcconfigIn(read, pathOf(ref), virtualFiles: virtual);
     for (final e in entries.where((e) => e.conditions.isEmpty)) {
       apply(e.key, e.conditions, e.value);
     }
