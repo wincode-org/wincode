@@ -7,6 +7,8 @@ import 'package:wincode_asc/wincode_asc.dart';
 import 'package:wincode_cli/wincode_cli.dart';
 import 'package:wincode_core/wincode_core.dart' show RunProcess, runProcess;
 
+import 'private.dart';
+
 /// ADR-0014, section 2: where each app's keys are, and the rules for the keys folder.
 void main() {
   late Directory temp;
@@ -64,14 +66,17 @@ void main() {
     bool dist = true,
   }) {
     final folder = Directory(path)..createSync(recursive: true);
+    privateFolders(folder, temp);
     if (p8) {
-      File(inside(path, 'AuthKey_$id.p8')).writeAsStringSync('not a key');
+      private(
+        File(inside(path, 'AuthKey_$id.p8'))..writeAsStringSync('not a key'),
+      );
     }
     if (issuerFile) {
       File(inside(path, 'issuer-id')).writeAsStringSync('$issuer\n');
     }
     if (dist) {
-      File(inside(path, 'dist.key')).writeAsStringSync('not a key');
+      private(File(inside(path, 'dist.key'))..writeAsStringSync('not a key'));
     }
     return folder;
   }
@@ -186,7 +191,7 @@ void main() {
     test('the variable of the reference for the distribution key replaces dist.key only', () async {
       keyFolder('${defaultRoot()}${sep}team-one');
       final elsewhere = inside(temp.path, 'secrets${sep}dist.key');
-      File(elsewhere).createSync(recursive: true);
+      private(File(elsewhere)..createSync(recursive: true));
       final environment = env({distOverrideVariable('team-one'): elsewhere});
       final dist = await resolveDistKey(
         app(),
@@ -215,7 +220,9 @@ void main() {
       // An app with credentials never reads it.
       final e = await refused(locate(app(), environment));
       expect(e.id, 'credentials-missing');
-      final file = File(inside(temp.path, 'dist.key'))..writeAsStringSync('x');
+      final file = private(
+        File(inside(temp.path, 'dist.key'))..writeAsStringSync('x'),
+      );
       final dist = await resolveDistKey(
         app(reference: null),
         environment: {'WINCODE_DIST_KEY': file.path},
@@ -269,14 +276,17 @@ void main() {
         (
           (path) {
             keyFolder(path);
-            File(inside(path, 'AuthKey_ZZZZZ99999.p8')).writeAsStringSync('x');
+            private(
+              File(inside(path, 'AuthKey_ZZZZZ99999.p8'))
+                ..writeAsStringSync('x'),
+            );
           },
           '$forTeam holds 2 .p8 files',
         ),
         (
           (path) {
             keyFolder(path, p8: false);
-            File(inside(path, 'key.p8')).writeAsStringSync('x');
+            private(File(inside(path, 'key.p8'))..writeAsStringSync('x'));
           },
           'the .p8 in $forTeam is not named AuthKey_<Key ID>.p8',
         ),
@@ -622,8 +632,11 @@ void main() {
     );
 
     void realKey(String path, String id) {
-      Directory(path).createSync(recursive: true);
-      File(inside(path, 'AuthKey_$id.p8')).writeAsStringSync(throwaway.pem());
+      privateFolders(Directory(path)..createSync(recursive: true), temp);
+      private(
+        File(inside(path, 'AuthKey_$id.p8'))
+          ..writeAsStringSync(throwaway.pem()),
+      );
       File(inside(path, 'issuer-id')).writeAsStringSync('$issuer\n');
     }
 

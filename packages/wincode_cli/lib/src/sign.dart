@@ -10,6 +10,7 @@ import 'config.dart';
 import 'credentials.dart';
 import 'failure.dart';
 import 'key_location.dart';
+import 'key_permissions.dart';
 import 'preflight.dart';
 import 'redact.dart';
 import 'zsign.dart';
@@ -104,9 +105,9 @@ class Signer {
     required this.clock,
     required this.connect,
     required this.run,
-    ZsignRunner? runner,
+    this.zsignRunner,
     this.log,
-  }) : runner = runner ?? ZsignRunner();
+  });
 
   final WincodeConfig config;
   final Map<String, String> environment;
@@ -115,8 +116,12 @@ class Signer {
   final AscConnect connect;
   final RunProcess run;
 
-  /// Starts zsign. `verify` never does, so a caller that only verifies may leave it out.
-  final ZsignRunner runner;
+  /// Where zsign runs and how it is started (ADR-0013, section 11). `verify` never uses it, so `upload`, which only
+  /// verifies, gives none.
+  final ZsignRunner? zsignRunner;
+
+  ZsignRunner get runner =>
+      zsignRunner ?? (throw StateError('sign needs a ZsignRunner'));
 
   /// Gets each step with `--verbose`.
   final void Function(String line)? log;
@@ -163,20 +168,42 @@ class Signer {
       return findings;
     }
     if (dryRun) {
-      final d = Wsl(environment, run).distro;
-      findings.add(
-        Finding.info(
-          'zsign',
-          'would run: wsl.exe ${d == null ? '' : '-d $d '}--cd <temporary folder> --exec <zsign> -k <distribution key> '
-              '-c <certificate from the profile> -m ${config.profile!.path} -e <entitlements> -t <temporary folder> '
-              '-z 9 -o <temporary folder>${Platform.pathSeparator}$_signedName ${input.path}; then check the signatures '
-              'and move the IPA to ${output.path}',
-        ),
-      );
+      findings.add(_wouldRun(input));
       return findings;
     }
     await _signAndCheck(findings, input, inputs);
     return findings;
+  }
+
+  /// What `--dry-run` prints in place of running zsign: the command line as the runner builds it, with placeholders.
+  Finding _wouldRun(File input) {
+    try {
+      final c = runner.command('<zsign>', [
+        '-k',
+        '<distribution key>',
+        '-c',
+        '<certificate from the profile>',
+        '-m',
+        config.profile!.path,
+        '-e',
+        '<entitlements>',
+        '-t',
+        '<temporary folder>',
+        '-z',
+        '9',
+        '-o',
+        '<temporary folder>${Platform.pathSeparator}$_signedName',
+        input.path,
+      ], cd: '<temporary folder>');
+      return Finding.info(
+        'zsign',
+        'would run: ${[c.executable, ...c.arguments].join(' ')}'
+            '${c.workingDirectory == null ? '' : ', in ${c.workingDirectory}'}; '
+            'then check the signatures and move the IPA to ${output.path}',
+      );
+    } on WincodeException catch (e) {
+      return Finding.fail('zsign', e);
+    }
   }
 
   /// `wincode sign --verify-only`: the checks that follow zsign, on [ipa], against the profile, the certificate that
@@ -861,10 +888,9 @@ class Signer {
     File input,
     _Identity inputs,
   ) async {
-    final wsl = Wsl(environment, run, log: log);
     final String zsign;
     try {
-      zsign = await requirePinnedZsign(environment, wsl);
+      zsign = await runner.requirePinned(log: log);
     } on WincodeException catch (e) {
       findings.add(Finding.fail('zsign', e));
       return;
@@ -872,17 +898,21 @@ class Signer {
     findings.add(
       Finding.pass(
         'zsign',
-        'zsign $zsignVersion (${zsignCommit.substring(0, 8)}) in ${wsl.name}, with the SHA-256 that doctor recorded',
+        'zsign $zsignVersion (${zsignCommit.substring(0, 8)}) ${runner.where}, with the SHA-256 that doctor recorded',
       ),
     );
-    final folder = config.output..createSync(recursive: true);
-    final random = Random.secure();
-    final temp = Directory(
-      '${folder.path}${Platform.pathSeparator}.wincode-sign-'
-      '${[for (var i = 0; i < 8; i++) random.nextInt(16).toRadixString(16)].join()}',
-    )..createSync();
+    // A new folder, made private below. It is in the output folder, so that the signed IPA moves out of it by a rename.
+    // Its path is absolute: zsign works in it, so a path relative to where wincode runs would mean another place there.
+    final temp = (config.output.absolute..createSync(recursive: true))
+        .createTempSync('.wincode-sign-');
     String inTemp(String name) => '${temp.path}${Platform.pathSeparator}$name';
     try {
+      try {
+        await makePrivate(temp);
+      } on WincodeException catch (e) {
+        findings.add(Finding.fail('zsign', e));
+        return;
+      }
       final certificate = File(inTemp('certificate.pem'))
         ..writeAsStringSync(_pem(inputs.certificate.der));
       final entitlements = File(inTemp('entitlements.plist'))
@@ -890,29 +920,18 @@ class Signer {
       final work = Directory(inTemp('zsign'))..createSync();
       final signed = File(inTemp(_signedName));
 
-      final keyPath = await wsl.translate(inputs.keyFile!.absolute.path);
+      final keyPath = await runner.translate(
+        inputs.keyFile!.absolute.path,
+        log: log,
+      );
       if (keyPath != null) {
         redactor.secret(keyPath, '<distribution key>');
       }
-      final readable =
-          keyPath != null &&
-          (await wsl.exec(['test', '-r', keyPath]))?.exitCode == 0;
-      if (!readable) {
+      if (keyPath == null || !await runner.canRead(keyPath, log: log)) {
         findings.add(
           Finding.fail(
             'dist-key',
-            WincodeException(
-              ExitCode.config,
-              'dist-key-unreachable',
-              'the distribution key of $_keySource lies where WSL2 cannot read it',
-              why:
-                  'zsign runs inside WSL2 and reads the key in place, at the path that wslpath gives; a network share '
-                  'or a drive that WSL2 does not mount has none.',
-              next: config.credentials == null
-                  ? 'set WINCODE_DIST_KEY to a file on a local drive.'
-                  : 'move the keys root to a local drive, or set ${distOverrideVariable(config.credentials!)} to a '
-                        'file on one.',
-            ),
+            runner.keyUnreachable(_keySource, config.credentials),
           ),
         );
         return;
@@ -927,7 +946,7 @@ class Signer {
         ('input', input.absolute.path),
         ('temp', temp.path),
       ]) {
-        final translated = await wsl.translate(path);
+        final translated = await runner.translate(path, log: log);
         if (translated == null) {
           findings.add(
             Finding.fail(
@@ -951,8 +970,8 @@ class Signer {
         }
         paths[what] = translated;
       }
-      final arguments = wsl.arguments([
-        zsign,
+      // Never -p: zsign takes a password only as an argument, which other programs can read (ADR-0013, section 4).
+      final command = runner.command(zsign, [
         '-k',
         keyPath,
         '-c',
@@ -968,9 +987,9 @@ class Signer {
         '-o',
         paths['signed']!,
         paths['input']!,
-      ], cd: paths['temp']);
-      log?.call('wsl.exe ${arguments.join(' ')}');
-      final outcome = await runner.run(arguments, work: temp);
+      ], cd: paths['temp']!);
+      log?.call('${command.executable} ${command.arguments.join(' ')}');
+      final outcome = await runner.run(command, work: temp);
       if (log case final log?) {
         outcome.said.forEach(log);
       }

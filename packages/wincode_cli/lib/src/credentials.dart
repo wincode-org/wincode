@@ -5,6 +5,7 @@ import 'package:wincode_core/wincode_core.dart';
 import 'config.dart';
 import 'failure.dart';
 import 'key_location.dart';
+import 'key_permissions.dart';
 import 'redact.dart';
 
 /// Where an app's keys are, and the rules for them (ADR-0013 section 2 for the two legacy variables, ADR-0014 section 2
@@ -12,7 +13,9 @@ import 'redact.dart';
 ///
 /// Nothing here starts `wsl.exe`: the App Store Connect key is read from a folder on the Windows side. Nothing here
 /// prints a path or a key: a message names a variable, a reference or a placeholder, and the folders found are
-/// registered with the [Redactor] as secrets.
+/// registered with the [Redactor] as secrets. Every key and folder of keys that is found also passes
+/// [requirePrivate] on POSIX (ADR-0013, section 11), so `sign`, `preflight`, `upload` and `doctor` all refuse a key that
+/// other users can reach.
 
 /// The variable that names the keys root.
 const keysRootVariable = 'WINCODE_KEYS_DIR';
@@ -92,7 +95,15 @@ Future<AscKeyFiles?> locateAscKeyFiles(
       run: run,
       whatOf: '$variable points inside a git working tree',
     );
-    return _listKeyFolder(folder, variable);
+    final key = _listKeyFolder(folder, variable);
+    await _requirePrivateAsc(
+      folder,
+      key,
+      folderLabel: 'the folder that $variable names',
+      p8Label: 'the .p8 in the folder that $variable names',
+      where: '"\$$variable"',
+    );
+    return key;
   }
   final Directory? folder;
   try {
@@ -121,7 +132,18 @@ Future<AscKeyFiles?> locateAscKeyFiles(
       'the keys folder has no folder $reference',
     );
   }
-  return _listKeyFolder(folder, 'the folder of the credentials $reference');
+  final key = _listKeyFolder(
+    folder,
+    'the folder of the credentials $reference',
+  );
+  // The folder itself passed with the keys root, in _referenceFolder.
+  await _requirePrivateAsc(
+    null,
+    key,
+    p8Label: 'the .p8 in the folder of the credentials $reference',
+    where: _referenceWhere(environment, reference),
+  );
+  return key;
 }
 
 /// The distribution key of [app] (ADR-0014, section 2): the file `WINCODE_DIST_KEY_<REF>` names, else `dist.key` in the
@@ -152,6 +174,14 @@ Future<File?> resolveDistKey(
     redactor.secret(file.path, '<$_legacyDist>');
     _refuseOneDrive(file.path, _legacyDist);
     await requireOutsideGit(file.path, source: _legacyDist, run: run);
+    await requirePrivate([
+      (
+        path: file.path,
+        folder: false,
+        label: 'the file that $_legacyDist names',
+        where: '"\$$_legacyDist"',
+      ),
+    ]);
     return file;
   }
   final variable = distOverrideVariable(reference);
@@ -175,6 +205,14 @@ Future<File?> resolveDistKey(
       run: run,
       whatOf: '$variable points inside a git working tree',
     );
+    await requirePrivate([
+      (
+        path: file.path,
+        folder: false,
+        label: 'the file that $variable names',
+        where: '"\$$variable"',
+      ),
+    ]);
     return file;
   }
   _refuseInsideWsl(
@@ -200,7 +238,16 @@ Future<File?> resolveDistKey(
       'the keys folder has no folder $reference',
     );
   }
-  return File('${folder.path}${Platform.pathSeparator}dist.key');
+  final file = File('${folder.path}${Platform.pathSeparator}dist.key');
+  await requirePrivate([
+    (
+      path: file.path,
+      folder: false,
+      label: 'the distribution key of the credentials $reference',
+      where: '${_referenceWhere(environment, reference)}/dist.key',
+    ),
+  ]);
+  return file;
 }
 
 /// The folder of [reference] under the keys root, after the root and the folder passed the location rules. Null when
@@ -260,6 +307,22 @@ Future<Directory?> _referenceFolder(
         'the folder of the credentials $reference lies inside a git working tree',
     inner: true,
   );
+  await requirePrivate([
+    (
+      path: root.directory.path,
+      folder: true,
+      label: root.fromVariable
+          ? 'the folder that $keysRootVariable names'
+          : 'the default keys folder',
+      where: _rootWhere(environment),
+    ),
+    (
+      path: folder.path,
+      folder: true,
+      label: 'the folder of the credentials $reference',
+      where: _referenceWhere(environment, reference),
+    ),
+  ]);
   return folder;
 }
 
@@ -286,8 +349,46 @@ Future<AscKeyFiles?> _legacyAscFiles(
   for (final file in [...key.p8, ?key.issuer]) {
     await requireOutsideGit(file.path, source: _legacyAsc, run: run);
   }
+  await _requirePrivateAsc(
+    folder,
+    key,
+    folderLabel: 'the folder that $_legacyAsc names',
+    p8Label: 'the .p8 in the folder that $_legacyAsc names',
+    where: '"\$$_legacyAsc"',
+  );
   return key;
 }
+
+/// How a shell names the keys root: `"$WINCODE_KEYS_DIR"`, or `~/.wincode/keys` for the default one. The fix of a
+/// refused key is printed with it, never the path (ADR-0013, section 7).
+String _rootWhere(Map<String, String> environment) =>
+    (environment[keysRootVariable] ?? '').isEmpty
+    ? '~/.wincode/keys'
+    : '"\$$keysRootVariable"';
+
+String _referenceWhere(Map<String, String> environment, String reference) =>
+    '${_rootWhere(environment)}/$reference';
+
+/// [requirePrivate] for the App Store Connect key folder [folder] (unless it is null: it was checked already) and the
+/// `.p8` files of [key]. [where] is how a shell names the folder.
+Future<void> _requirePrivateAsc(
+  Directory? folder,
+  AscKeyFiles key, {
+  String? folderLabel,
+  required String p8Label,
+  required String where,
+}) => requirePrivate([
+  if (folder != null)
+    (path: folder.path, folder: true, label: folderLabel!, where: where),
+  for (final p8 in key.p8)
+    (
+      path: p8.path,
+      folder: false,
+      label: p8Label,
+      // The file's name holds the Key ID, which a message never prints.
+      where: '$where/AuthKey_*.p8',
+    ),
+]);
 
 AscKeyFiles _listKeyFolder(Directory folder, String source) {
   final List<File> files;

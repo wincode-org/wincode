@@ -19,7 +19,7 @@ Available commands:
   doctor      Check the setup, or a Mach-O binary against the SDK or a reference build.
   init        Write wincode.yaml for the Flutter project in this folder.
   preflight   Check the signed IPA and App Store Connect before an upload. Read-only.
-  sign        Sign the IPA for the App Store with zsign in WSL2, and check the result (ADR-0013, phase 3a).
+  sign        Sign the IPA for the App Store with zsign (in WSL2 on Windows, directly on Linux), and check the result (ADR-0013, phase 3a).
   status      Show the state of the app's latest uploads in App Store Connect. Read-only.
   upload      Upload the signed IPA to App Store Connect and wait for its processing (ADR-0013, phase 4). The only command that writes to Apple.
 
@@ -50,14 +50,14 @@ Run "wincode help" to see global options.
 $ wincode help doctor
 Check the setup, or a Mach-O binary against the SDK or a reference build.
 
-Without options, doctor checks the setup of the app in wincode.yaml and sends nothing: that the file loads, and that the app's App Store Connect key is where its credentials say (a folder with one AuthKey_<Key ID>.p8 and an issuer-id, outside git working trees and OneDrive). With --sign, it also checks WSL2, the pinned zsign 1.9.0 (f6158be9), whose build commands it prints, and where the distribution key is; the first check that finds zsign records its SHA-256 outside the repository, and wincode sign runs only that binary. To check a binary, give --binary and at least one of --sdk and --reference.
+Without options, doctor checks the setup of the app in wincode.yaml and sends nothing: that the file loads, and that the app's App Store Connect key is where its credentials say (a folder with one AuthKey_<Key ID>.p8 and an issuer-id, outside git working trees and OneDrive, and on Linux closed to other users). With --sign, it also checks WSL2 on Windows, the pinned zsign 1.9.0 (f6158be9), whose build commands it prints, and where the distribution key is; the first check that finds zsign records its SHA-256 outside the repository, and wincode sign runs only that binary. To check a binary, give --binary and at least one of --sdk and --reference.
 
 Usage: wincode doctor [arguments]
 -h, --help                         Print this usage information.
     --binary=<Mach-O file>         The binary to check, such as Payload/Runner.app/Runner.
     --sdk=<iPhoneOS.sdk folder>    Check the binary against the SDK's text stubs. Fails on a library or binding that its minimum OS lacks.
     --reference=<Mach-O file>      List how the binary differs from a reference build, such as an Xcode-built copy. This does not fail.
-    --sign                         Also check what wincode sign needs: WSL2 version 2, the pinned zsign and its recorded SHA-256 (recorded by the first check that finds it), and where the distribution key is.
+    --sign                         Also check what wincode sign needs: on Windows WSL2 version 2, on Linux nothing but zsign itself; the pinned zsign and its recorded SHA-256 (recorded by the first check that finds it), and where the distribution key is.
 
 Run "wincode help" to see global options.
 
@@ -101,9 +101,9 @@ Usage: wincode preflight [<signed .ipa>]
 Run "wincode help" to see global options.
 
 $ wincode help sign
-Sign the IPA for the App Store with zsign in WSL2, and check the result (ADR-0013, phase 3a).
+Sign the IPA for the App Store with zsign (in WSL2 on Windows, directly on Linux), and check the result (ADR-0013, phase 3a).
 
-Before zsign runs: the unsigned IPA (unsigned.ipa in the output folder by default) holds the app of wincode.yaml in Payload/ only, without extensions; the profile is an App Store profile of the team and app, not expired; the distribution key, found through the app's credentials (or WINCODE_DIST_KEY for a file without them), is an unencrypted RSA PEM key whose certificate is in the profile, an Apple Distribution certificate of the team that has not expired and that App Store Connect still lists; and the entitlements are allowed by the profile. zsign then reads the key in place through wslpath and never gets a password. After it: every signature is checked and preflight's local checks run, and only then is the IPA moved to signed.ipa in the output folder. Its temporary files there are deleted whatever happens.
+Before zsign runs: the unsigned IPA (unsigned.ipa in the output folder by default) holds the app of wincode.yaml in Payload/ only, without extensions; the profile is an App Store profile of the team and app, not expired; the distribution key, found through the app's credentials (or WINCODE_DIST_KEY for a file without them), is an unencrypted RSA PEM key whose certificate is in the profile, an Apple Distribution certificate of the team that has not expired and that App Store Connect still lists; and the entitlements are allowed by the profile. On Linux the key and its folders must also be closed to other users (mode 0600 and 0700). zsign then reads the key in place (through wslpath, in WSL2) and never gets a password. After it: every signature is checked and preflight's local checks run, and only then is the IPA moved to signed.ipa in the output folder. Its temporary files there are deleted whatever happens.
 
 Usage: wincode sign [<unsigned .ipa>]
 -h, --help           Print this usage information.

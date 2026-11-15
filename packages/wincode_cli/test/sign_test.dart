@@ -12,12 +12,15 @@ import 'package:wincode_core/wincode_core.dart'
     show
         PlistMap,
         ZipArchive,
+        digestsOfFile,
         parsePlist,
         readCertificate,
         readProvisioningProfile,
         runProcess,
         writePlist,
         writePlistBinary;
+
+import 'private.dart';
 
 final _now = DateTime.utc(2026, 11, 11, 12);
 final _expires = _now.add(const Duration(days: 300));
@@ -26,6 +29,30 @@ const _bundleId = 'com.example.app';
 const _distro = 'Ubuntu-test';
 const _home = '/home/me';
 final _hash = 'a' * 64;
+
+/// [path] as a path relative to the current folder, or null when they are on different drives.
+String? _relativeToCurrent(String path) {
+  List<String> segments(String p) => [
+    for (final s in File(p).absolute.uri.pathSegments)
+      if (s.isNotEmpty) s,
+  ];
+  final from = segments(Directory.current.path);
+  final to = segments(path);
+  if (from.isNotEmpty &&
+      to.isNotEmpty &&
+      Platform.isWindows &&
+      from.first != to.first) {
+    return null;
+  }
+  var same = 0;
+  while (same < from.length && same < to.length && from[same] == to[same]) {
+    same++;
+  }
+  return [
+    ...List.filled(from.length - same, '..'),
+    ...to.skip(same),
+  ].join(Platform.pathSeparator);
+}
 
 /// The unsigned app of [bundleId], as the reference workflow packs it.
 Map<String, List<int>> _unsigned({
@@ -218,6 +245,14 @@ void main() {
   late TestRsaKey key;
   late Uint8List certificate;
 
+  // How zsign was started: through wsl.exe (the default) or, on Linux, directly.
+  var direct = false;
+  late List<String> executables;
+  late List<String?> workingDirectories;
+  late List<int> folderModes;
+  late int keyCopies;
+  Object? startFails;
+
   String inside(Directory folder, String name) =>
       '${folder.path}${Platform.pathSeparator}$name';
   Directory output() => Directory(inside(app, 'build'));
@@ -229,13 +264,48 @@ void main() {
       e.uri.pathSegments.where((s) => s.isNotEmpty).last,
   ]..removeWhere((n) => n == 'unsigned.ipa' || n == 'signed.ipa');
 
-  Future<Process> start(String executable, List<String> arguments) async {
-    expect(executable, 'wsl.exe');
+  Future<Process> start(
+    String executable,
+    List<String> arguments, {
+    String? workingDirectory,
+  }) async {
+    if (startFails != null) {
+      throw startFails!;
+    }
+    if (!direct) {
+      expect(executable, 'wsl.exe');
+    }
     started.add(arguments);
+    executables.add(executable);
+    workingDirectories.add(workingDirectory);
+    if (workingDirectory != null && !Platform.isWindows) {
+      folderModes.add(FileStat.statSync(workingDirectory).mode & 0x1ff);
+    }
     final process = _FakeProcess();
     processes.add(process);
-    final command = arguments.sublist(arguments.indexOf('--exec') + 1);
-    String host(String flag) => wsl.toHost(command[command.indexOf(flag) + 1]);
+    final command = direct
+        ? arguments
+        : arguments.sublist(arguments.indexOf('--exec') + 1);
+    String host(String flag) {
+      final path = command[command.indexOf(flag) + 1];
+      return direct ? path : wsl.toHost(path);
+    }
+
+    // The key is read in place: no file of the signing holds it.
+    for (final f in Directory(
+      host('-t'),
+    ).parent.listSync(recursive: true).whereType<File>()) {
+      if (f.path.endsWith('.ipa') || f.path.endsWith('.mobileprovision')) {
+        continue;
+      }
+      try {
+        if (f.readAsStringSync().contains('PRIVATE KEY')) {
+          keyCopies++;
+        }
+      } on FormatException {
+        // A binary file.
+      }
+    }
     final out = File(host('-o'));
     switch (behaviour) {
       case _Zsign.signs:
@@ -248,7 +318,7 @@ void main() {
         out.writeAsBytesSync(
           zipOf(
             signTestIpa(
-              _unzip(File(wsl.toHost(command.last))),
+              _unzip(File(direct ? command.last : wsl.toHost(command.last))),
               teamId: _team,
               entitlements: entitlements,
               key: key,
@@ -291,24 +361,34 @@ void main() {
       ..writeAsBytesSync(_profile([certificate]));
     output().createSync();
     File(inside(output(), 'unsigned.ipa')).writeAsBytesSync(zipOf(_unsigned()));
-    final keys = Directory(inside(temp, 'keys'))..createSync();
-    distKey = File(inside(keys, 'dist.key'))..writeAsStringSync(key.pem());
+    final keys = private(Directory(inside(temp, 'keys'))..createSync());
+    distKey = private(
+      File(inside(keys, 'dist.key'))..writeAsStringSync(key.pem()),
+    );
     state = Directory(inside(temp, 'state'));
     wsl = _FakeWsl();
     started = [];
     processes = [];
+    executables = [];
+    workingDirectories = [];
+    folderModes = [];
+    keyCopies = 0;
+    startFails = null;
+    direct = false;
     behaviour = _Zsign.signs;
-    runner = ZsignRunner(
-      start: start,
-      poll: const Duration(milliseconds: 5),
-      timeout: const Duration(milliseconds: 400),
-      limit: 1024 * 1024,
-    );
     environment = {
       'WINCODE_DIST_KEY': distKey.path,
       distroVariable: _distro,
       'LOCALAPPDATA': state.path,
     };
+    runner = WslZsignRunner(
+      environment: environment,
+      runTool: wsl.run,
+      start: start,
+      poll: const Duration(milliseconds: 5),
+      timeout: const Duration(milliseconds: 400),
+      limit: 1024 * 1024,
+    );
     // What wincode doctor --sign records the first time it finds zsign.
     zsignStateFile(environment)
       ..parent.createSync(recursive: true)
@@ -571,7 +651,9 @@ void main() {
         () async {
           behaviour = how;
           if (how == _Zsign.grows) {
-            runner = ZsignRunner(
+            runner = WslZsignRunner(
+              environment: environment,
+              runTool: wsl.run,
               start: start,
               poll: const Duration(milliseconds: 5),
               limit: 1024,
@@ -781,9 +863,11 @@ void main() {
 
         setUp(() {
           ascKey = ThrowawayKey();
-          ascKeys = Directory(inside(temp, 'asc'))..createSync();
-          File(inside(ascKeys, 'AuthKey_ABCDE12345.p8'))
-              .writeAsStringSync(ascKey.pem());
+          ascKeys = private(Directory(inside(temp, 'asc'))..createSync());
+          private(
+            File(inside(ascKeys, 'AuthKey_ABCDE12345.p8'))
+              ..writeAsStringSync(ascKey.pem()),
+          );
           File(inside(ascKeys, 'issuer-id'))
               .writeAsStringSync('00000000-0000-0000-0000-000000000001\n');
           environment['WINCODE_ASC_KEY_DIR'] = ascKeys.path;
@@ -881,14 +965,18 @@ void main() {
       late Directory root;
 
       setUp(() {
-        root = Directory(inside(temp, 'keys-root'))..createSync();
+        root = private(Directory(inside(temp, 'keys-root'))..createSync());
         for (final reference in ['team-one', 'team-two']) {
-          Directory(inside(root, reference)).createSync();
+          private(Directory(inside(root, reference))..createSync());
         }
-        File(inside(Directory(inside(root, 'team-one')), 'dist.key'))
-            .writeAsStringSync(key.pem());
-        File(inside(Directory(inside(root, 'team-two')), 'dist.key'))
-            .writeAsStringSync('not this one');
+        private(
+          File(inside(Directory(inside(root, 'team-one')), 'dist.key'))
+            ..writeAsStringSync(key.pem()),
+        );
+        private(
+          File(inside(Directory(inside(root, 'team-two')), 'dist.key'))
+            ..writeAsStringSync('not this one'),
+        );
         environment
           ..remove('WINCODE_DIST_KEY')
           ..['WINCODE_KEYS_DIR'] = root.path;
@@ -1121,6 +1209,309 @@ void main() {
     test('--sign has no --dry-run', () async {
       final (code, _, _) = await wincode(['doctor', '--sign', '--dry-run']);
       expect(code, 64);
+    });
+  });
+
+  group('on Linux, zsign runs directly (ADR-0013, section 11)', () {
+    late File binary;
+    late Directory data;
+
+    ZsignRunner nativeRunner() => NativeZsignRunner(
+      environment: environment,
+      runTool: (executable, arguments, {workingDirectory}) async =>
+          executable == binary.path &&
+              binary.existsSync() &&
+              arguments.join(' ') == '-v'
+          ? ProcessResult(0, 0, 'version: $zsignVersion\n', '')
+          : wsl.run(executable, arguments, workingDirectory: workingDirectory),
+      start: start,
+      poll: const Duration(milliseconds: 5),
+      timeout: const Duration(milliseconds: 400),
+      limit: 1024 * 1024,
+    );
+
+    /// What `wincode doctor --sign` records the first time it finds zsign.
+    Future<void> recordBinary() async {
+      zsignStateFile(environment)
+        ..parent.createSync(recursive: true)
+        ..writeAsStringSync(
+          jsonEncode({
+            'zsign': {
+              nativeStateKey: {
+                'path': binary.path,
+                'sha256': (await digestsOfFile(binary)).sha256,
+              },
+            },
+          }),
+        );
+    }
+
+    setUp(() async {
+      direct = true;
+      data = Directory(inside(temp, 'data'));
+      environment = {
+        'WINCODE_DIST_KEY': distKey.path,
+        'XDG_DATA_HOME': data.path,
+      };
+      binary = File(nativeZsignPath(environment))
+        ..createSync(recursive: true)
+        ..writeAsStringSync('the bytes of a zsign');
+      await recordBinary();
+      runner = nativeRunner();
+    });
+
+    test('signs with the pinned binary, an argument list and no WSL2, and keeps signed.ipa', () async {
+      final (code, out, err) = await wincode(['sign', '--offline']);
+      expect(code, 0, reason: '$out$err');
+      expect(signed().existsSync(), isTrue);
+      expect(leftovers(), isEmpty);
+      expect(
+        out,
+        contains(
+          'PASS  zsign $zsignVersion (${zsignCommit.substring(0, 8)}) on this machine, with the SHA-256 that doctor recorded',
+        ),
+      );
+      expect(
+        out,
+        contains(
+          'PASS  every signature checks out: 2 Mach-O files and 2 bundles',
+        ),
+      );
+      // Started once, as the binary itself: an argument list for the operating system, not text for a shell.
+      expect(executables, [binary.path]);
+      expect(wsl.commands, isEmpty);
+      final command = started.single;
+      expect(command, isNot(contains('-p')));
+      expect(command, isNot(contains('--password')));
+      expect(command.any((a) => a.startsWith('-p')), isFalse);
+      // The key path is the one that was given, not translated, and the files are the host's own.
+      expect(command[command.indexOf('-k') + 1], distKey.absolute.path);
+      expect(command[command.indexOf('-m') + 1], profile.absolute.path);
+      expect(
+        command.last,
+        File(inside(output(), 'unsigned.ipa')).absolute.path,
+      );
+      for (final flag in ['-c', '-e', '-o', '-t']) {
+        expect(
+          command[command.indexOf(flag) + 1],
+          startsWith(output().absolute.path),
+          reason: flag,
+        );
+      }
+      expect(workingDirectories.single, startsWith(output().absolute.path));
+      expect(workingDirectories.single, contains('.wincode-sign-'));
+      // Read in place: no file of the signing holds the key, and nothing printed does.
+      expect(keyCopies, 0);
+      expect(started.join(' '), isNot(contains('PRIVATE KEY')));
+    });
+
+    test(
+      'from a relative --config, every path that zsign gets is still absolute',
+      () async {
+        // The output folder of a config that is named relatively is a relative path, and zsign works in another folder.
+        final relative = _relativeToCurrent(config.path);
+        if (relative == null) {
+          markTestSkipped('the temporary folder is on another drive');
+          return;
+        }
+        final (code, out, err) = await wincode([
+          'sign',
+          '--offline',
+        ], configPath: relative);
+        expect(code, 0, reason: '$out$err');
+        final command = started.single;
+        for (final flag in ['-k', '-c', '-m', '-e', '-t', '-o']) {
+          final path = command[command.indexOf(flag) + 1];
+          expect(File(path).isAbsolute, isTrue, reason: '$flag $path');
+        }
+        expect(File(command.last).isAbsolute, isTrue);
+        expect(File(workingDirectories.single!).isAbsolute, isTrue);
+        expect(signed().existsSync(), isTrue);
+        expect(leftovers(), isEmpty);
+      },
+    );
+
+    test('works in a private temporary folder, which is mode 0700 while zsign runs', () async {
+      expect((await wincode(['sign', '--offline'])).$1, 0);
+      expect(folderModes, [448]); // 0700
+    }, skip: Platform.isWindows ? 'the mode is a POSIX one' : null);
+
+    test(
+      'the result passes --verify-only, which needs no zsign at all',
+      () async {
+        expect((await wincode(['sign', '--offline'])).$1, 0);
+        binary.deleteSync();
+        environment.remove('WINCODE_DIST_KEY');
+        distKey.deleteSync();
+        final (code, out, _) = await wincode([
+          'sign',
+          '--verify-only',
+          '--offline',
+        ]);
+        expect(code, 0, reason: out);
+      },
+    );
+
+    for (final (how, id) in [
+      (_Zsign.fails, 'zsign-failed'),
+      (_Zsign.hangs, 'zsign-timeout'),
+      (_Zsign.grows, 'zsign-too-big'),
+      (_Zsign.garbage, 'signature-invalid'),
+    ]) {
+      test(
+        'when zsign ${how.name}, it fails with $id and removes its temporary folder',
+        () async {
+          behaviour = how;
+          if (how == _Zsign.grows) {
+            runner = NativeZsignRunner(
+              environment: environment,
+              runTool: (executable, arguments, {workingDirectory}) async =>
+                  executable == binary.path && binary.existsSync()
+                  ? ProcessResult(0, 0, 'version: $zsignVersion\n', '')
+                  : wsl.run(
+                      executable,
+                      arguments,
+                      workingDirectory: workingDirectory,
+                    ),
+              start: start,
+              poll: const Duration(milliseconds: 5),
+              limit: 1024,
+            );
+          }
+          final (code, out, err) = await wincode([
+            'sign',
+            '--offline',
+            '--json',
+          ]);
+          expect(code, 1, reason: '$out$err');
+          expect(errorId(out), id);
+          expect(signed().existsSync(), isFalse);
+          expect(leftovers(), isEmpty);
+          if (how == _Zsign.hangs || how == _Zsign.grows) {
+            expect(processes.single.killed, isTrue);
+          }
+        },
+      );
+    }
+
+    test('removes its temporary folder when zsign cannot be started, or starting it is a bug', () async {
+      startFails = const ProcessException('zsign', [], 'Exec format error');
+      var (code, out, err) = await wincode(['sign', '--offline', '--json']);
+      expect(code, 1, reason: '$out$err');
+      expect(errorId(out), 'zsign-failed');
+      expect(err, contains('zsign could not be started'));
+      expect(leftovers(), isEmpty);
+
+      startFails = StateError('a bug');
+      (code, out, err) = await wincode(['sign', '--offline', '--json']);
+      expect(code, 70, reason: '$out$err');
+      expect(errorId(out), 'internal');
+      expect(leftovers(), isEmpty);
+      expect(signed().existsSync(), isFalse);
+    });
+
+    test('runs only the binary whose SHA-256 was recorded, and starts nothing otherwise', () async {
+      Future<String> fails(int code) async {
+        final (c, out, _) = await wincode(['sign', '--offline', '--json']);
+        expect(c, code, reason: out);
+        expect(started, isEmpty);
+        expect(leftovers(), isEmpty);
+        return errorId(out);
+      }
+
+      binary.writeAsStringSync('another binary');
+      expect(await fails(1), 'zsign-changed');
+      await recordBinary();
+      zsignStateFile(environment).deleteSync();
+      expect(await fails(1), 'zsign-unverified');
+      binary.deleteSync();
+      expect(await fails(69), 'zsign-missing');
+    });
+
+    test('--dry-run prints the command it would run, and runs nothing', () async {
+      final (code, out, _) = await wincode(['sign', '--dry-run']);
+      expect(code, 0, reason: out);
+      expect(
+        out,
+        contains(
+          'INFO  would run: <zsign> -k <distribution key> -c <certificate from the profile> -m ${profile.path} '
+          '-e <entitlements> -t <temporary folder> -z 9 -o <temporary folder>${Platform.pathSeparator}signed.ipa ',
+        ),
+      );
+      expect(
+        out,
+        contains(', in <temporary folder>; then check the signatures'),
+      );
+      expect(started, isEmpty);
+      expect(wsl.commands, isEmpty);
+      expect(leftovers(), isEmpty);
+    });
+
+    test('a distribution key that other users can read is refused (78) before zsign is looked for', () async {
+      Process.runSync('chmod', ['644', distKey.path]);
+      final (code, out, err) = await wincode(['sign', '--offline', '--json']);
+      expect(code, 78, reason: '$out$err');
+      expect(errorId(out), 'keys-permissions');
+      expect(
+        err,
+        contains(
+          'the file that WINCODE_DIST_KEY names can be reached by other users (mode 0644)',
+        ),
+      );
+      expect(err, contains(r'run: chmod 600 "$WINCODE_DIST_KEY"'));
+      expect(started, isEmpty);
+      expect(leftovers(), isEmpty);
+    }, skip: Platform.isWindows ? 'the check is for POSIX systems' : null);
+
+    group('on another system', () {
+      Future<(int, String, String)> runOn(
+        String platform,
+        List<String> args,
+      ) async {
+        final out = StringBuffer();
+        final err = StringBuffer();
+        final code = await runWincode(
+          [args.first, '--config', config.path, ...args.skip(1)],
+          out,
+          err,
+          environment: environment,
+          clock: () => _now,
+          connect: _noAppStoreConnect,
+          run: wsl.run,
+          platform: platform,
+        );
+        return (code, '$out', '$err');
+      }
+
+      test('macOS is refused with platform-unsupported (69), and nothing is started or left behind', () async {
+        final (code, out, err) = await runOn('macos', [
+          'sign',
+          '--offline',
+          '--json',
+        ]);
+        expect(code, 69, reason: '$out$err');
+        expect(errorId(out), 'platform-unsupported');
+        expect(err, contains('wincode sign does not run on macos'));
+        expect(started, isEmpty);
+        expect(leftovers(), isEmpty);
+        expect(signed().existsSync(), isFalse);
+      });
+
+      test('and so is --dry-run, where it would print the command', () async {
+        final (code, out, _) = await runOn('macos', ['sign', '--dry-run']);
+        expect(code, 69, reason: out);
+        expect(out, contains('FAIL  wincode sign does not run on macos'));
+      });
+
+      test('--verify-only needs no runner, so it works there', () async {
+        expect((await wincode(['sign', '--offline'])).$1, 0);
+        final (code, out, _) = await runOn('macos', [
+          'sign',
+          '--verify-only',
+          '--offline',
+        ]);
+        expect(code, 0, reason: out);
+      });
     });
   });
 
