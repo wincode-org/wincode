@@ -5,6 +5,7 @@
 - Amended: 2026-11-09, after review: the keys root is on the Windows side, not on the WSL2 disk (section 2); `init` edits a file of apps in place with `yaml_edit` (section 5); names of apps and references may not be common words or shorter than 3 characters, and paths derived from the config are redacted (section 4)
 - Amends: ADR-0013 (sections 1, 2, 3, 4 and 7, and the acceptance criteria of its phases 2 to 5). Design only: nothing here is implemented yet.
 - Implementation: all four pull requests of section 11 (schema and loader, credentials resolution, `--app` and `--all`, in-place edits and the migration) are built, see "As built" there.
+- Amended by [ADR-0015](0015-wincode-build.md) (Accepted): the keys `build_name`, `target`, `flutter_version` and `min_xcode_version`; `configuration` read by `build` too; `auto` as the default build number in a file of apps; a token variable per app, `WINCODE_GH_TOKEN_<APP>`; and a new phase 5 (sections 1, 6 and 8)
 
 ## Context
 

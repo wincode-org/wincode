@@ -5,6 +5,7 @@
 - Amended: 2026-11-08, after review: zsign in WSL2 is interim (section 4), the key-location rule (section 2), `--redact` and redaction in CI (sections 1 and 7), the `doctor` changes (Consequences)
 - Amended by [ADR-0014](0014-one-project-many-apps.md) (Accepted): several apps in one `wincode.yaml`, a credentials reference per app, `--app` and `--all`; and the distribution key lives on the Windows side, not on the WSL2 disk (sections 2 and 4 below)
 - Amended 2026-11-15: signing on Linux, with no WSL2, and a permission check for keys on POSIX ("Phase 3a addendum: Linux signing" in section 10, and section 11)
+- Amended by [ADR-0015](0015-wincode-build.md) (Accepted): `build` drives GitHub through its REST API instead of `gh`, with a token from the environment or from `gh`; its inputs, build numbers and checks before the dispatch; the artifact's checks; `--events`; `doctor --build`; and `init --workflow` updating an existing workflow (sections 1, 3, 6, 7, 8 and 11, and phase 5 in section 10)
 
 ## Context
 
