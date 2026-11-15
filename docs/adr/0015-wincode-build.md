@@ -716,7 +716,7 @@ The results:
 - **The wait:**
   - It reads the attempt that the dispatch started (`.../runs/{id}/attempts/{n}` and its `/jobs`, with `run_attempt` taken from the run's first read), so that a re-run on GitHub is not followed. Each read sends the `ETag` of the last 200, and a 304 changes nothing.
   - The jobs are read once the run has left the queue.
-  - A rate limit slows the polling and does not fail the build. A read that fails after its own retries is asked again, up to three in a row; then the build ends with that failure (`offline`, `github-unavailable`, `github-unauthorized` …) and a next step that collects the run with `--run`, since the run goes on.
+  - A rate limit slows the polling and does not fail the build. A read that fails after its own retries is asked again; the third failure in a row ends the build with that failure (`offline`, `github-unavailable`, `github-unauthorized` …) and a next step that collects the run with `--run`, since the run goes on.
   - `--timeout` is 60 minutes by default, in minutes or in seconds with an `s`, as `upload` takes it; the wait stops before it would pass the limit.
 - **Ctrl-C:**
   - winCode watches Ctrl-C, and SIGTERM where the system has it, from the moment before the dispatch is sent, so that a signal never ends the program while a run may have started.
@@ -738,6 +738,7 @@ The results:
   - the text for people (one line each time the run, a job or a step changes) goes to stderr in every mode, and the question to the stream of the report, which is stdout without `--json` or `--events`.
 - **`minutes` in the result** is the same estimate, for the jobs read last. It is null when the run never reached a job.
 - **The program ends with `exit`** after it flushes its output (`bin/wincode.dart`): an interrupted build leaves a timer and a read of standard input behind, and they would keep the process alive for up to 30 seconds.
+
 **The real check of part 5b** (2026-11-15, with the maintainer's yes, on the Linux workflow of the private test repository; no macOS).
 - **The setup:** a new branch of the test repository (its `main` and its first rehearsal branch were not touched) with a made-up Flutter project (the sample of `wincode_core`'s tests, bundle ID `org.example.demo`, one shared scheme) and a Linux copy of the contract 2 workflow. The copy declares the seven inputs that `build` sends, carries the request ID in its run name, and packs a 300 KB IPA-shaped zip whose XML `Info.plist` holds the version and build number it was given, with the same hash file and `upload-artifact` step as the reference workflow. The token was `gh`'s login, which `doctor --build` reports as broad.
 - **`doctor --build`** passed every check of `build` against that branch, with real reads (12 requests). One request timed out after 20 seconds and its retry answered, as designed.
@@ -751,7 +752,6 @@ The results:
   - the result's `minutes` was 1, for a job of 8 seconds on `ubuntu-24.04`;
   - no token, no `Authorization` header and no part of the signed link was in the events, the text for people or the verbose log.
 - **What it did not show:** a branch that moves (`ref-moved` is tested against the fake only: the real run built the commit that was checked), Ctrl-C, the timeout, a failed or cancelled run, a rate limit, `--allow-public` (the repository is private), a full-size IPA, and macOS.
-
 
 **Accepted when** these all hold. They replace ADR-0013's phase 5 criteria and ADR-0014's additions to them.
 - **Against a fake GitHub server** (no network in CI):
