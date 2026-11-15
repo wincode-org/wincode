@@ -446,11 +446,30 @@ void main() {
       );
     });
 
-    test('a run under another name is not ours', () async {
-      actions.titled = 'wincode 000000000000-1.0.0-1-00000000';
-      final (code, _, id) = await buildJson([]);
-      expect((code, id), (1, 'run-not-found'));
+    test('a run that shows the name of the workflow at first is waited for until it shows its own', () async {
+      // A real run did: GitHub shows the workflow's name right after a dispatch, and the run-name a moment later.
+      actions.untitledReads = 2;
+      final (code, json, _) = await buildJson([]);
+      expect(code, 0, reason: '$json');
+      expect(slept.take(2), everyElement(const Duration(seconds: 5)));
     });
+
+    test(
+      'a run that never gets our name is run-not-found, with the name it has',
+      () async {
+        actions.titled = 'wincode 000000000000-1.0.0-1-00000000';
+        final (code, json, id) = await buildJson([]);
+        expect((code, id), (1, 'run-not-found'));
+        expect(
+          (json['error'] as Map)['what'],
+          contains(
+            'is not the run that this build started, 2 minutes after the dispatch: it is named "wincode 000000000000-1.0.0-1-00000000"',
+          ),
+        );
+        expect(now.difference(DateTime.utc(2026, 11, 15, 12)).inSeconds, 120);
+        expect(actions.dispatches, hasLength(1));
+      },
+    );
 
     test('a lost answer is offline, says how to find the run, and does not send it again', () async {
       actions.dropsAnswer = true;
@@ -1472,6 +1491,23 @@ void main() {
         expect(code, 1);
         expect('$out$err', isNot(contains('org.example.other')));
         expect('$out$err', isNot(contains(_bundleId)));
+      });
+
+      test('with an Info.plist in XML, as the Linux rehearsal writes it, is read as well', () async {
+        actions.zip = _artifact(
+          _ipa(
+            infoPlist: utf8.encode(
+              '<?xml version="1.0" encoding="UTF-8"?>\n'
+              '<plist version="1.0"><dict>'
+              '<key>CFBundleIdentifier</key><string>$_bundleId</string>'
+              '<key>CFBundleShortVersionString</key><string>2.3.0</string>'
+              '<key>CFBundleVersion</key><string>57</string>'
+              '</dict></plist>\n',
+            ),
+          ),
+        );
+        final (code, json, _) = await buildJson([]);
+        expect(code, 0, reason: '$json');
       });
 
       test('that is signed is ipa-signed', () async {

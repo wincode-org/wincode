@@ -168,6 +168,9 @@ class FakeActions {
   /// The run does not show for this many reads of it.
   int hiddenReads = 0;
 
+  /// The run shows under the name of the workflow, as one does right after a dispatch, for this many reads of it.
+  int untitledReads = 0;
+
   /// The run does not show in the list of the workflow's runs either.
   bool hiddenFromList = false;
 
@@ -285,7 +288,14 @@ class FakeActions {
         hiddenReads--;
         return const GhAnswer.notFound();
       }
-      return GhAnswer(_runJson(run, timeline[_stateIndex(run.reads - 1)]));
+      final shown = _runJson(run, timeline[_stateIndex(run.reads - 1)]);
+      if (untitledReads > 0) {
+        untitledReads--;
+        shown
+          ..['name'] = 'wincode-ios'
+          ..['display_title'] = 'wincode-ios';
+      }
+      return GhAnswer(shown);
     }
     if (rest == 'runs/${run.id}/attempts/1') {
       final index = _stateIndex(run.reads);

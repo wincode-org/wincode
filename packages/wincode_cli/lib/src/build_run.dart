@@ -431,7 +431,7 @@ class BuildRun {
     'run-not-found',
     what,
     why:
-        'the dispatch was accepted, but GitHub does not show the run it started${runUrl == null ? '' : ' at $runUrl'}.',
+        'the dispatch was accepted, but GitHub does not show it as a run named wincode ${plan.requestId}${runUrl == null ? '' : ' at $runUrl'}.',
     next:
         'look for the run named wincode ${plan.requestId} on https://github.com/$_repository/actions/workflows/$_file ; if it '
         'is there, collect it with ${_collect('<run id>')}.',
@@ -439,11 +439,16 @@ class BuildRun {
 
   /// The run [id] as GitHub shows it, once it does, and checked to be the one this build started: named
   /// `wincode <request ID>`, started by a dispatch.
+  ///
+  /// Right after a dispatch GitHub may show the run under the name of the workflow, and only a moment later under the
+  /// name that `run-name` gives it (a real run showed `wincode-ios` first). The dispatch named the run, so a name that
+  /// is not ours yet is waited for like a run that is not there yet; only two minutes of it are a failure.
   Future<Map<String, Object?>> _identify(
     int id,
     String title,
     DateTime since,
   ) async {
+    String? seen;
     for (;;) {
       await _checkInterrupt();
       try {
@@ -451,18 +456,19 @@ class BuildRun {
           '/repos/$_repository/actions/runs/$id',
         );
         final shown = run['display_title'] ?? run['name'];
-        if (shown != title || run['event'] != 'workflow_dispatch') {
-          throw _notFound(
-            'run $id is not the run that this build started: it is named "${shown ?? 'nothing'}" and was started by ${run['event']}',
-          );
+        if (shown == title && run['event'] == 'workflow_dispatch') {
+          return run;
         }
-        return run;
+        seen =
+            'it is named "${shown ?? 'nothing'}" and was started by ${run['event']}';
       } on GithubException catch (e) {
         if (e.failure != GithubFailure.notFound) rethrow;
       }
       if (clock().difference(since) + _findInterval > _findTimeout) {
         throw _notFound(
-          'GitHub shows no run $id ${_findTimeout.inMinutes} minutes after the dispatch',
+          seen == null
+              ? 'GitHub shows no run $id ${_findTimeout.inMinutes} minutes after the dispatch'
+              : 'run $id is not the run that this build started, ${_findTimeout.inMinutes} minutes after the dispatch: $seen',
         );
       }
       await _pause(_findInterval);
