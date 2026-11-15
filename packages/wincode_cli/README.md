@@ -2,7 +2,7 @@
 
 The `wincode` command. Its design is [ADR-0013](../../docs/adr/0013-wincode-cli-build-sign-upload.md).
 
-Status: `doctor`, `preflight`, `init` and `sign` work, and `upload` is built and tested against a fake App Store Connect, not yet exercised against the real one from `wincode`. `preflight` and `doctor` read an app's App Store Connect key through its `credentials` reference (ADR-0014; layout below), and `sign` its distribution key. `sign` signs with an unencrypted PEM key only (ADR-0013, phase 3a); encrypted keys come in phase 3b. `upload` needs no WSL2 and runs on Linux too. The other commands are registered; each prints `not implemented yet, see ADR-0013` and exits with 64 until the phase of ADR-0013 that implements it. `wincode.yaml` may describe several apps ([ADR-0014](../../docs/adr/0014-one-project-many-apps.md)): `--app <name>` chooses the app of `preflight`, `doctor` and `init`, `--all` runs `preflight` and `doctor` for every app, and `init --app` adds an app to a file of apps, or moves a flat file under `apps:` (below).
+Status: `doctor`, `preflight`, `init` and `sign` work, and `upload` is tested against a fake App Store Connect and exercised against App Store Connect from `wincode` (build 15, VALID). `preflight` and `doctor` read an app's App Store Connect key through its `credentials` reference (ADR-0014; layout below), and `sign` its distribution key. `sign` signs with an unencrypted PEM key only (ADR-0013, phase 3a); encrypted keys come in phase 3b. `upload` needs no WSL2 and runs on Linux too. The other commands are registered; each prints `not implemented yet, see ADR-0013` and exits with 64 until the phase of ADR-0013 that implements it. `wincode.yaml` may describe several apps ([ADR-0014](../../docs/adr/0014-one-project-many-apps.md)): `--app <name>` chooses the app of `preflight`, `doctor` and `init`, `--all` runs `preflight` and `doctor` for every app, and `init --app` adds an app to a file of apps, or moves a flat file under `apps:` (below).
 
 ```
 dart run wincode_cli:wincode <command> [arguments]
@@ -280,7 +280,7 @@ The first five checks read local files and all run, so one report lists every lo
 dart run wincode_cli:wincode upload [--app <name>] [--ipa <file>] [--timeout <minutes>] [--yes] [<signed .ipa>]
 ```
 
-Built, and not yet exercised against App Store Connect from `wincode`: its tests run against a fake one, and the real run on a throwaway test app waits for the maintainer's word ([ADR-0013, phase 4 as built](../../docs/adr/0013-wincode-cli-build-sign-upload.md)). `wincode status` is not built yet.
+Built, tested against a fake App Store Connect, and exercised against App Store Connect from `wincode` (build 15, VALID): the maintainer ran it on a throwaway test app ([ADR-0013, phase 4 as built](../../docs/adr/0013-wincode-cli-build-sign-upload.md)). `wincode status` is not built yet.
 
 Uploads the signed IPA (`signed.ipa` in the app's `output` folder, or `--ipa <file>`) through the Build Uploads API and waits for Apple's processing result. It is the only command that writes to Apple.
 
