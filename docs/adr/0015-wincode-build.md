@@ -7,6 +7,7 @@
 - Amended: 2026-11-15, while building part 5a: the Flutter release's tag must exist in `flutter/flutter`, which one read checks before the dispatch (section 2); the ids and details that the code settled where this ADR was silent ("As built: part 5a", section 13)
 - Amended: 2026-11-15, while building part 5b: a run that builds another commit than the one the checks read stops the build (`ref-moved`, section 4) instead of giving a warning; the ids and details that the code settled where this ADR was silent ("As built: part 5b", section 13)
 - Verified: 2026-11-15, a rehearsal on a Linux runner confirmed the GitHub behaviour that the design relies on: the dispatch's answer, `display_title`, what `digest` covers, the artifact's zip with `wincode_core`'s reader, and which copy of the workflow runs (section 13)
+- Verified: 2026-11-15, `wincode build` ran end to end on a Linux runner of the same test repository, with the maintainer's yes: the checks, the dispatch, the wait, the download through GitHub's redirect and every check of the IPA (section 13, "As built: part 5b"). No macOS runner was used
 
 ## Context
 
@@ -189,7 +190,9 @@ There is no state file: the IPA is the record, and `build`'s result gives both n
 1. **Dispatch.** `POST /repos/{owner}/{repo}/actions/workflows/{file}/dispatches` with `ref` and `inputs`. The answer is 200, with `workflow_run_id`, `run_url` and `html_url`.
 
    The dispatch is never sent twice: if its answer is lost, the run may or may not exist, and a second request could start a second paid run. The build then stops with `offline` (69). The message says to look for the run named `wincode <request_id>` on the workflow's page, and to collect it with `--run <id>`.
-2. **Check that the run is ours.** `GET .../actions/runs/{id}`, read again for up to 2 minutes until GitHub shows the run. Its `display_title` must be `wincode <request_id>`, and its `event` must be `workflow_dispatch`; otherwise, `run-not-found` (1).
+2. **Check that the run is ours.** `GET .../actions/runs/{id}`, read again every 5 seconds for up to 2 minutes until GitHub shows the run. Its `display_title` must be `wincode <request_id>`, and its `event` must be `workflow_dispatch`; otherwise, after those 2 minutes, `run-not-found` (1), whose message says which name the run had.
+
+   **A name that is not ours yet is waited for.** Right after a dispatch, GitHub shows the run under the name of the workflow (`wincode-ios`), and under the name that `run-name` gives it only a moment later: the real check of part 5b saw it, and the first version of `build` took the first name for another run. The dispatch's answer names the run, so only the 2 minutes can make it a failure.
 
    An answer without a run ID (204, as the previous API version answers) falls back to ADR-0013's search: list the workflow's dispatched runs every 5 seconds, for up to 2 minutes, until one has that name.
 3. **Its commit.** The run's `head_sha` must be the commit that section 2 checked, which `build` recorded when it read the ref. If the branch (or the tag) moved between the checks and the dispatch, the checks were made on one commit and the runner builds another: the scheme, the configuration, the bundle ID and the other checks say nothing about it. The build then stops with `ref-moved` (1), as soon as the run is known:
@@ -735,6 +738,20 @@ The results:
   - the text for people (one line each time the run, a job or a step changes) goes to stderr in every mode, and the question to the stream of the report, which is stdout without `--json` or `--events`.
 - **`minutes` in the result** is the same estimate, for the jobs read last. It is null when the run never reached a job.
 - **The program ends with `exit`** after it flushes its output (`bin/wincode.dart`): an interrupted build leaves a timer and a read of standard input behind, and they would keep the process alive for up to 30 seconds.
+**The real check of part 5b** (2026-11-15, with the maintainer's yes, on the Linux workflow of the private test repository; no macOS).
+- **The setup:** a new branch of the test repository (its `main` and its first rehearsal branch were not touched) with a made-up Flutter project (the sample of `wincode_core`'s tests, bundle ID `org.example.demo`, one shared scheme) and a Linux copy of the contract 2 workflow. The copy declares the seven inputs that `build` sends, carries the request ID in its run name, and packs a 300 KB IPA-shaped zip whose XML `Info.plist` holds the version and build number it was given, with the same hash file and `upload-artifact` step as the reference workflow. The token was `gh`'s login, which `doctor --build` reports as broad.
+- **`doctor --build`** passed every check of `build` against that branch, with real reads (12 requests). One request timed out after 20 seconds and its retry answered, as designed.
+- **The first dispatch found a fault.** `build` stopped after the dispatch with `run-not-found`: GitHub showed the run as `wincode-ios`, the name of the workflow, and the request ID's name only a moment later (section 4, step 2). The run itself succeeded. The fix waits for the name, and a fake run that shows the workflow's name for two reads tests it.
+- **`--run` on that run** collected it end to end with GET requests: the 302 to GitHub's storage on another host (the log shows its host only), the zip against `digest`, the two files, the IPA against the recorded hash, and the IPA's bundle ID, version and build number, from the run's name. Exit 0.
+- **A second build** (`--build-number 2`: the first run, which succeeded, holds number 1, and `build` refused to reuse it before any request, which also showed the run list's rule on real runs) ran the whole way in 66 seconds, with 22 requests, one of them the dispatch:
+  - the dispatch answered 200 with `workflow_run_id` and `html_url`, and GitHub showed the run under its own name on the second read, 5 seconds later;
+  - the run's `head_sha` was the commit that the checks had read, so the same-commit check passed;
+  - the first read of the run found it `in_progress`, and the second, 30 seconds later and with the `ETag` of the first, found it `completed`; the events held the `run`, `job` and `step` changes of both reads;
+  - the artifact (301,112 bytes) was downloaded through the redirect with no token, every check passed, and `unsigned.ipa` (300,975 bytes) was in the output folder, with no work folder left; exit 0, with the one warning of a flat file without credentials;
+  - the result's `minutes` was 1, for a job of 8 seconds on `ubuntu-24.04`;
+  - no token, no `Authorization` header and no part of the signed link was in the events, the text for people or the verbose log.
+- **What it did not show:** a branch that moves (`ref-moved` is tested against the fake only: the real run built the commit that was checked), Ctrl-C, the timeout, a failed or cancelled run, a rate limit, `--allow-public` (the repository is private), a full-size IPA, and macOS.
+
 
 **Accepted when** these all hold. They replace ADR-0013's phase 5 criteria and ADR-0014's additions to them.
 - **Against a fake GitHub server** (no network in CI):
