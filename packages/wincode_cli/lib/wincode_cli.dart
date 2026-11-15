@@ -7,9 +7,13 @@ import 'dart:io';
 import 'package:args/command_runner.dart';
 import 'package:wincode_core/wincode_core.dart';
 
+import 'src/build.dart';
+import 'src/build_number.dart' show isDottedNumber;
 import 'src/config.dart';
 import 'src/credentials.dart';
+import 'src/events.dart';
 import 'src/failure.dart';
+import 'src/github.dart';
 import 'src/init.dart';
 import 'src/preflight.dart';
 import 'src/redact.dart';
@@ -40,6 +44,15 @@ export 'src/credentials.dart'
         readAscKeyIds,
         resolveDistKey;
 export 'src/failure.dart' show ExitCode, WincodeException;
+export 'src/github.dart'
+    show
+        GithubClient,
+        GithubConnect,
+        GithubException,
+        GithubFailure,
+        HttpGithubClient,
+        githubApiVersion,
+        githubTokenVariable;
 export 'src/key_location.dart' show requireOutsideGit;
 export 'src/key_permissions.dart' show KeyTarget, makePrivate, requirePrivate;
 export 'src/init.dart' show ReadLine;
@@ -70,12 +83,6 @@ export 'src/zsign_native.dart' show NativeZsignRunner, nativeZsignPath;
 /// The commands that ADR-0013 designs and later phases implement: name, summary, arguments and phase.
 const _planned = [
   (
-    'build',
-    "Build the unsigned IPA on the app's macOS runner (GitHub Actions) and download it.",
-    '',
-    5,
-  ),
-  (
     'status',
     "Show the state of the app's latest uploads in App Store Connect. Read-only.",
     '',
@@ -89,7 +96,8 @@ const _planned = [
 /// and nothing else. Everything printed passes through a [Redactor], which is active with `--redact` or when [environment]
 /// (default: the process's) sets `CI`.
 ///
-/// [clock] (default: the system's), [connect] (default: App Store Connect), [workingDirectory] (default: the current
+/// [clock] (default: the system's), [connect] (default: App Store Connect), [connectGithub] (default: GitHub's API at
+/// api.github.com; only tests connect to a fake server), [workingDirectory] (default: the current
 /// folder), [readLine] and [terminal] (default: standard input), [run] (default: starts the program), [zsign]
 /// (default: the runner for [platform], which runs zsign through `wsl.exe` on Windows and directly on Linux),
 /// [platform] (default: `Platform.operatingSystem`) and [pollInterval] (default: 30 s, how often `upload` asks Apple
@@ -101,6 +109,7 @@ Future<int> runWincode(
   Map<String, String>? environment,
   DateTime Function()? clock,
   AscConnect connect = connectToApple,
+  GithubConnect connectGithub = connectToGithub,
   Directory? workingDirectory,
   ReadLine? readLine,
   bool? terminal,
@@ -118,6 +127,7 @@ Future<int> runWincode(
   // A usage error comes before the arguments are parsed, so the flags can only be looked up in the list itself.
   final flags = args.takeWhile((a) => a != '--');
   var json = flags.contains('--json');
+  var events = flags.contains('--events');
   var verbose = flags.contains('--verbose');
   final redactor = Redactor.forRun(
     flag: flags.contains('--redact'),
@@ -127,7 +137,27 @@ Future<int> runWincode(
   err = redactor.sink(err);
   final runner = _Wincode(
     out,
-    _Doctor(out, err, environment, redactor, run, zsign),
+    _Doctor(
+      out,
+      err,
+      environment,
+      redactor,
+      run,
+      zsign,
+      clock ?? DateTime.now,
+      connect,
+      connectGithub,
+    ),
+    _Build(
+      out,
+      err,
+      environment,
+      redactor,
+      clock ?? DateTime.now,
+      connect,
+      connectGithub,
+      run,
+    ),
     _Preflight(
       out,
       err,
@@ -174,9 +204,10 @@ Future<int> runWincode(
 
   int report(WincodeException e) {
     err.writeln(e.describe(command.isEmpty ? 'wincode' : 'wincode $command'));
-    if (json) {
+    if (json || events) {
       out.writeln(
         jsonEncode({
+          if (!json) 'event': 'result',
           if (command.isNotEmpty) 'command': command,
           'ok': false,
           'exitCode': e.exitCode.code,
@@ -195,15 +226,19 @@ Future<int> runWincode(
     json = results.flag('json');
     verbose = results.flag('verbose');
     command = results.command?.name ?? '';
+    events =
+        results.command?.options.contains('events') == true &&
+        results.command!.flag('events');
     return await runner.runCommand(results) ?? ExitCode.ok.code;
   } on UsageException catch (e) {
     err
       ..writeln(e.message)
       ..writeln()
       ..writeln(e.usage);
-    if (json) {
+    if (json || events) {
       out.writeln(
         jsonEncode({
+          if (!json) 'event': 'result',
           'ok': false,
           'exitCode': ExitCode.usage.code,
           'error': {'id': 'usage', 'what': e.message},
@@ -236,6 +271,7 @@ class _Wincode extends CommandRunner<int> {
   _Wincode(
     this.out,
     _Doctor doctor,
+    _Build build,
     _Preflight preflight,
     _Init init,
     _Sign sign,
@@ -289,6 +325,7 @@ class _Wincode extends CommandRunner<int> {
       addCommand(_NotImplemented(out, name, summary, arguments, phase));
     }
     addCommand(doctor);
+    addCommand(build);
     addCommand(preflight);
     addCommand(init);
     addCommand(sign);
@@ -323,6 +360,30 @@ abstract class _Command extends Command<int> {
 
   /// Whether `--json` was given. Not called `json`: inside a subclass, that name finds `dart:convert`'s codec first.
   bool get jsonOutput => globalResults!.flag('json');
+
+  /// Adds `--events` to the command (ADR-0015, section 9). `build`, `sign` and `upload` take it. With [asks], the
+  /// command asks a question, which then needs `--yes`.
+  void addEventsFlag({bool asks = false}) => argParser.addFlag(
+    'events',
+    negatable: false,
+    help:
+        'Write progress as JSON lines on stdout, one event each as it happens, and the result as the last line: the '
+        'object that --json prints, with "event": "result". The messages for people go to stderr.'
+        '${asks ? ' The question needs --yes, as with --json.' : ''} Cannot be combined with --json.',
+  );
+
+  /// Whether `--events` was given. Only a command that called [addEventsFlag] may ask.
+  bool get eventsOutput => argResults!.flag('events');
+
+  /// Refuses `--events` together with `--json`: stdout would then have two shapes.
+  void checkEventsOption() {
+    if (eventsOutput && jsonOutput) {
+      usageException(
+        '--events and --json cannot be given together: --json prints one object when the command ends, and --events '
+        'prints one object per line as it runs, ending with that same object.',
+      );
+    }
+  }
 
   @override
   void printUsage() => out.writeln(usage);
@@ -377,6 +438,9 @@ class _Doctor extends _Command {
     this.redactor,
     this.runProcess,
     this.zsign,
+    this.clock,
+    this.connect,
+    this.connectGithub,
   ) {
     argParser
       ..addOption(
@@ -401,6 +465,13 @@ class _Doctor extends _Command {
             'Also check what wincode sign needs: on Windows WSL2 version 2, on Linux nothing but zsign itself; the '
             'pinned zsign and its recorded SHA-256 (recorded by the first check that finds it), and where the '
             'distribution key is.',
+      )
+      ..addFlag(
+        'build',
+        negatable: false,
+        help:
+            'Also make every check that wincode build makes before it starts a run, with real reads of GitHub and, for '
+            'the build number, of App Store Connect, and start nothing (ADR-0015, section 10).',
       );
   }
 
@@ -409,6 +480,9 @@ class _Doctor extends _Command {
   final Redactor redactor;
   final RunProcess runProcess;
   final ZsignRunner zsign;
+  final DateTime Function() clock;
+  final AscConnect connect;
+  final GithubConnect connectGithub;
 
   @override
   final name = 'doctor';
@@ -438,11 +512,17 @@ class _Doctor extends _Command {
           'doctor --sign runs read-only commands (in WSL2 on Windows) and records the SHA-256 of zsign; it has no --dry-run.',
         );
       }
+      if (argResults!.flag('build') && globalResults!.flag('dry-run')) {
+        usageException(
+          'doctor --build reads GitHub, and App Store Connect for the build number; it has no --dry-run. wincode build '
+          '--dry-run prints the plan without any request.',
+        );
+      }
       return _setup();
     }
-    if (argResults!.flag('sign')) {
+    if (argResults!.flag('sign') || argResults!.flag('build')) {
       usageException(
-        '--sign checks the setup. The binary checks read no settings.',
+        '--sign and --build check the setup. The binary checks read no settings.',
       );
     }
     if (globalResults!.option('app') != null || globalResults!.flag('all')) {
@@ -564,6 +644,22 @@ extension on _Doctor {
             redactor: redactor,
             log: globalResults!.flag('verbose') ? err.writeln : null,
           ),
+        );
+      }
+      if (argResults!.flag('build')) {
+        findings.addAll(
+          (await BuildChecker(
+            config: app,
+            options: const BuildOptions(),
+            environment: environment,
+            redactor: redactor,
+            clock: clock,
+            github: connectGithub,
+            connect: connect,
+            run: this.runProcess,
+            doctor: true,
+            log: globalResults!.flag('verbose') ? err.writeln : null,
+          ).check()).findings,
         );
       }
       writeReport(findings, report, command: 'doctor');
@@ -909,6 +1005,7 @@ class _Sign extends _Command {
     this.runProcess,
     this.zsign,
   ) {
+    addEventsFlag();
     argParser
       ..addFlag(
         'offline',
@@ -961,6 +1058,7 @@ class _Sign extends _Command {
     if (globalResults!.flag('all')) {
       refuseAll(name, writesOf[name]!);
     }
+    checkEventsOption();
     final rest = argResults!.rest;
     if (rest.length > 1) {
       usageException('Give at most one IPA.');
@@ -975,6 +1073,7 @@ class _Sign extends _Command {
       readOnly: false,
       redactor: redactor,
     ).single;
+    final events = eventsOutput ? EventWriter(out, clock, app: app.name) : null;
     final signer = Signer(
       config: app,
       environment: environment,
@@ -984,6 +1083,7 @@ class _Sign extends _Command {
       run: runProcess,
       zsignRunner: zsign,
       log: globalResults!.flag('verbose') ? err.writeln : null,
+      events: events,
     );
     final verifyOnly = argResults!.flag('verify-only');
     final offline = argResults!.flag('offline');
@@ -999,16 +1099,20 @@ class _Sign extends _Command {
             offline: offline,
             dryRun: dryRun,
           );
-    // With --json, stdout carries the JSON object only.
-    writeReport(findings, jsonOutput ? err : out, command: name);
+    // With --json or --events, stdout carries the JSON only.
+    writeReport(
+      findings,
+      jsonOutput || events != null ? err : out,
+      command: name,
+    );
+    final result = {
+      ...jsonOf(findings, command: name, app: app.name),
+      if (verifyOnly) 'verifyOnly': true,
+    };
     if (jsonOutput) {
-      out.writeln(
-        jsonEncode({
-          ...jsonOf(findings, command: name, app: app.name),
-          if (verifyOnly) 'verifyOnly': true,
-        }),
-      );
+      out.writeln(jsonEncode(result));
     }
+    events?.result(result);
     return exitCodeOf(findings).code;
   }
 }
@@ -1026,6 +1130,7 @@ class _Upload extends _Command {
     this.terminal,
     this.pollInterval,
   ) {
+    addEventsFlag(asks: true);
     argParser
       ..addOption(
         'ipa',
@@ -1087,6 +1192,7 @@ class _Upload extends _Command {
     if (globalResults!.flag('all')) {
       refuseAll(name, writesOf[name]!);
     }
+    checkEventsOption();
     final rest = argResults!.rest;
     if (rest.length > 1) {
       usageException('Give at most one IPA.');
@@ -1108,7 +1214,11 @@ class _Upload extends _Command {
     final dryRun = globalResults!.flag('dry-run');
     final yes = argResults!.flag('yes');
     final interactive =
-        !yes && !jsonOutput && !runsInCi(environment) && terminal;
+        !yes &&
+        !jsonOutput &&
+        !eventsOutput &&
+        !runsInCi(environment) &&
+        terminal;
     if (!dryRun && !yes && !interactive) {
       throw const WincodeException(
         ExitCode.usage,
@@ -1116,7 +1226,7 @@ class _Upload extends _Command {
         'upload needs your confirmation, and cannot ask here',
         why:
             'an upload cannot be taken back: the build number is used from the moment Apple has the file. upload asks '
-            'you to type the name of the app, but only at a terminal, and not in CI or with --json.',
+            'you to type the name of the app, but only at a terminal, and not in CI, with --json or with --events.',
         next:
             'run wincode upload --dry-run to read the plan, then run it in a terminal, or give --yes. Nothing was '
             'uploaded.',
@@ -1126,8 +1236,9 @@ class _Upload extends _Command {
         argResults!.option('ipa') ??
         rest.firstOrNull ??
         '${app.output.path}${Platform.pathSeparator}signed.ipa';
-    // With --json, stdout carries the JSON object only.
-    final report = jsonOutput ? err : out;
+    // With --json or --events, stdout carries the JSON only.
+    final report = jsonOutput || eventsOutput ? err : out;
+    final events = eventsOutput ? EventWriter(out, clock, app: app.name) : null;
     final result = await Uploader(
       config: app,
       environment: environment,
@@ -1140,15 +1251,16 @@ class _Upload extends _Command {
       timeout: timeout,
       pollInterval: pollInterval,
       log: globalResults!.flag('verbose') ? err.writeln : null,
+      events: events,
     ).upload(File(ipa), dryRun: dryRun, yes: yes);
+    final object = {
+      ...jsonOf(result.findings, command: name, app: app.name),
+      ...result.json,
+    };
     if (jsonOutput) {
-      out.writeln(
-        jsonEncode({
-          ...jsonOf(result.findings, command: name, app: app.name),
-          ...result.json,
-        }),
-      );
+      out.writeln(jsonEncode(object));
     }
+    events?.result(object);
     return exitCodeOf(result.findings).code;
   }
 
@@ -1162,6 +1274,230 @@ class _Upload extends _Command {
       );
     }
     return match[2] == 's' ? Duration(seconds: n) : Duration(minutes: n);
+  }
+}
+
+class _Build extends _Command {
+  _Build(
+    super.out,
+    this.err,
+    this.environment,
+    this.redactor,
+    this.clock,
+    this.connect,
+    this.connectGithub,
+    this.runProcess,
+  ) {
+    addEventsFlag();
+    argParser
+      ..addOption(
+        'ref',
+        valueHelp: 'branch or tag',
+        help:
+            'Build this branch or tag instead of the @<ref> of workflow: in wincode.yaml. A commit SHA is refused: GitHub '
+            'starts a workflow on a branch or a tag.',
+      )
+      ..addOption(
+        'build-name',
+        valueHelp: 'x.y.z',
+        help:
+            'The version (CFBundleShortVersionString), for this build only. Without it: build_name in wincode.yaml, '
+            "else pubspec.yaml's version at the ref.",
+      )
+      ..addOption(
+        'build-number',
+        valueHelp: 'n|auto',
+        help:
+            'The build number, or auto: one above the highest that App Store Connect and the last day\'s runs of the app '
+            "know. Without it: auto for a file of apps, and pubspec.yaml's number at the ref for a flat file.",
+      )
+      ..addFlag(
+        'allow-public',
+        negatable: false,
+        help: 'Build in a public repository, whose artifacts anyone with a GitHub account can download until they expire.',
+      );
+  }
+
+  final StringSink err;
+  final Map<String, String> environment;
+  final Redactor redactor;
+  final DateTime Function() clock;
+  final AscConnect connect;
+  final GithubConnect connectGithub;
+  final RunProcess runProcess;
+
+  @override
+  final name = 'build';
+
+  @override
+  final description =
+      "Build the app's unsigned IPA on a GitHub macOS runner (ADR-0015). Part 5a: the checks and the plan; the run is not "
+      'started yet.\n\n'
+      'Before a run is paid for, winCode reads the project at the commit of the ref through GitHub\'s API and checks '
+      'it: the token and the repository, the workflow and its contract and inputs, the Flutter release against '
+      'pubspec.yaml and flutter/flutter\'s tags, the Xcode against min_xcode_version, the scheme, the configuration '
+      'and the bundle ID that Flutter would build, the entry point, the version, and the build number (auto asks App '
+      'Store Connect and the last 24 hours of runs). It sends GET requests only.\n\n'
+      '--dry-run sends no request at all: it prints the plan from wincode.yaml and the options, and the dispatch '
+      'request as it would go out. wincode doctor --build makes the same checks and prints no plan.';
+
+  @override
+  String get invocation => 'wincode build [--app <name>]';
+
+  @override
+  bool get takesArguments => false;
+
+  @override
+  Future<int> run() async {
+    if (globalResults!.flag('all')) {
+      refuseAll(name, writesOf[name]!);
+    }
+    checkEventsOption();
+    final options = _options();
+    final path = globalResults!.option('config')!;
+    final settings = loadSettings(path, redactor: redactor);
+    final app = selectApps(
+      settings,
+      path: path,
+      app: globalResults!.option('app'),
+      all: false,
+      readOnly: false,
+      redactor: redactor,
+    ).single;
+    final events = eventsOutput ? EventWriter(out, clock, app: app.name) : null;
+    // With --json or --events, stdout carries the JSON only.
+    final report = jsonOutput || events != null ? err : out;
+    final checker = BuildChecker(
+      config: app,
+      options: options,
+      environment: environment,
+      redactor: redactor,
+      clock: clock,
+      github: connectGithub,
+      connect: connect,
+      run: runProcess,
+      log: globalResults!.flag('verbose') ? err.writeln : null,
+      events: events,
+    );
+    final dry = globalResults!.flag('dry-run');
+    final List<Finding> findings;
+    final BuildPlan plan;
+    var request = const <String>[];
+    if (dry) {
+      final result = checker.dryRun();
+      findings = result.report.findings;
+      plan = result.report.plan;
+      request = result.request;
+    } else {
+      final result = await checker.check();
+      findings = result.findings;
+      plan = result.plan;
+    }
+    final failed = findings.any((f) => f.status == 'FAIL');
+    if (!failed) {
+      events?.emit('plan', plan.toEvent());
+      if (dry) {
+        findings.add(
+          const Finding.info(
+            'dry-run',
+            'dry run: nothing was sent, and nothing was started',
+          ),
+        );
+      }
+    }
+    writeFindings(findings, report);
+    if (!failed) {
+      report
+        ..writeln()
+        ..writeAll(plan.lines(), '\n')
+        ..writeln();
+      request.forEach(report.writeln);
+    }
+    // Without --dry-run, a build that passed every check stops where the dispatch will be (ADR-0015, part 5b).
+    final stopped = !failed && !dry;
+    if (stopped) {
+      err.writeln(_dispatchNotYet.describe('wincode $name'));
+    } else {
+      writeSummary(findings, report, command: name);
+    }
+    final result = {
+      ...jsonOf(findings, command: name, app: app.name),
+      if (stopped) ...{
+        'ok': false,
+        'exitCode': _dispatchNotYet.exitCode.code,
+        'error': _dispatchNotYet.toJson(),
+      },
+      'repository': plan.repository,
+      'workflow': plan.workflow,
+      'ref': plan.ref,
+      'commit': plan.commit,
+      'requestId': plan.requestId,
+      'runId': null,
+      'runUrl': null,
+      'conclusion': null,
+      'buildName': plan.buildName,
+      'buildNumber': plan.buildNumber,
+      'ipa': null,
+      'minutes': null,
+      'plan': plan.toJson(),
+      if (dry) ...{'dryRun': true, 'request': request},
+    };
+    if (jsonOutput) {
+      out.writeln(jsonEncode(result));
+    }
+    events?.result(result);
+    return stopped ? _dispatchNotYet.exitCode.code : exitCodeOf(findings).code;
+  }
+
+  /// Where a build that passed every check stops in this part of ADR-0015: the dispatch is part 5b.
+  static const _dispatchNotYet = WincodeException(
+    ExitCode.usage,
+    'not-implemented',
+    'dispatch not implemented yet (part 5b)',
+    why: 'this version of winCode makes the checks of a build and prints its plan, and does not start the run.',
+    next:
+        'run wincode build --dry-run for the plan without any request, or wincode doctor --build for the checks alone. '
+        'Nothing was started.',
+  );
+
+  /// The options of the command line, checked.
+  BuildOptions _options() {
+    final ref = argResults!.option('ref');
+    if (ref != null) {
+      if (RegExp(r'^[0-9a-fA-F]{40}$').hasMatch(ref)) {
+        throw const WincodeException(
+          ExitCode.usage,
+          'ref-is-commit',
+          '--ref names a commit, and GitHub starts a workflow on a branch or a tag',
+          why: 'a dispatch takes a ref, which is a branch or a tag, and runs the workflow file as it is at the tip of it.',
+          next:
+              'give the branch or tag that points to the commit, or push one.',
+        );
+      }
+      if (!RegExp(r'^[A-Za-z0-9][A-Za-z0-9._/+-]{0,254}$').hasMatch(ref)) {
+        usageException(
+          '--ref is a branch or tag name: letters, digits, ., _, -, + and /, starting with a letter or digit.',
+        );
+      }
+    }
+    final name = argResults!.option('build-name');
+    if (name != null && !isDottedNumber(name)) {
+      usageException(
+        '--build-name is one to three whole numbers joined by dots, such as 2.4.0.',
+      );
+    }
+    final number = argResults!.option('build-number');
+    if (number != null && number != 'auto' && !isDottedNumber(number)) {
+      usageException(
+        '--build-number is a number such as 58 (or 1.2.3), or auto.',
+      );
+    }
+    return BuildOptions(
+      ref: ref,
+      buildName: name,
+      buildNumber: number,
+      allowPublic: argResults!.flag('allow-public'),
+    );
   }
 }
 

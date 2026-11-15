@@ -11,6 +11,7 @@ executables:
 
 dependencies:
   args: ^2.7.0
+  pub_semver: 2.2.1
   wincode_asc:
     path: ../wincode_asc
   wincode_core:

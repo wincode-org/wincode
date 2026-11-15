@@ -2,7 +2,7 @@
 
 The `wincode` command. Its design is [ADR-0013](../../docs/adr/0013-wincode-cli-build-sign-upload.md).
 
-Status: `doctor`, `preflight`, `init` and `sign` work, and `upload` is tested against a fake App Store Connect and exercised against App Store Connect from `wincode` (build 15, VALID). `preflight` and `doctor` read an app's App Store Connect key through its `credentials` reference (ADR-0014; layout below), and `sign` its distribution key. `sign` signs with an unencrypted PEM key only (ADR-0013, phase 3a); encrypted keys come in phase 3b. On Windows `sign` runs zsign in WSL2; on Linux it runs zsign directly, with no WSL2 (built, exercised on Linux CI with a throwaway certificate and on Linux (WSL2) with a real key; not yet run on a real server). `upload` needs no WSL2 and runs on Linux too. The other commands are registered; each prints `not implemented yet, see ADR-0013` and exits with 64 until the phase of ADR-0013 that implements it. `wincode.yaml` may describe several apps ([ADR-0014](../../docs/adr/0014-one-project-many-apps.md)): `--app <name>` chooses the app of `preflight`, `doctor` and `init`, `--all` runs `preflight` and `doctor` for every app, and `init --app` adds an app to a file of apps, or moves a flat file under `apps:` (below).
+Status: `doctor`, `preflight`, `init` and `sign` work, and `upload` is tested against a fake App Store Connect and exercised against App Store Connect from `wincode` (build 15, VALID). `preflight` and `doctor` read an app's App Store Connect key through its `credentials` reference (ADR-0014; layout below), and `sign` its distribution key. `sign` signs with an unencrypted PEM key only (ADR-0013, phase 3a); encrypted keys come in phase 3b. On Windows `sign` runs zsign in WSL2; on Linux it runs zsign directly, with no WSL2 (built, exercised on Linux CI with a throwaway certificate and on Linux (WSL2) with a real key; not yet run on a real server). `upload` needs no WSL2 and runs on Linux too. `build` makes every check that comes before a dispatch and prints its plan (part 5a of [ADR-0015](../../docs/adr/0015-wincode-build.md)); it does not start the run yet, and ends with `not-implemented` (64). `status` is registered; it prints `not implemented yet, see ADR-0013` and exits with 64 until its phase. `wincode.yaml` may describe several apps ([ADR-0014](../../docs/adr/0014-one-project-many-apps.md)): `--app <name>` chooses the app of `preflight`, `doctor` and `init`, `--all` runs `preflight` and `doctor` for every app, and `init --app` adds an app to a file of apps, or moves a flat file under `apps:` (below).
 
 ```
 dart run wincode_cli:wincode <command> [arguments]
@@ -15,8 +15,8 @@ dart run wincode_cli:wincode <command> [arguments]
 | `sign [<unsigned .ipa>]` | Sign the IPA for the App Store with zsign (in WSL2 on Windows, directly on Linux), and check every signature | works (3a); Linux exercised on Linux (WSL2) with a real key |
 | `upload [<signed .ipa>]` | Upload the signed IPA to App Store Connect and wait for its processing | built (4), not yet run against Apple |
 | `status` | Show the state of the app's latest uploads in App Store Connect. Read-only | 4 |
-| `build` | Build the unsigned IPA on the app's macOS runner (GitHub Actions) and download it | 5 |
-| `doctor` | Check the setup (with `--sign`, what `sign` needs), or a Mach-O binary against the SDK or a reference build | works |
+| `build` | Build the unsigned IPA on the app's macOS runner (GitHub Actions) and download it | checks and plan (5a); the dispatch is 5b |
+| `doctor` | Check the setup (with `--sign`, what `sign` needs; with `--build`, what `build` checks), or a Mach-O binary against the SDK or a reference build | works |
 
 ## Global options
 
@@ -28,6 +28,8 @@ They go before or after the command.
 - `--redact`: hide the bundle ID and team ID, and the names of apps, credentials references, flavors and the paths of the settings, in everything printed. It is always on when the `CI` environment variable is set (not empty, `0` or `false`). Commands register the IDs they learn with the redactor.
 - `--verbose`: also print each step, external command and HTTP request, with secrets redacted.
 - `--dry-run`: send, write and run nothing, and print what would be done.
+
+`--events` is an option of `build`, `sign` and `upload` (ADR-0015, section 9): it writes one JSON object per line on stdout as the command goes, and ends with the object that `--json` prints plus `"event": "result"`. The messages for people go to stderr, and it cannot be combined with `--json` (64). The events and their fields are `eventFields` in `lib/src/events.dart`.
 
 `doctor`, `preflight`, `init` and the error output use `--json`. `--config` and `--dry-run` are used by `preflight` and `init`, and the HTTP lines of `--verbose` by `preflight`; otherwise `--verbose` adds only the stack trace of an internal error.
 
@@ -54,9 +56,9 @@ They go before or after the command.
 | --- | --- |
 | 0 | Done |
 | 1 | Failed: a check found a problem, an input is wrong, or Apple or GitHub refused the work |
-| 64 | Usage error, or not implemented yet |
+| 64 | Usage error (`--events` with `--json`, a commit as `--ref`), a public repository without `--allow-public`, or not implemented yet |
 | 65 | `upload`: Apple took the IPA and then failed its processing |
-| 69 | A tool, the SDK or the network is missing |
+| 69 | A tool, the SDK or the network is missing; GitHub is down, or limits the token for longer than `build` waits |
 | 70 | A bug in winCode |
 | 75 | `upload`: Apple had not finished its processing within `--timeout` |
 | 77 | Apple or GitHub refused the credentials |
@@ -85,7 +87,16 @@ output: build/wincode
 
 `bundle_id` and `team_id` are required, and `output` defaults to `build/wincode`. Every value must be text. An unknown key is refused, and so is a key whose name looks like a secret; messages name the key, never its value. `loadConfig` reads and checks the file; `preflight` reads it, and `init` writes it and checks what it writes with `parseConfig`.
 
-A flat file may also hold `flavor`, `configuration` (which defaults to `Release-<flavor>`, or `Release`), `workflow_inputs` and `credentials`; everything else about a flat file is as it was.
+A flat file may also hold `flavor`, `configuration` (which defaults to `Release-<flavor>`, or `Release`), `workflow_inputs`, `credentials`, and the four keys of `build` (ADR-0015, section 2):
+
+| Key | What it is |
+| --- | --- |
+| `build_name` | The App Store version: one to three whole numbers joined by dots. Quote it (`"2.4"`): YAML reads 2.4 as a number. Without it, `pubspec.yaml`'s version at the ref gives it |
+| `target` | The Dart entry point, a path under `lib/` ending in `.dart` (at most 64 characters). Without it, Flutter's `lib/main.dart` |
+| `flutter_version` | The Flutter release that builds the app, as `flutter/flutter` tags it: `3.47.7`, or `3.48.0-0.1.pre`. `build` needs it |
+| `min_xcode_version` | The oldest Xcode that may build the app, in quotes: `"26.0"`. `build` needs it |
+
+`init`, `sign`, `preflight` and `upload` work without `flutter_version` and `min_xcode_version`; `build` stops without them (`flutter-version-missing`, `min-xcode-missing`, 78). Everything else about a flat file is as it was.
 
 ### Several apps
 
@@ -106,11 +117,11 @@ apps:
 ```
 
 - A file with `apps` holds only `apps` and `defaults` at the top level; the flat file stays valid and is loaded as one app without a name.
-- `defaults` may hold `team_id`, `entitlements`, `workflow`, `workflow_inputs` and `credentials`. An app's own value replaces a default whole. `bundle_id`, `flavor`, `configuration`, `profile` and `output` are per app.
+- `defaults` may hold `team_id`, `entitlements`, `workflow`, `workflow_inputs`, `credentials`, `build_name`, `target`, `flutter_version` and `min_xcode_version`. An app's own value replaces a default whole. `bundle_id`, `flavor`, `configuration`, `profile` and `output` are per app.
 - Every app needs `bundle_id`, `team_id` and `credentials` (the name of a credentials reference; no command reads one yet). `output` defaults to `build/wincode/<app>`.
 - An app name and a credentials reference have 3 to 32 lower-case letters, digits and hyphens, start with a letter and end with a letter or digit, and are not an ordinary word (`build`, `key`, `app`, `release`, ... `reservedNames` in `lib/src/config.dart` has the list), a Windows device name or the shape of a placeholder such as `app-1`.
 - Bundle IDs are unique (ignoring case), output folders are unique, and one credentials reference serves one team. Messages name the line and, for a name that passed its rules, the app; a refused name is never printed.
-- `workflow_inputs` names are plain, not `request_id`, `flavor` or `build_number`, and not secret-looking; values are at most 64 plain characters.
+- `workflow_inputs` names are plain, not `request_id`, `flavor`, `build_number`, `build_name`, `target`, `flutter_version` or `min_xcode_version`, which `build` sets itself, and not secret-looking; values are at most 64 plain characters, and there are at most 18 entries.
 - `loadSettings` and `parseSettings` return every app in file order (`WincodeSettings`). `loadConfig` returns the one app that existing commands work on, and refuses a file of several with exit 64 (`not-implemented`).
 - With a `Redactor`, the loader registers the names, bundle IDs, team IDs, credentials references, flavors, configurations and the `profile`, `entitlements` and `output` paths as soon as each has passed its checks, so that `--redact` and CI print `app-1`, `<bundle ID 1>`, `credentials-1`, `Release-app-1`, `<profile of app-1>` and `<output of app-1>/signed.ipa` even in an error message (ADR-0014, section 4). `preflight` passes its redactor to the loader.
 
@@ -320,12 +331,49 @@ The requests are the spike's, in its order: `GET /v1/apps`, `POST /v1/buildUploa
 
 `upload` runs on Linux as well as on Windows, and so does `sign` (above).
 
+## build
+
+```
+dart run wincode_cli:wincode build [--app <name>] [--ref <branch or tag>] [--build-name <x.y.z>] [--build-number <n>|auto]
+                                   [--allow-public] [--events]
+```
+
+Part 5a of ADR-0015: everything before the dispatch. `build` reads the project at the commit of the ref through GitHub's REST API (version 2026-03-10), makes the checks below with GET requests only, prints its plan, and ends with `not-implemented` (64): "dispatch not implemented yet (part 5b)". Nothing is started, and no macOS minute is used. `--timeout`, `--yes` and `--run` come with the dispatch.
+
+The token is looked for in `WINCODE_GH_TOKEN_<APP>` (the app's name in capitals, `-` written as `_`; none for a flat file), `GH_TOKEN`, `GITHUB_TOKEN`, then `gh auth token`. It goes to `api.github.com` only, is registered with the redactor as a secret, and is never printed. A fine-grained token with Actions (read and write), Contents (read) and Metadata (read) on the repository is the least it needs.
+
+The checks, in order, each with the id of its failure (ADR-0015, sections 2, 3 and 8):
+
+| Check | Fails with |
+| --- | --- |
+| `workflow:`, `flutter_version` and `min_xcode_version` are set | `workflow-missing`, `flutter-version-missing`, `min-xcode-missing` (78) |
+| The token | `github-token-missing`, `github-unauthorized`, `github-forbidden` (77); `github-token-invalid` (78) |
+| The repository can be read, and is private (or `--allow-public` is given) | `repository-not-found` (78), `repository-public` (64) |
+| The workflow is on the default branch and active | `workflow-not-found`, `workflow-disabled` (78) |
+| The ref is a branch or a tag; every file below is read at its commit | `ref-not-found` (78), `ref-is-commit` (64) |
+| The Flutter project is at the root | `project-not-found` (78) |
+| The workflow says `# wincode-workflow-contract: 2`, declares every input that `build` sends, and requires no other | `workflow-contract`, `workflow-input-unknown`, `workflow-input-missing`, `workflow-unreadable` (78) |
+| The workflow's `XCODE_APP` is not older than `min_xcode_version` | `xcode-too-old` (78); a WARN when it names no version |
+| `pubspec.yaml`'s `environment: flutter:` allows `flutter_version` (pub's rules) | `flutter-version-mismatch` (78) |
+| `flutter/flutter` has a tag `flutter_version` (one read) | `flutter-version-not-found` (78) |
+| A version: `--build-name`, `build_name`, or `pubspec.yaml`'s | `build-name-missing` (78) |
+| The entry point is in the repository | `target-missing` (78) |
+| The scheme and configuration that Flutter 3.47 would build exist and are the app's | `scheme-missing`, `configuration-mismatch` (78) |
+| The configuration's `PRODUCT_BUNDLE_IDENTIFIER` is `bundle_id` | `bundle-id-mismatch` (1); a WARN when it cannot be resolved |
+| No run of the app is going, and the number is above every one that is known | `build-in-progress`, `build-number-not-higher`, `build-number-auto` (1), `build-number-missing`, `credentials-missing` (78) |
+
+The build number is `--build-number <n>`, or `auto`, or by default `auto` in a file of apps and `pubspec.yaml`'s `+N` in a flat file. `auto` is one above the highest build number that App Store Connect has for the app (its builds and its build uploads, read with the app's credentials) and that the app's successful runs of the last 24 hours carry; the run's name, `wincode <app tag>-<version>-<number>-<random>`, holds the number, and the app tag is a hash of the bundle ID.
+
+`--dry-run` sends no request and starts no program: it prints the plan from `wincode.yaml` and the options, with a placeholder for what only GitHub or App Store Connect can say, and the dispatch request as it would go out. `wincode doctor --build` makes the same checks and prints no plan.
+
 ## doctor
 
 ```
-dart run wincode_cli:wincode doctor [--sign]
+dart run wincode_cli:wincode doctor [--sign] [--build]
 dart run wincode_cli:wincode doctor --binary <Mach-O file> [--sdk <iPhoneOS.sdk folder>] [--reference <Mach-O file>]
 ```
+
+With `--build`, `doctor` also makes, per app, every check that `build` makes before a dispatch (above), reading GitHub and, for the build number, App Store Connect, and starts nothing. A public repository is a WARN there, since `--allow-public` is an option of `build`. It has no `--dry-run`, and `--app` and `--all` choose the apps as for the other checks.
 
 With `--sign`, `doctor` also checks, per app, what `sign` needs, each failure with its next step. On Windows:
 - WSL2 is installed, and the distribution (`WINCODE_WSL_DISTRO`, else the default one) exists, runs on WSL 2 and starts.
@@ -348,7 +396,7 @@ It exits with 0 when the checks pass, 1 when one fails or a file cannot be read,
 
 ## The reference workflow
 
-[`templates/wincode-ios.yml`](templates/wincode-ios.yml) is the workflow that `wincode build` will start in the app's repository (phase 5): it builds the unsigned IPA on a GitHub-hosted macOS runner and uploads it as the artifact `unsigned-ipa`. It has not been run yet.
+[`templates/wincode-ios.yml`](templates/wincode-ios.yml) is the workflow that `wincode build` will start in the app's repository (phase 5): it builds the unsigned IPA on a GitHub-hosted macOS runner and uploads it as the artifact `unsigned-ipa`. It has not been run yet. It is still contract 1 (no `# wincode-workflow-contract` line): ADR-0015 gives it contract 2, with the inputs that `build` sends, in a later part, and `build` refuses a workflow that is not at contract 2.
 
 ## Tests
 

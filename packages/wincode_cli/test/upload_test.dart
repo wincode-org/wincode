@@ -1076,6 +1076,181 @@ void main() {
       expect(err, isNot(contains('GRANTVALUE')));
     });
   });
+
+  group('--events (ADR-0015, section 9)', () {
+    /// The lines of [out] as objects, after checking that each is one JSON object.
+    final stamp = _now.toUtc().toIso8601String().replaceFirst(
+      RegExp(r'\.\d+Z$'),
+      'Z',
+    );
+    List<Map<String, Object?>> lines(String out) => [
+      for (final l in const LineSplitter().convert(out))
+        jsonDecode(l) as Map<String, Object?>,
+    ];
+
+    test('a real upload writes its events as it goes, and ends with the object of --json', () async {
+      final (code, out, err) = await upload(['--events']);
+      expect(code, 0, reason: '$out$err');
+      final events = lines(out);
+      expect(
+        [
+          for (final e in events)
+            e['event'] == 'upload' ? 'upload:${e['stage']}' : '${e['event']}',
+        ],
+        [
+          ...List.filled(
+            events.where((e) => e['event'] == 'check').length - 1,
+            'check',
+          ),
+          'plan',
+          'upload:created',
+          'upload:parts',
+          'upload:parts',
+          'upload:parts',
+          'upload:committed',
+          'processing',
+          'processing',
+          'check',
+          'result',
+        ],
+      );
+      // Every event but the last has the envelope: event, time to the second in UTC, and the app (null for a flat file).
+      for (final e in events.take(events.length - 1)) {
+        expect(e['time'], stamp);
+        expect(e.containsKey('app'), isTrue);
+        expect(e['app'], isNull);
+      }
+      final plan = events.singleWhere((e) => e['event'] == 'plan');
+      expect(plan, {
+        'event': 'plan',
+        'time': stamp,
+        'app': null,
+        'file': 'signed.ipa',
+        'size': signedBytes.length,
+        'version': '1.0',
+        'build': '15',
+      });
+      final parts = [
+        for (final e in events)
+          if (e['stage'] == 'parts') e,
+      ];
+      expect([
+        for (final p in parts) p['totalBytes'],
+      ], everyElement(signedBytes.length));
+      expect(parts.last['sentBytes'], signedBytes.length);
+      expect([
+        for (final p in parts) p['sentBytes'],
+      ], orderedEquals([...parts.map((p) => p['sentBytes'] as int)]..sort()));
+      final processing = events
+          .where((e) => e['event'] == 'processing')
+          .toList();
+      expect(processing.first, containsPair('build', null));
+      expect(processing.first, containsPair('upload', 'PROCESSING'));
+      expect(processing.last, containsPair('build', 'VALID'));
+      expect(processing.last['messages'], isEmpty);
+      // The human text went to stderr, and stdout holds the events only.
+      expect(err, contains('build upload created: version 1.0, build 15'));
+      expect(out, isNot(contains('Upload plan')));
+      final check = events.where((e) => e['event'] == 'check').last;
+      expect(check, containsPair('id', 'upload'));
+      expect(check, containsPair('status', 'PASS'));
+
+      // The last line is the object that --json prints, with "event": "result".
+      final (_, json, _) = await upload(['--json']);
+      final result = Map.of(events.last)..remove('event');
+      expect(result, jsonDecode(json));
+      expect(events.last.keys.first, 'event');
+    });
+
+    test(
+      '--events and --json together are a usage error, and nothing is sent',
+      () async {
+        final (code, out, err) = await upload(['--events', '--json']);
+        expect(code, 64, reason: err);
+        expect(err, contains('--events and --json cannot be given together'));
+        expect(errorOf(out)['id'], 'usage');
+        expect(apple.requests, isEmpty);
+      },
+    );
+
+    test('without --yes, a command that asks is confirmation-required, as an event, and nothing is sent', () async {
+      final (code, out, err) = await upload(
+        ['--events'],
+        yes: false,
+        terminal: true,
+        readLine: () => _bundleId,
+      );
+      expect(code, 64, reason: err);
+      final result = lines(out).single;
+      expect(result['event'], 'result');
+      expect(result['ok'], isFalse);
+      expect(result['exitCode'], 64);
+      expect((result['error']! as Map)['id'], 'confirmation-required');
+      expect(apple.requests, isEmpty);
+    });
+
+    test(
+      'a check that fails is a check event, and the result says why',
+      () async {
+        ipa.deleteSync();
+        final (code, out, _) = await upload(['--events']);
+        expect(code, 1);
+        final events = lines(out);
+        expect(events.last['event'], 'result');
+        expect(events.last['ok'], isFalse);
+        final failed = events.where((e) => e['status'] == 'FAIL').toList();
+        expect(failed, isNotEmpty);
+        expect(failed.first['event'], 'check');
+        expect(events.map((e) => e['event']), isNot(contains('upload')));
+      },
+    );
+
+    test(
+      'a refused file is reported before anything else, with --dry-run too',
+      () async {
+        final (code, out, err) = await upload(['--events', '--dry-run']);
+        expect(code, 0, reason: '$out$err');
+        final events = lines(out);
+        expect(events.map((e) => e['event']).toSet(), {
+          'check',
+          'plan',
+          'result',
+        });
+        expect(apple.requests, isEmpty);
+      },
+    );
+
+    test('processing carries Apple\'s messages as sent, once each', () async {
+      scenario.polls = [
+        FakeAnswer(_state()),
+        FakeAnswer(
+          _state(
+            upload: 'FAILED',
+            errors: [
+              {'code': 'STATE_ERROR', 'description': 'Invalid bundle'},
+            ],
+          ),
+        ),
+      ];
+      final (code, out, err) = await upload(['--events']);
+      expect(code, 65, reason: '$out$err');
+      final processing = lines(out)
+          .where((e) => e['event'] == 'processing')
+          .toList();
+      final messages = [
+        for (final p in processing) ...(p['messages']! as List<Object?>),
+      ];
+      expect(messages, [
+        {
+          'source': 'upload',
+          'kind': 'error',
+          'message': {'code': 'STATE_ERROR', 'description': 'Invalid bundle'},
+        },
+      ]);
+      expect(lines(out).last['exitCode'], 65);
+      expect(((lines(out).last['error']! as Map)['id']), 'processing-failed');
+    });
+  });
 }
 
 /// The contents of [file], a zip archive, by name.

@@ -4,6 +4,7 @@
 - Date: 2026-11-15
 - Amended: 2026-11-15, after review: the Flutter release and the oldest Xcode come from the project and are checked before the dispatch (section 2); `auto` is the default build number in a file of apps (section 3); the maintainer's answers to the open questions are decisions (section 14)
 - Amends: ADR-0013 (sections 1, 3, 6, 7, 8 and 11, phase 5 in section 10, and the alternative "The REST API instead of `gh`") and ADR-0014 (sections 1, 6 and 8). Design only: nothing here is implemented, and no macOS workflow was run for it.
+- Amended: 2026-11-15, while building part 5a: the Flutter release's tag must exist in `flutter/flutter`, which one read checks before the dispatch (section 2); the ids and details that the code settled where this ADR was silent ("As built: part 5a", section 13)
 - Verified: 2026-11-15, a rehearsal on a Linux runner confirmed the GitHub behaviour that the design relies on: the dispatch's answer, `display_title`, what `digest` covers, the artifact's zip with `wincode_core`'s reader, and which copy of the workflow runs (section 13)
 
 ## Context
@@ -122,6 +123,7 @@ wincode build --app alpha --yes && wincode sign --app alpha && wincode upload --
 | Version and number | `pubspec.yaml` at the commit gives the version when nothing else does, and the build number in a flat file when no option does | `build-name-missing`, `build-number-missing` (78) |
 | Target | The file exists at the commit | `target-missing` (78) |
 | Flutter | When `pubspec.yaml` at the commit sets `environment: flutter:`, that constraint allows `flutter_version`, by pub's rules for version constraints | `flutter-version-mismatch` (78) |
+| Flutter tag | `flutter/flutter` has a tag named `flutter_version`. One read, `GET /repos/flutter/flutter/git/ref/tags/{flutter_version}`, with the same token: the repository is public, and the host is the one the token goes to. The workflow clones that tag, and `git clone` fails on one that does not exist, at the job's second step, after a billed minute | `flutter-version-not-found` (78) |
 | Xcode | The workflow's `XCODE_APP` at the commit names its version, as GitHub's runner images name each Xcode (`/Applications/Xcode_<version>.app`). That version is not older than `min_xcode_version` | `xcode-too-old` (78). A WARN when `XCODE_APP` names no version, such as `/Applications/Xcode.app`: the job then checks it, as its first step |
 | Scheme | flutter_tools 3.47 builds the scheme named after the flavor with its first letter in capitals (`store` gives `Store`), or `Runner` when there is no flavor. If no scheme has exactly that name, it takes the one scheme that matches it ignoring case. The scheme must be a shared scheme of `ios/Runner.xcodeproj` (`xcshareddata/xcschemes/`). A scheme kept only in someone's `xcuserdata` is not in the repository, so the runner does not have it | `scheme-missing` (78) |
 | Configuration | flutter_tools 3.47 builds `Release-<Scheme>`, matched ignoring case. Failing that, it builds the one configuration whose name holds both `Release` and the scheme. If none does, it builds `Release`; if several do, it stops. The configuration it would build must be the app's `configuration`, ignoring case; the default is `Release-<flavor>` | `configuration-mismatch` (78). The message says so when Flutter would fall back to `Release` |
@@ -131,7 +133,8 @@ wincode build --app alpha --yes && wincode sign --app alpha && wincode upload --
 - **Requests,** one each:
   - the commit (`GET .../commits/{ref}`);
   - its whole tree in one listing (`GET .../git/trees/{sha}?recursive=1`), which shows the shared schemes and whether the target exists;
-  - `project.pbxproj`, each xcconfig file under `ios/`, `pubspec.yaml`, and the workflow file (section 8), read raw through the Contents API at that commit.
+  - `project.pbxproj`, each xcconfig file under `ios/`, `pubspec.yaml`, and the workflow file (section 8), read raw through the Contents API at that commit;
+  - the Flutter tag (`GET .../git/ref/tags/{flutter_version}` of `flutter/flutter`).
 - **`wincode_core`'s build-settings reader gets a parameter** that reads a file by its path, from the local disk by default. `init` and `build` then resolve settings with the same reader.
 - **Pub's rules for version constraints** come from `pub_semver`, the Dart team's package (BSD-3-Clause). It is already in the CLI's lock file through `test`, and becomes a direct dependency, pinned exactly, in implementation pull request 3.
 - **Two things are not checked before the dispatch:**
@@ -517,12 +520,12 @@ A field that is not known yet is null: for example `runId`, when a check failed 
 | --- | --- |
 | 0 | `<output>/unsigned.ipa` holds the run's IPA, and it passed every check |
 | 1 | One of four things. A check before the dispatch failed, so nothing started (`build-in-progress`, `build-number-not-higher`, `bundle-id-mismatch`, …). The run failed or was cancelled. The artifact or the IPA failed a check. Or the question was answered no |
-| 64 | The command line (`--all`, a commit SHA as `--ref`, `--run` with `--ref`, `--events` with `--json`), `confirmation-required`, or `repository-public` |
-| 69 | GitHub or App Store Connect cannot be reached before the dispatch, or the dispatch's answer was lost (`offline`) |
+| 64 | The command line (`--all`, a commit SHA as `--ref` (`ref-is-commit`), `--run` with `--ref`, `--events` with `--json`), `confirmation-required`, or `repository-public` |
+| 69 | GitHub or App Store Connect cannot be reached before the dispatch, or the dispatch's answer was lost (`offline`), GitHub is down (`github-unavailable`) or limits the token for longer than winCode waits (`github-rate-limited`) |
 | 70 | A bug |
 | 75 | A run was started, or named with `--run`, and was still going when winCode stopped waiting: at `--timeout` (`run-timeout`), or after Ctrl-C (`wait-stopped`). Collect it with `--run <id>` |
 | 77 | No GitHub token, or GitHub refused it (401, or a 403 that is not a rate limit). Or App Store Connect refused the key, when `build` reads it |
-| 78 | The setup: no `workflow:`, `repository-not-found`, `ref-not-found`, `workflow-not-found`, `workflow-disabled`, `workflow-contract`, `workflow-input-unknown`, `scheme-missing`, `configuration-mismatch`, `target-missing`, `build-name-missing`, `build-number-missing`, `credentials-missing`, `flutter-version-missing`, `min-xcode-missing`, `flutter-version-mismatch`, `xcode-too-old` |
+| 78 | The setup: no `workflow:`, `repository-not-found`, `ref-not-found`, `workflow-not-found`, `workflow-disabled`, `workflow-contract`, `workflow-input-unknown`, `scheme-missing`, `configuration-mismatch`, `target-missing`, `build-name-missing`, `build-number-missing`, `credentials-missing`, `flutter-version-missing`, `min-xcode-missing`, `flutter-version-mismatch`, `flutter-version-not-found`, `xcode-too-old`, and, named while building part 5a, `workflow-input-missing`, `workflow-unreadable`, `project-not-found` and `github-token-invalid` |
 
 75 was "`upload` only" in ADR-0013, and is now `upload` and `build`.
 
@@ -627,6 +630,14 @@ All messages use the three-line form of ADR-0013 (section 6).
      next: set XCODE_APP in .github/workflows/wincode-ios.yml to an Xcode of 26.4 or later that the runner image has, push it to main, then run wincode build again.
    ```
 
+10. **Flutter tag not found** (`flutter-version-not-found`, 78):
+
+    ```
+    wincode build: flutter/flutter has no tag 3.47.9
+      why: the workflow clones that tag on the runner, and git fails at once on a release that does not exist, after a billed minute. Nothing was started.
+      next: correct flutter_version in wincode.yaml: flutter --version prints the release, and the tags are listed at https://github.com/flutter/flutter/tags.
+    ```
+
 ### 13. Implementation plan, and acceptance
 
 The work comes in five pull requests, each of one concern:
@@ -660,6 +671,22 @@ The results:
   - an input declared only on the branch was accepted there;
   - at `main` it was refused with 422 `Unexpected inputs provided`, before any run.
 
+**As built: part 5a.** The first pull request holds everything before the dispatch: `wincode_core`'s file source, the four keys, the GitHub client and its token, every check of sections 2, 3 and 8, `build --dry-run`, `doctor --build`, and `--events` for `build`, `sign` and `upload` (items 2, 3 and 5 above, and the parts of item 4 that need no dispatch).
+- **Left for the next parts:** the dispatch and the wait (`--timeout`, `--yes`, `--run`), the artifact, and item 1, the contract 2 template with the update path of `init --workflow`. Until the template lands, the contract check passes only for a workflow written by hand, and message 1 names an update that `init --workflow` does not make yet.
+- **Without `--dry-run`, `build`** makes every check and prints its plan. Then it ends with `not-implemented` (64), "dispatch not implemented yet (part 5b)", and starts nothing.
+- **Ids that this ADR did not name,** given while building:
+  - 78: `workflow-missing` (no `workflow:`), `workflow-input-missing` (the workflow requires an input that `build` does not send), `workflow-unreadable` (the file is not a workflow), `project-not-found` (no `pubspec.yaml` or `ios/Runner.xcodeproj` at the repository's root), `github-token-invalid` (a value that cannot be a token; it is not shown);
+  - 64: `ref-is-commit`;
+  - 69: `github-unavailable` (5xx after retries), `github-rate-limited` (a limit that clears in more than a minute; a shorter one is waited out, twice at most);
+  - 1: `github-error` (an answer that GitHub does not document, a redirect included), `app-record-missing`.
+- **Details that the checks settled:**
+  - a failure that makes the next checks impossible ends the run with a line that says so, and a missing project is one failure and not a cascade of its files;
+  - a public repository fails `build` and is a WARN for `doctor --build`, which has no `--allow-public`;
+  - `doctor --build` adds its findings to those of the plain `doctor`, and `--dry-run` is a usage error for it;
+  - a dry run sends no request and starts no program, so it does not ask `gh` for a token: the request names the variable the token would come from;
+  - `GET /v1/apps/{id}/buildUploads` is in Apple's documentation (filters `cfBundleVersion`, `cfBundleShortVersionString`, `platform` and `state`, `limit` up to 200). `auto` reads it with `fields[buildUploads]=cfBundleVersion,state`, and an answer that Apple refuses with a client error other than 401 and 403 leaves `auto` on the builds alone, with a line that says so. Whether it lists uploads for a real account is for the first real run;
+  - the events: `check` carries the check's name as `id`; `signing` has `status` `started` or `ended`, and `end` (`ok`, `failed`, `timedOut`, `tooBig`) on the second; `upload` has `stage` `created`, `parts` (with `sentBytes` and `totalBytes`) or `committed`; `processing` carries Apple's three states and the messages that are new, each with its `source`, `kind` and `message` as Apple sent it; `plan` of `upload` has `file`, `size`, `version` and `build`. The schema is `eventFields` in `lib/src/events.dart`, and the writer refuses a field that it does not list.
+
 **Accepted when** these all hold. They replace ADR-0013's phase 5 criteria and ADR-0014's additions to them.
 - **Against a fake GitHub server** (no network in CI):
   - the dispatch carries every input, and the run is found from the dispatch's answer, and by its name after a 204;
@@ -670,7 +697,7 @@ The results:
   - `--run` collects a run;
   - the artifact is downloaded through a redirect that does not carry the token, and each integrity failure is reported;
   - a public repository is refused, and with `--allow-public` the artifact is deleted.
-- **No paid run on a failed check.** Each check before the dispatch fails with no dispatch request: the fake server fails the test if it gets one. The checks are the contract, the scheme, the configuration fallback, the bundle ID, the target, a `pubspec.yaml` that does not allow the Flutter release, an Xcode older than the minimum, the build number not higher, a build in progress, a public repository and a missing confirmation.
+- **No paid run on a failed check.** Each check before the dispatch fails with no dispatch request: the fake server fails the test if it gets one. The checks are the contract, the scheme, the configuration fallback, the bundle ID, the target, a `pubspec.yaml` that does not allow the Flutter release, a Flutter tag that `flutter/flutter` does not have, an Xcode older than the minimum, the build number not higher, a build in progress, a public repository and a missing confirmation.
 - **Two apps of one workflow** start two runs, each with its own inputs and app tag.
 - **The default build number** is `auto` in a file of apps and `pubspec.yaml`'s number in a flat file.
 - **The token:** `WINCODE_GH_TOKEN_<APP>` wins over `GH_TOKEN` for its own app only, and its name is redacted.

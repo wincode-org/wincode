@@ -49,7 +49,7 @@ wincode preflight: wincode.yaml: holds no settings
 # an unknown key
 exit 78 config-invalid
 wincode preflight: wincode.yaml line 4: unknown key "bundel_id"
-  why: wincode.yaml reads only bundle_id, team_id, profile, entitlements, workflow, output, flavor, configuration, workflow_inputs, credentials, so a misspelled key would be ignored.
+  why: wincode.yaml reads only bundle_id, team_id, profile, entitlements, workflow, output, flavor, configuration, workflow_inputs, credentials, build_name, target, flutter_version, min_xcode_version, so a misspelled key would be ignored.
   next: remove it, or correct its spelling.
 
 # a secret-looking key

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
@@ -31,3 +32,7 @@ class _Last implements Sink<Digest> {
   @override
   void close() {}
 }
+
+/// The SHA-256 of [text] encoded as UTF-8, as lower-case hexadecimal.
+String sha256OfText(String text) =>
+    sha256.convert(utf8.encode(text)).toString();
