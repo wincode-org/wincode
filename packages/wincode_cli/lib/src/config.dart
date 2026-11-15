@@ -25,6 +25,10 @@ class WincodeConfig {
     this.configuration = 'Release',
     this.credentials,
     this.workflowInputs = const {},
+    this.buildName,
+    this.target,
+    this.flutterVersion,
+    this.minXcodeVersion,
   });
 
   /// The file the settings were read from. The paths in it are relative to its folder.
@@ -62,6 +66,21 @@ class WincodeConfig {
 
   /// Extra inputs that `wincode build` passes to the workflow.
   final Map<String, String> workflowInputs;
+
+  /// The App Store version (`CFBundleShortVersionString`) that `wincode build` gives Flutter as `--build-name`. Null when
+  /// the file does not say: `pubspec.yaml`'s version at the ref gives it then (ADR-0015, section 2).
+  final String? buildName;
+
+  /// The Dart entry point that `wincode build` gives Flutter as `--target`, such as `lib/main_store.dart`. Null for
+  /// Flutter's own, `lib/main.dart`.
+  final String? target;
+
+  /// The Flutter release (a tag of `flutter/flutter`, such as `3.47.7`) that the workflow clones. Only `wincode build`
+  /// needs it, so the loader accepts a file without it.
+  final String? flutterVersion;
+
+  /// The oldest Xcode that may build the app, such as `26.0`. Only `wincode build` needs it.
+  final String? minXcodeVersion;
 }
 
 /// Everything `wincode.yaml` says: one app for a flat file (ADR-0013), or the apps of a file with `apps:` in file order
@@ -98,6 +117,10 @@ const _appKeys = [
   'configuration',
   'workflow_inputs',
   'credentials',
+  'build_name',
+  'target',
+  'flutter_version',
+  'min_xcode_version',
 ];
 
 /// The keys that apps may share through `defaults`. The others are per app by nature.
@@ -107,6 +130,10 @@ const _defaultsKeys = [
   'workflow',
   'workflow_inputs',
   'credentials',
+  'build_name',
+  'target',
+  'flutter_version',
+  'min_xcode_version',
 ];
 
 /// Words that an app name or a credentials reference may not be (ADR-0014, section 4): winCode prints them itself, so
@@ -157,9 +184,24 @@ final _flavor = RegExp(r'^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$');
 final _configuration = RegExp(r'^[A-Za-z0-9 ._-]{1,64}$');
 final _inputName = RegExp(r'^[a-z][a-z0-9_]{0,31}$');
 final _inputValue = RegExp(r'^[A-Za-z0-9._/-]{0,64}$');
+final _version = RegExp(r'^\d+(\.\d+){0,2}$');
+final _flutterVersion = RegExp(r'^\d+\.\d+\.\d+(-[A-Za-z0-9.]+)?$');
+final _target = RegExp(r'^lib/[A-Za-z0-9._/-]+\.dart$');
 
-/// Inputs that `wincode build` sets itself, so that the file may not.
-const _reservedInputs = {'request_id', 'flavor', 'build_number'};
+/// Inputs that `wincode build` sets itself, so that the file may not (ADR-0015, section 2).
+const _reservedInputs = {
+  'request_id',
+  'flavor',
+  'build_number',
+  'build_name',
+  'target',
+  'flutter_version',
+  'min_xcode_version',
+};
+
+/// How many entries `workflow_inputs` may hold: GitHub accepts 25 inputs in a dispatch, and `wincode build` sends 7 of
+/// its own.
+const _maxWorkflowInputs = 18;
 
 /// Whether [text] is a bundle ID as `wincode.yaml` accepts it.
 bool isBundleId(String text) => _bundleId.hasMatch(text);
@@ -315,6 +357,39 @@ final _rules = <String, _Rule>{
     'wincode build passes the flavor to Flutter, and wincode init reads Release-<flavor>. A flavor is 1 to 64 letters, '
         'digits, _ and -, starting with a letter or digit.',
     'write the flavor as the Flutter project names it, such as alpha.',
+  ),
+  'build_name': _Rule(
+    _version.hasMatch,
+    'build_name is not a version',
+    'wincode build gives it to Flutter as --build-name, which becomes the CFBundleShortVersionString that App Store '
+        'Connect shows. Apple takes one to three whole numbers joined by dots.',
+    'write it in quotes as the version of the store, such as "2.4.0".',
+  ),
+  'target': _Rule(
+    (t) =>
+        t.length <= 64 &&
+        _target.hasMatch(t) &&
+        !t.split('/').contains('..') &&
+        !t.contains('//'),
+    'target is not a Dart entry point of the project',
+    'wincode build gives it to Flutter as --target. It is a path under lib/ that ends in .dart, of at most 64 letters, '
+        'digits, ., _, - and /, with no .. part.',
+    'write it as lib/main_<flavor>.dart, or remove the line to use lib/main.dart.',
+  ),
+  'flutter_version': _Rule(
+    (v) => v.length <= 32 && _flutterVersion.hasMatch(v),
+    'flutter_version is not a Flutter release',
+    'wincode build clones exactly that tag of flutter/flutter. A tag is three whole numbers joined by dots, such as '
+        '3.47.7, and a pre-release adds - and letters, digits and dots, such as 3.48.0-0.1.pre. It has at most 32 '
+        'characters.',
+    'write the release the app is made with, as `flutter --version` prints it.',
+  ),
+  'min_xcode_version': _Rule(
+    _version.hasMatch,
+    'min_xcode_version is not an Xcode version',
+    'it is the oldest Xcode that may build the app, since App Store Connect refuses builds made with an older one: one '
+        'to three whole numbers joined by dots.',
+    'write it in quotes, such as min_xcode_version: "26.0".',
   ),
   'configuration': _Rule(
     (c) => _configuration.hasMatch(c) && c.trim().isNotEmpty,
@@ -486,6 +561,8 @@ class _Parser {
       }
       final name = keyNode.value as String;
       redactor?.hideName(name, 'app-${i + 1}');
+      // The name of the app's token variable, WINCODE_GH_TOKEN_<NAME>, holds the name in capitals (ADR-0015, section 5).
+      redactor?.hide(name.toUpperCase().replaceAll('-', '_'), 'APP_${i + 1}');
       final scope = 'app $name: ';
       if (value is! YamlMap) {
         throw invalid(
@@ -635,12 +712,17 @@ class _Parser {
       }
       final text = value.value;
       if (text is! String) {
+        final version = name == 'build_name' || name == 'min_xcode_version';
         throw invalid(
           value,
           '$name must be text',
           scope: scope,
-          why: 'YAML reads some values as numbers or lists: 0123456789 would become 123456789.',
-          next: "write the value in single quotes: $name: '...'.",
+          why: version
+              ? 'YAML reads a version such as 26.0 as a number and drops its zero, so 26.10 and 26.1 would not differ.'
+              : 'YAML reads some values as numbers or lists: 0123456789 would become 123456789.',
+          next: version
+              ? 'write the version in quotes: $name: "26.0".'
+              : "write the value in single quotes: $name: '...'.",
         );
       }
       values[name] = (node: value, value: text, own: own);
@@ -654,6 +736,17 @@ class _Parser {
   }
 
   void _checkInputs(YamlMap inputs, String scope) {
+    if (inputs.nodes.length > _maxWorkflowInputs) {
+      throw invalid(
+        inputs,
+        'workflow_inputs holds more than $_maxWorkflowInputs inputs',
+        scope: scope,
+        why:
+            'GitHub accepts 25 inputs in a dispatch, and wincode build sends 7 of its own '
+            '(request_id, build_name, build_number, flutter_version, min_xcode_version, flavor and target).',
+        next: 'remove some, or let the workflow read its other values from files of the project.',
+      );
+    }
     for (final MapEntry(:key, :value) in inputs.nodes.entries) {
       final keyNode = key as YamlNode;
       final name = '${keyNode.value}';
@@ -675,7 +768,8 @@ class _Parser {
           scope: scope,
           why:
               'an input name is 1 to 32 lower-case letters, digits and _, starting with a letter, and not request_id, '
-              'flavor or build_number, which wincode build sets itself.',
+              'flavor, build_number, build_name, target, flutter_version or min_xcode_version, which wincode build sets '
+              'itself.',
           next: 'rename the input in the workflow and here.',
         );
       }
@@ -773,6 +867,10 @@ class _Parser {
       'output',
       'flavor',
       'configuration',
+      'build_name',
+      'target',
+      'flutter_version',
+      'min_xcode_version',
     ]) {
       check(key);
     }
@@ -815,6 +913,10 @@ class _Parser {
       configuration:
           configuration ?? (flavor == null ? 'Release' : 'Release-$flavor'),
       credentials: text('credentials'),
+      buildName: text('build_name'),
+      target: text('target'),
+      flutterVersion: text('flutter_version'),
+      minXcodeVersion: text('min_xcode_version'),
       workflowInputs: Map.unmodifiable({
         for (final MapEntry<dynamic, dynamic>(:key, :value)
             in inputs?.entries ?? const <MapEntry<dynamic, dynamic>>[])
