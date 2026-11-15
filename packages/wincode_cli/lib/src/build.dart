@@ -198,8 +198,15 @@ class BuildPlan {
   };
 }
 
-/// What the checks of `wincode build` found: every finding in order, and the plan as far as they got.
-typedef BuildReport = ({List<Finding> findings, BuildPlan plan});
+/// What the checks of `wincode build` found: every finding in order, and the plan as far as they got. The [client] is
+/// the one the checks read GitHub with, once they had a token, so that a run goes on with it; [workflowId] is the id
+/// that GitHub gives the workflow, once they found it.
+typedef BuildReport = ({
+  List<Finding> findings,
+  BuildPlan plan,
+  GithubClient? client,
+  int? workflowId,
+});
 
 /// The checks that `wincode build` makes before it starts a run, and that `wincode doctor --build` makes without one
 /// (ADR-0015, sections 2, 3, 8 and 10). They read GitHub, and App Store Connect when the build number needs it, and send
@@ -241,6 +248,10 @@ class BuildChecker {
 
   final BuildPlan plan;
 
+  /// What the checks learned that a run needs.
+  GithubClient? _client;
+  int? _workflowId;
+
   /// Whether the read of App Store Connect failed and said so in a finding, as distinct from there being no key to read.
   bool _ascFailed = false;
   late final List<Finding> _findings = events == null
@@ -281,37 +292,24 @@ class BuildChecker {
   /// The other side of [redactor]: IDs that this run prints are registered first.
   void _registerIds() => redactor.hide(config.bundleId, '<bundle ID>');
 
-  BuildReport _report() => (findings: _findings, plan: plan);
+  BuildReport _report() => (
+    findings: _findings,
+    plan: plan,
+    client: _client,
+    workflowId: _workflowId,
+  );
 
   // The settings.
 
   /// The checks of `wincode.yaml` alone. False when the run cannot go on, since it does not know what to read.
   bool _settings() {
-    final workflow = config.workflow;
     plan
       ..flavor = config.flavor
       ..minXcode = config.minXcodeVersion
       ..flutter = config.flutterVersion
       ..target = config.target
       ..configuration = config.configuration;
-    if (workflow == null) {
-      _add(
-        _fail(
-          'settings',
-          'workflow-missing',
-          'wincode.yaml names no workflow for $_appName',
-          why: "wincode build starts the workflow that workflow: names, in the app's repository, on a macOS runner.",
-          next:
-              'add workflow: <owner>/<repository>/.github/workflows/wincode-ios.yml@<branch> to the app or to defaults, '
-              'or give it to wincode init with --workflow-ref.',
-        ),
-      );
-      return false;
-    }
-    plan
-      ..repository = workflow.repository
-      ..workflow = _workflowPath
-      ..ref = _ref;
+    if (!_workflowSetting()) return false;
     var complete = true;
     if (config.flutterVersion == null) {
       complete = false;
@@ -349,6 +347,30 @@ class BuildChecker {
         ),
       );
     }
+    return true;
+  }
+
+  /// The one setting that every use of GitHub needs: the workflow, which names the repository.
+  bool _workflowSetting() {
+    final workflow = config.workflow;
+    if (workflow == null) {
+      _add(
+        _fail(
+          'settings',
+          'workflow-missing',
+          'wincode.yaml names no workflow for $_appName',
+          why: "wincode build starts the workflow that workflow: names, in the app's repository, on a macOS runner.",
+          next:
+              'add workflow: <owner>/<repository>/.github/workflows/wincode-ios.yml@<branch> to the app or to defaults, '
+              'or give it to wincode init with --workflow-ref.',
+        ),
+      );
+      return false;
+    }
+    plan
+      ..repository = workflow.repository
+      ..workflow = _workflowPath
+      ..ref = _ref;
     return true;
   }
 
@@ -446,6 +468,31 @@ class BuildChecker {
     return _report();
   }
 
+  /// The checks of `wincode build --run` (ADR-0015, section 4), which collects a run that an earlier build started: the
+  /// workflow is named, the token works, the repository can be read (and is not public without `--allow-public`), and
+  /// the workflow is there, whose id tells that a run belongs to it. The project, the versions and the build number are
+  /// not checked: the run was started with them, and carries them in its name.
+  Future<BuildReport> collect() async {
+    _registerIds();
+    if (!_workflowSetting()) {
+      return _report();
+    }
+    try {
+      final token = await _token();
+      if (token != null) {
+        final client = _client = github(token.value, log);
+        final repo = await _repositoryCheck(client);
+        if (repo != null) {
+          await _workflowCheck(client, repo, starts: false);
+        }
+      }
+    } on GithubException catch (e) {
+      _add(Finding.fail('github', githubProblem(e, what: 'read $_repository')));
+      _stopped();
+    }
+    return _report();
+  }
+
   void _stopped() => _add(
     const Finding.info('build', 'the checks after this one were not run'),
   );
@@ -453,7 +500,7 @@ class BuildChecker {
   Future<void> _checkAll() async {
     final token = await _token();
     if (token == null) return;
-    final client = github(token.value, log);
+    final client = _client = github(token.value, log);
 
     final repo = await _repositoryCheck(client);
     if (repo == null) return;
@@ -576,11 +623,13 @@ class BuildChecker {
     return repo;
   }
 
-  /// Whether the run can go on after the checks of the workflow file in the repository.
+  /// Whether the run can go on after the checks of the workflow file in the repository. With [starts] false, the
+  /// workflow is only looked up, for its id: a run that exists does not need the workflow to be active.
   Future<bool> _workflowCheck(
     GithubClient client,
-    Map<String, Object?> repo,
-  ) async {
+    Map<String, Object?> repo, {
+    bool starts = true,
+  }) async {
     final branch = repo['default_branch'] is String
         ? repo['default_branch']! as String
         : 'the default branch';
@@ -606,8 +655,17 @@ class BuildChecker {
       _stopped();
       return false;
     }
+    final id = workflow['id'];
+    if (id is int) _workflowId = id;
     final state = workflow['state'];
-    if (state != 'active') {
+    if (!starts) {
+      _add(
+        Finding.pass(
+          'workflow',
+          '$_workflowFile is a workflow of $_repository, which the run must belong to',
+        ),
+      );
+    } else if (state != 'active') {
       _add(
         _fail(
           'workflow',

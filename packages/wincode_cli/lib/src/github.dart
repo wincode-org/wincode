@@ -107,9 +107,9 @@ abstract interface class GithubClient {
     String? etag,
   });
 
-  /// `POST` [path] with [body] as JSON, once: a write is never sent twice, whatever happens to its answer. A network
+  /// `POST` [path] with [body], if there is one, as JSON, once: a write is never sent twice, whatever happens to its answer. A network
   /// failure or a 5xx is a [GithubException] that says nothing about whether GitHub did the work.
-  Future<GithubWrite> post(String path, Map<String, Object?> body);
+  Future<GithubWrite> post(String path, [Map<String, Object?>? body]);
 
   /// `DELETE` [path], once.
   Future<void> delete(String path);
@@ -245,14 +245,14 @@ class HttpGithubClient implements GithubClient {
   }
 
   @override
-  Future<GithubWrite> post(String path, Map<String, Object?> body) async {
+  Future<GithubWrite> post(String path, [Map<String, Object?>? body]) async {
     final (url, request) = _target('POST', path, const {});
     final answer = await _exchange(
       'POST',
       url,
       request,
       'application/vnd.github+json',
-      json: jsonEncode(body),
+      json: body == null ? null : jsonEncode(body),
       again: false,
     );
     if (answer.status < 200 || answer.status > 299) {
@@ -580,6 +580,8 @@ class HttpGithubClient implements GithubClient {
           );
           request.contentLength = bytes.length;
           request.add(bytes);
+        } else if (method == 'POST') {
+          request.contentLength = 0;
         }
         final response = await request.close();
         final body = await response

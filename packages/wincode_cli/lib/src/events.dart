@@ -29,6 +29,20 @@ const eventFields = <String, List<String>>{
     'version',
     'build',
   ],
+  // `build`: the run exists, with the request ID that its name carries.
+  'dispatched': ['requestId', 'runId', 'runUrl'],
+  // `build`: the run's status changed (`queued`, `in_progress`, `completed`), and how it ended once it has.
+  'run': ['status', 'conclusion'],
+  // `build`: a job or a step of the run started or ended. A step has its `number` in the job and its `name`.
+  'job': ['job', 'status', 'conclusion'],
+  'step': ['job', 'number', 'name', 'status', 'conclusion'],
+  // `build`: every 60 seconds of waiting. `minutes` is the macOS and Linux time the jobs have used so far, rounded up
+  // per job, as an estimate.
+  'wait': ['status', 'elapsedSeconds', 'minutes'],
+  // `build`: the artifact is downloaded; `digest` is what GitHub reports for it, or null.
+  'artifact': ['name', 'size', 'digest', 'expiresAt'],
+  // `build`: the IPA passed its checks and is in the output folder.
+  'ipa': ['path', 'size', 'sha256', 'bundleId', 'version', 'build'],
   // `sign`: zsign starts (`started`) and ends (`ended`, with how: `ok`, `failed`, `timedOut` or `tooBig`).
   'signing': ['status', 'end'],
   // `upload`: the build upload is `created`; the file's `parts` are going, `sentBytes` of `totalBytes`; it is `committed`.
