@@ -192,6 +192,77 @@ void main() {
     });
   });
 
+  group('ZipArchive.extractTo', () {
+    final data = List.generate(300000, (i) => i * 13 % 251);
+    File target() => File('${temp.path}${Platform.pathSeparator}out.bin');
+
+    test('writes a stored or deflated entry to a file, past the cap on what read keeps', () {
+      for (final deflate in [true, false]) {
+        final zip = ZipArchive.open(
+          write(
+            'x$deflate.zip',
+            zipOf({
+              'small': data.sublist(0, 10),
+              'big': data,
+            }, deflate: deflate),
+          ),
+          limits: const ZipLimits(readSize: 1000),
+        );
+        addTearDown(zip.close);
+        expect(
+          () => zip.read('big'),
+          formatError('more than the 1000'),
+          reason: 'read keeps the entry in memory, so it is capped',
+        );
+        zip.extractTo('big', target());
+        expect(target().readAsBytesSync(), data, reason: 'deflate: $deflate');
+      }
+    });
+
+    test('replaces a file that is there', () {
+      target().writeAsBytesSync(List.filled(500000, 9));
+      final zip = ZipArchive.open(write('y.zip', zipOf({'f': data})));
+      addTearDown(zip.close);
+      zip.extractTo('f', target());
+      expect(target().readAsBytesSync(), data);
+    });
+
+    test('an empty entry gives an empty file', () {
+      final zip = ZipArchive.open(write('z.zip', zipOf({'empty': <int>[]})));
+      addTearDown(zip.close);
+      zip.extractTo('empty', target());
+      expect(target().existsSync(), isTrue);
+      expect(target().lengthSync(), 0);
+    });
+
+    test('a damaged entry is refused and leaves no file', () {
+      final good = zipOf({'f': data}, deflate: false);
+      final damaged = Uint8List.fromList(good)..[100] ^= 0xFF;
+      final zip = ZipArchive.open(write('d.zip', damaged));
+      addTearDown(zip.close);
+      expect(() => zip.extractTo('f', target()), formatError('damaged'));
+      expect(target().existsSync(), isFalse);
+    });
+
+    test('an entry that holds more than its header says is refused and leaves no file', () {
+      final lying = patched(zipOf({'f': data}), 'f', claimedSize, 1000);
+      final zip = ZipArchive.open(write('l.zip', lying));
+      addTearDown(zip.close);
+      expect(
+        () => zip.extractTo('f', target()),
+        formatError('more than its header says'),
+      );
+      expect(target().existsSync(), isFalse);
+    });
+
+    test('no such entry is a bug of the caller', () {
+      final zip = ZipArchive.open(write('n.zip', zipOf({'f': data})));
+      addTearDown(zip.close);
+      expect(() => zip.extractTo('nothing', target()), throwsArgumentError);
+      expect(target().existsSync(), isFalse);
+    });
+  });
+
   group('ZipArchive', () {
     final files = {
       'Payload/': <int>[],
