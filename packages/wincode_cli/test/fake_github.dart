@@ -13,6 +13,7 @@ class GhRequest {
     required this.path,
     required this.query,
     required this.headers,
+    this.body = '',
   });
 
   final String method;
@@ -21,6 +22,12 @@ class GhRequest {
 
   /// The headers, with their names in lower case.
   final Map<String, String> headers;
+
+  /// The body that the request sent, as text.
+  final String body;
+
+  /// The body as a JSON object.
+  Map<String, Object?> get json => jsonDecode(body) as Map<String, Object?>;
 
   /// The token of the `Authorization: Bearer` header, or null.
   String? get token => (headers['authorization'] ?? '').startsWith('Bearer ')
@@ -39,10 +46,31 @@ class GhAnswer {
     this.status = 200,
     this.headers = const {},
     this.raw,
+    this.bytes,
+    this.drop = false,
   });
 
   /// [text] as it is, as the Contents API gives a file.
   const GhAnswer.text(String text) : this(null, raw: text);
+
+  /// No body: a 204 after a write, or a 304.
+  const GhAnswer.empty([
+    int status = 204,
+    Map<String, String> headers = const {},
+  ]) : this(null, status: status, headers: headers, raw: '');
+
+  /// [bytes] as they are, such as the zip of an artifact.
+  const GhAnswer.bytes(
+    List<int> bytes, {
+    Map<String, String> headers = const {},
+  }) : this(null, bytes: bytes, headers: headers);
+
+  /// A redirect to [location].
+  factory GhAnswer.redirect(String location, {int status = 302}) =>
+      GhAnswer(null, status: status, headers: {'location': location}, raw: '');
+
+  /// The connection is closed without any answer, as when a network fails after the request was sent.
+  const GhAnswer.drop() : this(null, drop: true);
 
   /// GitHub's 404.
   const GhAnswer.notFound()
@@ -60,6 +88,10 @@ class GhAnswer {
   final int status;
   final Map<String, String> headers;
   final String? raw;
+  final List<int>? bytes;
+
+  /// Close the connection without answering.
+  final bool drop;
 }
 
 /// GitHub on 127.0.0.1: [answer] decides what each request gets, and [requests] records them. With [token], a request
@@ -92,23 +124,36 @@ class FakeGithub {
     request.headers.forEach(
       (name, values) => headers[name.toLowerCase()] = values.join(', '),
     );
+    final body = await utf8.decodeStream(request);
     final received = GhRequest(
       method: request.method,
       path: request.uri.path,
       query: request.uri.queryParameters,
       headers: headers,
+      body: body,
     );
     requests.add(received);
     final given = token == null || received.token == token
         ? await answer(received)
         : GhAnswer.error(401, 'Bad credentials');
     try {
+      if (given.drop) {
+        (await request.response.detachSocket(writeHeaders: false)).destroy();
+        return;
+      }
       request.response.statusCode = given.status;
       given.headers.forEach(request.response.headers.set);
-      request.response.headers.contentType = given.raw == null
-          ? ContentType.json
-          : ContentType.text;
-      request.response.write(given.raw ?? jsonEncode(given.json));
+      if (given.bytes != null) {
+        request.response.headers.contentType = ContentType.binary;
+        request.response.add(given.bytes!);
+      } else if (given.raw == '') {
+        // No body: a 204 and a 304 may carry none.
+      } else {
+        request.response.headers.contentType = given.raw == null
+            ? ContentType.json
+            : ContentType.text;
+        request.response.write(given.raw ?? jsonEncode(given.json));
+      }
       await request.response.close();
     } on Object {
       // The client gave up waiting.
