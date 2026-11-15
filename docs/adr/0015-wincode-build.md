@@ -4,6 +4,7 @@
 - Date: 2026-11-15
 - Amended: 2026-11-15, after review: the Flutter release and the oldest Xcode come from the project and are checked before the dispatch (section 2); `auto` is the default build number in a file of apps (section 3); the maintainer's answers to the open questions are decisions (section 14)
 - Amends: ADR-0013 (sections 1, 3, 6, 7, 8 and 11, phase 5 in section 10, and the alternative "The REST API instead of `gh`") and ADR-0014 (sections 1, 6 and 8). Design only: nothing here is implemented, and no macOS workflow was run for it.
+- Verified: 2026-11-15, a rehearsal on a Linux runner confirmed the GitHub behaviour that the design relies on: the dispatch's answer, `display_title`, what `digest` covers, the artifact's zip with `wincode_core`'s reader, and which copy of the workflow runs (section 13)
 
 ## Context
 
@@ -244,7 +245,7 @@ A classic token, and the token of `gh`'s login, need the `repo` scope, which can
 **How winCode treats the token:**
 - **It is never in `wincode.yaml`.** There is no key for it, and the loader already refuses keys that look like secrets, `token` among them.
 - **It is never printed,** `--verbose` included: it is registered with the redactor as a secret as soon as it is read. Output names only its source and its kind (`GH_TOKEN, a fine-grained token`), which winCode tells apart by GitHub's prefixes (`github_pat_`, `ghp_`, `gho_`).
-- **It is sent only to `https://api.github.com`.** Redirects are followed by hand, without the token. The artifact's download answers 302 with a signed link to GitHub's storage, valid for one minute. That link is registered with the redactor too, and `--verbose` shows only its host.
+- **It is sent only to `https://api.github.com`.** Redirects are followed by hand, without the token. The artifact's download answers 302 with a signed link to GitHub's storage, on another host, that needs no token. GitHub's reference says that the link expires after 1 minute; in the rehearsal, the link's own parameters gave it 10 minutes (section 13). winCode follows it at once. That link is registered with the redactor too, and `--verbose` shows only its host.
 - **It is held in memory for the run** and never written to a file.
 
 **Refusals:**
@@ -263,16 +264,16 @@ The job also writes the hash into its step summary, on the run's page. Retention
 **Download and checks.** They happen in a folder `.wincode-build-<random>` in the app's output folder, as `sign` does, and the folder is deleted at the end whatever happens.
 1. **One artifact.** The run must have exactly one artifact named `unsigned-ipa`, and it must not have expired. Otherwise, `artifact-missing` (1, ADR-0013's id), which says when it expired.
 2. **Download.** `GET .../actions/artifacts/{id}/zip` answers 302. winCode follows the redirect without the token and streams the zip to disk.
-3. **Transfer.** When the artifact's `digest` has the form `sha256:<hex>`, the zip's SHA-256 must equal it (`artifact-integrity`, 1).
-   - GitHub's reference does not say what `digest` covers; `upload-artifact` calls its output `artifact-digest` the "SHA-256 digest of an Artifact".
-   - The first real run confirms that it is the zip's. Until then, any other form gives an INFO line, not a check.
+3. **Transfer.** The artifact's `digest` is `sha256:` and the SHA-256 of the zip as it downloads, and the zip's SHA-256 must equal it (`artifact-integrity`, 1).
+   - GitHub's reference does not say what `digest` covers. The rehearsal showed that it is the zip's, with the same value as `upload-artifact`'s output `artifact-digest` (section 13).
+   - An artifact without a `digest`, or with another form, gives an INFO line, not a check.
 4. **Content.** The zip must hold `unsigned.ipa` and `unsigned.ipa.sha256` and nothing else (`artifact-content`, 1). The IPA's SHA-256 must be the recorded one (`artifact-integrity`, 1).
 
    The two hashes cover different paths. `digest` comes in the API's answer and covers storage and transfer. The recorded hash covers the file from the build job to this disk, and the step summary shows it to a person.
 5. **The IPA.** The checks of ADR-0013's step 6: one `Payload/<name>.app`, whose bundle ID is `bundle_id`, and no `embedded.mobileprovision`. Its version and build number must also be the ones requested (`ipa-version-mismatch`, 1).
 6. **Move.** The IPA replaces `<output>/unsigned.ipa` only once every check has passed. `signed.ipa` is left alone.
 
-`wincode_core`'s zip reader opens both archives. It refuses Zip64, which neither archive needs at these sizes; the first real run confirms that GitHub's zip opens. Its `read` keeps at most 64 MB of an entry in memory, and an IPA can be larger, so the reader gets a method that streams an entry to a file, for the IPA.
+`wincode_core`'s zip reader opens both archives. It refuses Zip64, which neither archive needs at these sizes; the rehearsal showed that it opens GitHub's zip and the IPA inside it (section 13). Its `read` keeps at most 64 MB of an entry in memory, and an IPA can be larger, so the reader gets a method that streams an entry to a file, for the IPA.
 
 **Public repositories:**
 
@@ -343,7 +344,7 @@ The job also writes the hash into its step summary, on the run's page. Retention
   - `GET .../actions/workflows/{file}` must find it (`workflow-not-found`, 78): GitHub dispatches only a workflow that is on the default branch.
   - Its `state` must be `active` (`workflow-disabled`, 78).
   - A 422 from the dispatch for an input is `workflow-input-unknown` (78), as ADR-0014 planned.
-  - GitHub runs the workflow file as it is at the dispatched ref, which is the copy winCode checked. The first real run confirms this.
+  - GitHub runs the workflow file as it is at the dispatched ref, and checks the dispatch's inputs against that copy, which is the copy winCode checked. The rehearsal showed both (section 13).
 
 **`build` never writes to the app's repository.** It reads the workflow and says what differs.
 
@@ -645,13 +646,19 @@ The work comes in five pull requests, each of one concern:
    - `--dry-run` and the goldens.
 5. **`--events` for `sign` and `upload`.**
 
-**Before any macOS minute,** with the maintainer's yes, a test repository dispatches a small Linux workflow that uploads a small file. It confirms GitHub's behaviour on cheap minutes:
-- the run's ID in the dispatch's answer;
-- that `display_title` is the run's name;
-- what `digest` holds;
-- that the zip opens with `wincode_core`'s reader;
-- that the token does not follow the redirect;
-- which copy of the workflow file runs.
+**The Linux rehearsal, before any macOS minute** (2026-11-15, at the maintainer's request).
+- **The setup:** a private test repository held a Linux copy of the contract 2 workflow. It had the same run name, hash file and `upload-artifact` step, and packed a 300 KB IPA-shaped zip instead of building an app.
+- **What ran:** three dispatches through the REST API. Two started runs, each one job of about 6 seconds on `ubuntu-24.04`; the third was refused and started nothing.
+
+The results:
+- **The dispatch's answer:** 200, with `workflow_run_id`, `run_url` and `html_url`, and the header `X-GitHub-Api-Version-Selected: 2026-03-10`.
+- **`display_title`** was `wincode <request_id>` for both runs. So was the run's `name`.
+- **`digest`** is `sha256:` and the SHA-256 of the artifact's zip as downloaded, the same value as `upload-artifact`'s output `artifact-digest`. It is not the IPA's hash; the recorded hash covers the IPA.
+- **The zip:** `wincode_core`'s `ZipArchive` opened the artifact, with `unsigned.ipa` and `unsigned.ipa.sha256` at its root, and the IPA inside it. The IPA's SHA-256 equalled the recorded hash. At 300 KB, the artifact leaves a full-size IPA to the first real run.
+- **The redirect:** the download answered 302 with a signed link to another host (`*.blob.core.windows.net`), which downloaded with no token. The link's own parameters named an end 10 minutes after its start.
+- **Which copy runs:** the branch's. Dispatched with `ref` set to a branch whose copy of the file differed from the default branch's, the run used the branch's copy. GitHub also checked the inputs against that copy:
+  - an input declared only on the branch was accepted there;
+  - at `main` it was refused with 422 `Unexpected inputs provided`, before any run.
 
 **Accepted when** these all hold. They replace ADR-0013's phase 5 criteria and ADR-0014's additions to them.
 - **Against a fake GitHub server** (no network in CI):
@@ -716,7 +723,7 @@ The review also added the Flutter and Xcode versions from the project (section 2
 - **Cost stays visible:** a question before every paid run at a terminal, `--yes` in automation, and the minutes per job in the result.
 - **To revisit:**
   - flutter_tools' scheme and configuration rules, each time a project moves to a new Flutter;
-  - what the Linux rehearsal and the first real run confirm (section 13).
+  - what only the first real run can show, such as a full-size IPA (section 13).
 
 ## Alternatives considered
 
