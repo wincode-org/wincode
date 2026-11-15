@@ -5,7 +5,9 @@
 - Amended: 2026-11-15, after review: the Flutter release and the oldest Xcode come from the project and are checked before the dispatch (section 2); `auto` is the default build number in a file of apps (section 3); the maintainer's answers to the open questions are decisions (section 14)
 - Amends: ADR-0013 (sections 1, 3, 6, 7, 8 and 11, phase 5 in section 10, and the alternative "The REST API instead of `gh`") and ADR-0014 (sections 1, 6 and 8). Design only: nothing here is implemented, and no macOS workflow was run for it.
 - Amended: 2026-11-15, while building part 5a: the Flutter release's tag must exist in `flutter/flutter`, which one read checks before the dispatch (section 2); the ids and details that the code settled where this ADR was silent ("As built: part 5a", section 13)
+- Amended: 2026-11-15, while building part 5b: a run that builds another commit than the one the checks read stops the build (`ref-moved`, section 4) instead of giving a warning; the ids and details that the code settled where this ADR was silent ("As built: part 5b", section 13)
 - Verified: 2026-11-15, a rehearsal on a Linux runner confirmed the GitHub behaviour that the design relies on: the dispatch's answer, `display_title`, what `digest` covers, the artifact's zip with `wincode_core`'s reader, and which copy of the workflow runs (section 13)
+- Verified: 2026-11-15, `wincode build` ran end to end on a Linux runner of the same test repository, with the maintainer's yes: the checks, the dispatch, the wait, the download through GitHub's redirect and every check of the IPA (section 13, "As built: part 5b"). No macOS runner was used
 
 ## Context
 
@@ -188,10 +190,17 @@ There is no state file: the IPA is the record, and `build`'s result gives both n
 1. **Dispatch.** `POST /repos/{owner}/{repo}/actions/workflows/{file}/dispatches` with `ref` and `inputs`. The answer is 200, with `workflow_run_id`, `run_url` and `html_url`.
 
    The dispatch is never sent twice: if its answer is lost, the run may or may not exist, and a second request could start a second paid run. The build then stops with `offline` (69). The message says to look for the run named `wincode <request_id>` on the workflow's page, and to collect it with `--run <id>`.
-2. **Check that the run is ours.** `GET .../actions/runs/{id}`, read again for up to 2 minutes until GitHub shows the run. Its `display_title` must be `wincode <request_id>`, and its `event` must be `workflow_dispatch`; otherwise, `run-not-found` (1).
+2. **Check that the run is ours.** `GET .../actions/runs/{id}`, read again every 5 seconds for up to 2 minutes until GitHub shows the run. Its `display_title` must be `wincode <request_id>`, and its `event` must be `workflow_dispatch`; otherwise, after those 2 minutes, `run-not-found` (1), whose message says which name the run had.
+
+   **A name that is not ours yet is waited for.** Right after a dispatch, GitHub shows the run under the name of the workflow (`wincode-ios`), and under the name that `run-name` gives it only a moment later: the real check of part 5b saw it, and the first version of `build` took the first name for another run. The dispatch's answer names the run, so only the 2 minutes can make it a failure.
 
    An answer without a run ID (204, as the previous API version answers) falls back to ADR-0013's search: list the workflow's dispatched runs every 5 seconds, for up to 2 minutes, until one has that name.
-3. **Its commit.** The run's `head_sha` should be the commit that section 2 checked. If the branch moved in between, a WARN names the commit that the run builds, and the IPA's checks still apply.
+3. **Its commit.** The run's `head_sha` must be the commit that section 2 checked, which `build` recorded when it read the ref. If the branch (or the tag) moved between the checks and the dispatch, the checks were made on one commit and the runner builds another: the scheme, the configuration, the bundle ID and the other checks say nothing about it. The build then stops with `ref-moved` (1), as soon as the run is known:
+   - it downloads nothing, and it does not wait for the run;
+   - it does not cancel the run: only the person does that. The message names both commits and links the run, and the result holds the run's ID and address, so that the person or a calling tool can cancel it;
+   - running `build` again checks the new commit and builds it.
+
+   Only a run that `build` started has this check. `--run` collects a run whose commit nobody recorded, and the IPA's checks still apply to it.
 4. **Wait.** Every 30 seconds, `build` reads the run (`GET .../actions/runs/{id}`) and, once it has started, its jobs (`GET .../actions/runs/{id}/jobs`), for the status of each job and step.
    - **Requests:** each poll sends the previous answer's `ETag`. A 304 answer means nothing changed, and GitHub does not count it against the primary rate limit. A build makes at most about 240 requests an hour, against 5,000 for a personal token, so one token follows about 20 builds at once even without the 304s.
    - **Rate limits:** `build` obeys `retry-after` and `x-ratelimit-reset`. A rate limit slows the polling; it does not fail the build.
@@ -519,7 +528,7 @@ A field that is not known yet is null: for example `runId`, when a check failed 
 | Code | For `build` |
 | --- | --- |
 | 0 | `<output>/unsigned.ipa` holds the run's IPA, and it passed every check |
-| 1 | One of four things. A check before the dispatch failed, so nothing started (`build-in-progress`, `build-number-not-higher`, `bundle-id-mismatch`, …). The run failed or was cancelled. The artifact or the IPA failed a check. Or the question was answered no |
+| 1 | One of five things. A check before the dispatch failed, so nothing started (`build-in-progress`, `build-number-not-higher`, `bundle-id-mismatch`, …). The run failed or was cancelled. The run builds another commit than the one that was checked (`ref-moved`), and goes on. The artifact or the IPA failed a check. Or the question was answered no |
 | 64 | The command line (`--all`, a commit SHA as `--ref` (`ref-is-commit`), `--run` with `--ref`, `--events` with `--json`), `confirmation-required`, or `repository-public` |
 | 69 | GitHub or App Store Connect cannot be reached before the dispatch, or the dispatch's answer was lost (`offline`), GitHub is down (`github-unavailable`) or limits the token for longer than winCode waits (`github-rate-limited`) |
 | 70 | A bug |
@@ -638,6 +647,14 @@ All messages use the three-line form of ADR-0013 (section 6).
       next: correct flutter_version in wincode.yaml: flutter --version prints the release, and the tags are listed at https://github.com/flutter/flutter/tags.
     ```
 
+11. **Ref moved** (`ref-moved`, 1), added while building part 5b. The run exists and goes on; the message links it.
+
+    ```
+    wincode build: main moved while the build was starting: run <URL> builds commit 5d6e7f8, and the checks read 1a2b3c4
+      why: the scheme, the configuration, the bundle ID and the other checks were made on the commit they read, not on the one the runner builds, so winCode downloads nothing from this run. The run goes on and uses macOS minutes until it ends.
+      next: cancel it at <URL> if you do not want it, then run wincode build again to check and build the new commit.
+    ```
+
 ### 13. Implementation plan, and acceptance
 
 The work comes in five pull requests, each of one concern:
@@ -687,9 +704,60 @@ The results:
   - `GET /v1/apps/{id}/buildUploads` is in Apple's documentation (filters `cfBundleVersion`, `cfBundleShortVersionString`, `platform` and `state`, `limit` up to 200). `auto` reads it with `fields[buildUploads]=cfBundleVersion,state`, and an answer that Apple refuses with a client error other than 401 and 403 leaves `auto` on the builds alone, with a line that says so. Whether it lists uploads for a real account is for the first real run;
   - the events: `check` carries the check's name as `id`; `signing` has `status` `started` or `ended`, and `end` (`ok`, `failed`, `timedOut`, `tooBig`) on the second; `upload` has `stage` `created`, `parts` (with `sentBytes` and `totalBytes`) or `committed`; `processing` carries Apple's three states and the messages that are new, each with its `source`, `kind` and `message` as Apple sent it; `plan` of `upload` has `file`, `size`, `version` and `build`. The schema is `eventFields` in `lib/src/events.dart`, and the writer refuses a field that it does not list.
 
+**As built: part 5b.** The second pull request holds the rest of `build`: the question, the dispatch, the wait, Ctrl-C, `--timeout`, `--yes`, `--run`, the artifact and its checks, and `--allow-public`'s deletion (the parts of item 4 that 5a left). It adds `ZipArchive.extractTo` to `wincode_core`, and to the GitHub client a write that is never repeated, a read with an `ETag`, a delete, and the download of an artifact through a redirect that carries no token.
+- **Left for the next parts:** item 1, the contract 2 template with the update path of `init --workflow`; the "other differences" warning of section 8, which compares with that template; and the real run on a macOS runner, which needs the maintainer's word. Until the template lands, the contract check passes only for a workflow written by hand.
+- **The same commit (section 4, step 3)** was a warning in the first draft of this ADR. It is a stop since the review of part 5b: `ref-moved` (1). The commit that the checks read is the one `build` records when it resolves the ref, and the run's `head_sha` is compared with it as soon as the run is known.
+- **Ids that this ADR did not name,** given while building:
+  - 1: `ref-moved`; `ipa-signed` (the IPA holds `embedded.mobileprovision`, and `build` refuses a signature it did not make); `output-unwritable` (the output folder cannot be made or written);
+  - the ids of the checks of the IPA reuse those of `sign`: `ipa-unreadable` (not one app in `Payload/`, or an `Info.plist` that cannot be read) and `bundle-id-mismatch`;
+  - from the dispatch's refusals (all with "Nothing was started."): 422 `Unexpected inputs` is `workflow-input-unknown` (78), `Required input` is `workflow-input-missing` (78), `No ref found` is `ref-not-found` (78), any other 422 or a 404 is `github-error` (1), a 403 is `github-forbidden` (77), a 401 is `github-unauthorized` (77), and a rate limit is `github-rate-limited` (69);
+  - the warning `artifact-not-deleted`, for an artifact of a public repository that could not be deleted.
+- **A dispatch that GitHub did not answer** is `offline` (69), and a 5xx is `github-unavailable` (69): in both the run may exist, so the message says that it does not know, gives the run's name to look for on the workflow's page, and names `--run`. The search by name after a 204 fails the same way. A rate limit or a 4xx is a refusal, and says that nothing was started.
+- **The wait:**
+  - It reads the attempt that the dispatch started (`.../runs/{id}/attempts/{n}` and its `/jobs`, with `run_attempt` taken from the run's first read), so that a re-run on GitHub is not followed. Each read sends the `ETag` of the last 200, and a 304 changes nothing.
+  - The jobs are read once the run has left the queue.
+  - A rate limit slows the polling and does not fail the build. A read that fails after its own retries is asked again; the third failure in a row ends the build with that failure (`offline`, `github-unavailable`, `github-unauthorized` …) and a next step that collects the run with `--run`, since the run goes on.
+  - `--timeout` is 60 minutes by default, in minutes or in seconds with an `s`, as `upload` takes it; the wait stops before it would pass the limit.
+- **Ctrl-C:**
+  - winCode watches Ctrl-C, and SIGTERM where the system has it, from the moment before the dispatch is sent, so that a signal never ends the program while a run may have started.
+  - It asks `Cancel the run on GitHub too?` only for Ctrl-C at a terminal without `--json`, `--events` or `CI`. Enter, any answer but `y` or `yes`, the end of the input and a second Ctrl-C are all a no.
+  - The question and its answer are read asynchronously, so that a second Ctrl-C can answer it.
+  - During the download of the artifact the run is over, so there is nothing to cancel: a signal stops the download, deletes the work folder and ends with `wait-stopped` (75) and `--run`.
+  - A cancel that GitHub refuses ends with that refusal (`github-forbidden` …) and says that the run goes on.
+- **`--run <id>`** needs the token, the repository (a public one needs `--allow-public`, as for a build) and the workflow, whose ID tells the run's workflow. It does not need the project, `flutter_version` or `min_xcode_version` in `wincode.yaml`. `--ref`, `--build-name`, `--build-number` and `--dry-run` are usage errors with it. `--timeout` counts from the start of the wait. It asks no question, since it starts nothing.
+- **The question** is asked after the findings and the plan. `confirmation-required` (64) comes before any request, as `upload`'s does: without `--yes`, and without a terminal, or with `--json`, `--events` or `CI`.
+- **The artifact:**
+  - the checks run in this order: the zip against GitHub's `digest`, the files in the zip, the IPA against the hash that the build job recorded, and the IPA itself. The digest covers the zip and the recorded hash covers a file inside it, so the digest has to be checked first;
+  - `unsigned.ipa.sha256` must start with 64 hexadecimal digits and be under 1,024 bytes;
+  - the IPA replaces `<output>/unsigned.ipa` by a rename inside the output folder, after every check; a check that fails leaves the old file alone, and the work folder `.wincode-build-<random>` is deleted whatever happens;
+  - the artifact of a public repository is deleted after the IPA is in place and not before: a delete cannot be undone, and a move that failed would have lost the IPA. When a check fails there, `next` adds that the artifact is still public and where to delete it.
+- **The events:**
+  - `job` has `job`, `status` and `conclusion`; `step` has `job`, `number`, `name`, `status` and `conclusion`. A job or a step that has not started (`queued`) is not an event;
+  - `wait` carries `minutes`, the time the jobs have used so far, rounded up per job and at least one for a job that started;
+  - the findings of the artifact stage are `check` events too, and `artifact` is written when the download is done, before it is checked;
+  - the text for people (one line each time the run, a job or a step changes) goes to stderr in every mode, and the question to the stream of the report, which is stdout without `--json` or `--events`.
+- **`minutes` in the result** is the same estimate, for the jobs read last. It is null when the run never reached a job.
+- **The program ends with `exit`** after it flushes its output (`bin/wincode.dart`): an interrupted build leaves a timer and a read of standard input behind, and they would keep the process alive for up to 30 seconds.
+
+**The real check of part 5b** (2026-11-15, with the maintainer's yes, on the Linux workflow of the private test repository; no macOS).
+- **The setup:** a new branch of the test repository (its `main` and its first rehearsal branch were not touched) with a made-up Flutter project (the sample of `wincode_core`'s tests, bundle ID `org.example.demo`, one shared scheme) and a Linux copy of the contract 2 workflow. The copy declares the seven inputs that `build` sends, carries the request ID in its run name, and packs a 300 KB IPA-shaped zip whose XML `Info.plist` holds the version and build number it was given, with the same hash file and `upload-artifact` step as the reference workflow. The token was `gh`'s login, which `doctor --build` reports as broad.
+- **`doctor --build`** passed every check of `build` against that branch, with real reads (12 requests). One request timed out after 20 seconds and its retry answered, as designed.
+- **The first dispatch found a fault.** `build` stopped after the dispatch with `run-not-found`: GitHub showed the run as `wincode-ios`, the name of the workflow, and the request ID's name only a moment later (section 4, step 2). The run itself succeeded. The fix waits for the name, and a fake run that shows the workflow's name for two reads tests it.
+- **`--run` on that run** collected it end to end with GET requests: the 302 to GitHub's storage on another host (the log shows its host only), the zip against `digest`, the two files, the IPA against the recorded hash, and the IPA's bundle ID, version and build number, from the run's name. Exit 0.
+- **A second build** (`--build-number 2`: the first run, which succeeded, holds number 1, and `build` refused to reuse it before any request, which also showed the run list's rule on real runs) ran the whole way in 66 seconds, with 22 requests, one of them the dispatch:
+  - the dispatch answered 200 with `workflow_run_id` and `html_url`, and GitHub showed the run under its own name on the second read, 5 seconds later;
+  - the run's `head_sha` was the commit that the checks had read, so the same-commit check passed;
+  - the first read of the run found it `in_progress`, and the second, 30 seconds later and with the `ETag` of the first, found it `completed`; the events held the `run`, `job` and `step` changes of both reads;
+  - the artifact (301,112 bytes) was downloaded through the redirect with no token, every check passed, and `unsigned.ipa` (300,975 bytes) was in the output folder, with no work folder left; exit 0, with the one warning of a flat file without credentials;
+  - the result's `minutes` was 1, for a job of 8 seconds on `ubuntu-24.04`;
+  - no token, no `Authorization` header and no part of the signed link was in the events, the text for people or the verbose log.
+- **What it did not show:** a branch that moves (`ref-moved` is tested against the fake only: the real run built the commit that was checked), Ctrl-C, the timeout, a failed or cancelled run, a rate limit, `--allow-public` (the repository is private), a full-size IPA, and macOS.
+
 **Accepted when** these all hold. They replace ADR-0013's phase 5 criteria and ADR-0014's additions to them.
 - **Against a fake GitHub server** (no network in CI):
   - the dispatch carries every input, and the run is found from the dispatch's answer, and by its name after a 204;
+  - the dispatch is sent once, whatever happens to its answer: a lost answer, a 5xx and a refusal each leave one request;
+  - a run that builds another commit than the one that was checked is reported with `ref-moved`, and nothing is downloaded or cancelled;
   - the wait gives job and step events;
   - a failed run names its step; a cancelled run, and a run that never started, each give their own message;
   - the timeout exits 75;

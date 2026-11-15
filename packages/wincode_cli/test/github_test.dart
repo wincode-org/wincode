@@ -284,7 +284,321 @@ void main() {
     });
   });
 
+  group('a conditional read', () {
+    test(
+      'sends the ETag it has, and a 304 answers that nothing changed',
+      () async {
+        final api = await client(
+          (r) => r.headers['if-none-match'] == 'W/"one"'
+              ? const GhAnswer.empty(304, {'etag': '"one"'})
+              : const GhAnswer(
+                  {'status': 'queued'},
+                  headers: {'etag': 'W/"one"'},
+                ),
+        );
+        final first = await api.getJsonIfChanged('/runs/1');
+        expect(first.json, {'status': 'queued'});
+        expect(first.etag, 'W/"one"');
+        expect(first.notModified, isFalse);
+        expect(
+          github!.requests.single.headers,
+          isNot(contains('if-none-match')),
+        );
+
+        final second = await api.getJsonIfChanged('/runs/1', etag: first.etag);
+        expect(second.notModified, isTrue);
+        expect(
+          second.etag,
+          'W/"one"',
+          reason: 'the form that was sent is kept: a 304 writes it another way',
+        );
+        expect(github!.requests.last.headers['if-none-match'], 'W/"one"');
+      },
+    );
+
+    test('a changed resource comes with its new ETag', () async {
+      final api = await client(
+        (_) => const GhAnswer({'n': 2}, headers: {'etag': 'W/"two"'}),
+      );
+      final read = await api.getJsonIfChanged('/x', etag: 'W/"one"');
+      expect(read.json, {'n': 2});
+      expect(read.etag, 'W/"two"');
+    });
+
+    test(
+      'is tried again after a 5xx, as a read is, and the query is sent',
+      () async {
+        var calls = 0;
+        final api = await client(
+          (_) => ++calls == 1
+              ? GhAnswer.error(502, 'Bad gateway')
+              : const GhAnswer({'ok': 1}),
+        );
+        expect(
+          (await api.getJsonIfChanged('/x', query: {'per_page': '100'})).json,
+          {'ok': 1},
+        );
+        expect(github!.requests, hasLength(2));
+        expect(github!.requests.last.query, {'per_page': '100'});
+      },
+    );
+  });
+
+  group('a write', () {
+    test('sends its JSON with the token and the API version', () async {
+      final api = await client((_) => const GhAnswer({'workflow_run_id': 7}));
+      final answer = await api.post(
+        '/repos/o/r/actions/workflows/w.yml/dispatches',
+        {
+          'ref': 'main',
+          'inputs': {'request_id': 'abc'},
+        },
+      );
+      expect(answer.status, 200);
+      expect(answer.json, {'workflow_run_id': 7});
+      final r = github!.requests.single;
+      expect(r.method, 'POST');
+      expect(r.token, token);
+      expect(r.headers['x-github-api-version'], githubApiVersion);
+      expect(r.headers['content-type'], startsWith('application/json'));
+      expect(r.json, {
+        'ref': 'main',
+        'inputs': {'request_id': 'abc'},
+      });
+    });
+
+    test('an answer with no body is a success with no object', () async {
+      for (final status in [201, 202, 204]) {
+        final api = await client((_) => GhAnswer.empty(status));
+        final answer = await api.post('/x', {});
+        expect(answer.status, status);
+        expect(answer.json, isNull);
+      }
+    });
+
+    test('is never sent twice: a 5xx, a rate limit and a lost answer each get one request', () async {
+      for (final (answer, failure_) in [
+        (GhAnswer.error(502, 'Bad gateway'), GithubFailure.unavailable),
+        (
+          GhAnswer.error(429, 'Slow down', headers: {'retry-after': '1'}),
+          GithubFailure.rateLimited,
+        ),
+        (const GhAnswer.drop(), GithubFailure.offline),
+      ]) {
+        slept.clear();
+        final api = await client((_) => answer);
+        final e = await failure(api.post('/x', {'a': 1}));
+        expect(e.failure, failure_);
+        expect(e.request, 'POST /x');
+        expect(github!.requests, hasLength(1), reason: '$failure_');
+        expect(slept, isEmpty, reason: 'no wait, no retry: $failure_');
+        await github!.close();
+      }
+    });
+
+    test('a refusal says what GitHub said', () async {
+      final api = await client(
+        (_) => GhAnswer.error(422, 'Unexpected inputs provided: ["x"]'),
+      );
+      final e = await failure(api.post('/x', {}));
+      expect(e.failure, GithubFailure.unprocessable);
+      expect(e.message, 'HTTP 422: Unexpected inputs provided: ["x"]');
+    });
+
+    test('is logged without its body', () async {
+      final api = await client((_) => const GhAnswer({}));
+      await api.post('/repos/o/r/dispatches', {'inputs': 'SECRET-BODY'});
+      expect(
+        logged.single,
+        matches(r'^POST 127\.0\.0\.1/repos/o/r/dispatches: HTTP 200, \d+ ms$'),
+      );
+      expect(logged.join(), isNot(contains('SECRET-BODY')));
+    });
+  });
+
+  group('delete', () {
+    test('sends a DELETE once and accepts a 204', () async {
+      final api = await client((_) => const GhAnswer.empty());
+      await api.delete('/repos/o/r/actions/artifacts/9');
+      expect(github!.requests.single.method, 'DELETE');
+    });
+
+    test('a refusal or a failure is thrown, and not tried again', () async {
+      final api = await client((_) => GhAnswer.error(500, 'Oops'));
+      final e = await failure(api.delete('/x'));
+      expect(e.failure, GithubFailure.unavailable);
+      expect(github!.requests, hasLength(1));
+      final forbidden = await client((_) => GhAnswer.error(403, 'No'));
+      expect(
+        (await failure(forbidden.delete('/x'))).failure,
+        GithubFailure.forbidden,
+      );
+    });
+  });
+
+  group('a download', () {
+    final content = List.generate(200000, (i) => i * 7 % 251);
+    FakeGithub? storage;
+    late Directory temp;
+    setUp(() => temp = Directory.systemTemp.createTempSync('wincode_dl_'));
+    tearDown(() async {
+      await storage?.close();
+      storage = null;
+      temp.deleteSync(recursive: true);
+    });
+    File target() => File('${temp.path}${Platform.pathSeparator}artifact.zip');
+
+    /// An API whose artifact answers with a redirect to a storage that gives [then].
+    Future<HttpGithubClient> api(GhAnswer Function(GhRequest) then) async {
+      final s = storage = await FakeGithub.start(then);
+      return client(
+        (_) => GhAnswer.redirect('${s.uri}/blob/1?sv=2024&sig=SECRETSIGNATURE'),
+      );
+    }
+
+    test(
+      'follows the redirect without the token, and writes the file',
+      () async {
+        final api_ = await api((_) => GhAnswer.bytes(content));
+        final hidden = <String>[];
+        final n = await api_.download(
+          '/repos/o/r/actions/artifacts/9/zip',
+          target(),
+          hide: hidden.add,
+        );
+        expect(n, content.length);
+        expect(target().readAsBytesSync(), content);
+        expect(github!.requests.single.token, token);
+        expect(
+          github!.requests.single.path,
+          '/repos/o/r/actions/artifacts/9/zip',
+        );
+        final got = storage!.requests.single;
+        expect(got.token, isNull);
+        expect(got.headers, isNot(contains('authorization')));
+        expect(got.path, '/blob/1');
+        expect(
+          hidden,
+          contains('${storage!.uri}/blob/1?sv=2024&sig=SECRETSIGNATURE'),
+        );
+        expect(hidden, contains('sv=2024&sig=SECRETSIGNATURE'));
+      },
+    );
+
+    test('logs the host of the link and never the link', () async {
+      final api_ = await api((_) => GhAnswer.bytes(content));
+      await api_.download('/x/zip', target(), hide: (_) {});
+      expect(logged, hasLength(2));
+      expect(logged[0], startsWith('GET 127.0.0.1/x/zip: HTTP 302'));
+      expect(
+        logged[1],
+        matches(r'^GET 127\.0\.0\.1: HTTP 200, 200000 bytes, \d+ ms$'),
+      );
+      expect(logged.join(), isNot(contains('SECRETSIGNATURE')));
+      expect(logged.join(), isNot(contains(token)));
+    });
+
+    test(
+      'is tried again from the redirect after a 5xx of the storage',
+      () async {
+        var calls = 0;
+        final api_ = await api(
+          (_) => ++calls == 1
+              ? GhAnswer.error(503, 'busy')
+              : GhAnswer.bytes(content),
+        );
+        await api_.download('/x/zip', target(), hide: (_) {});
+        expect(target().readAsBytesSync(), content);
+        expect(github!.requests, hasLength(2));
+        expect(storage!.requests, hasLength(2));
+      },
+    );
+
+    test(
+      'a link that the storage refuses fails, and is not tried again',
+      () async {
+        final api_ = await api((_) => GhAnswer.error(403, 'expired'));
+        final e = await failure(
+          api_.download('/x/zip', target(), hide: (_) {}),
+        );
+        expect(e.failure, GithubFailure.refused);
+        expect(e.message, 'the download link answered HTTP 403');
+        expect(e.message, isNot(contains('SECRET')));
+        expect(storage!.requests, hasLength(1));
+      },
+    );
+
+    test('an answer that is not a redirect is refused', () async {
+      final api_ = await client((_) => const GhAnswer({'ok': true}));
+      final e = await failure(api_.download('/x/zip', target(), hide: (_) {}));
+      expect(e.failure, GithubFailure.refused);
+      expect(e.message, 'HTTP 200, and no redirect to the file');
+    });
+
+    test('a redirect to another kind of address than the API is refused, and not requested', () async {
+      final api_ = await client(
+        (_) => GhAnswer.redirect('https://storage.example.com/blob?sig=S'),
+      );
+      final e = await failure(api_.download('/x/zip', target(), hide: (_) {}));
+      expect(e.failure, GithubFailure.refused);
+      expect(e.message, contains('does not name a http address'));
+    });
+
+    test('stops, as offline, once told to', () async {
+      final started = Completer<void>();
+      final stop = Completer<void>();
+      final s = storage = await FakeGithub.start((_) async {
+        started.complete();
+        await stop.future;
+        return GhAnswer.bytes(content);
+      });
+      final api_ = await client(
+        (_) => GhAnswer.redirect('${s.uri}/blob/1?sig=S'),
+      );
+      final done = failure(
+        api_.download('/x/zip', target(), hide: (_) {}, stop: stop.future),
+      );
+      await started.future;
+      stop.complete();
+      expect((await done).failure, GithubFailure.offline);
+    });
+  });
+
   group('githubProblem', () {
+    test('a run that is going changes the next step to collecting it', () {
+      for (final (failure_, id) in [
+        (GithubFailure.unauthorized, 'github-unauthorized'),
+        (GithubFailure.forbidden, 'github-forbidden'),
+        (GithubFailure.rateLimited, 'github-rate-limited'),
+        (GithubFailure.offline, 'offline'),
+        (GithubFailure.unavailable, 'github-unavailable'),
+        (GithubFailure.refused, 'github-error'),
+      ]) {
+        final p = githubProblem(
+          GithubException(
+            failure_,
+            'GET /x',
+            'HTTP 5',
+            retryAfter: const Duration(minutes: 5),
+          ),
+          what: 'follow the run',
+          run: (
+            url: 'https://github.com/o/r/actions/runs/7',
+            collect: 'wincode build --run 7',
+          ),
+        );
+        expect(p.id, id);
+        expect(p.next, contains('wincode build --run 7'), reason: id);
+        expect(
+          p.next,
+          contains('https://github.com/o/r/actions/runs/7'),
+          reason: id,
+        );
+        expect(p.next, isNot(contains('Nothing was started')), reason: id);
+        expect(p.next, isNot(contains('run the command again')), reason: id);
+      }
+    });
+
     test('names the stable ids and exit codes', () {
       WincodeException problem(GithubFailure f, {Duration? retry}) =>
           githubProblem(

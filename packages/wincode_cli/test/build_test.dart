@@ -22,6 +22,14 @@ const _bundleId = 'org.example.demo';
 const _keyId = 'ABCDE12345';
 const _appRecord = '1000000001';
 
+/// What GitHub answers to the dispatch of a build whose checks all passed: the token may not start a run. The tests of the
+/// checks read this as "every check passed".
+final _dispatchRefused = GhAnswer.error(
+  403,
+  'Resource not accessible by personal access token',
+);
+const _passedChecks = (77, 'github-forbidden');
+
 const _workflowRef =
     'example-org/example-app/.github/workflows/wincode-ios.yml@main';
 
@@ -161,13 +169,24 @@ void main() {
   }) async {
     if (yaml != null) config.writeAsStringSync(yaml);
     final server = github ??= await FakeGithub.start(
-      (r) => answer?.call(r) ?? repo(r),
+      (r) =>
+          answer?.call(r) ??
+          (r.method == 'POST' && r.path.endsWith('/dispatches')
+              ? _dispatchRefused
+              : repo(r)),
       token: _token,
     );
     final out = StringBuffer();
     final err = StringBuffer();
     final code = await runWincode(
-      [command, '--config', config.path, ...args],
+      [
+        command,
+        '--config',
+        config.path,
+        // These tests are about the checks: a build that passes them is let through the question.
+        if (command == 'build' && !args.contains('--dry-run')) '--yes',
+        ...args,
+      ],
       out,
       err,
       environment: environment ?? {'GH_TOKEN': _token},
@@ -207,7 +226,11 @@ void main() {
       reason: 'an Authorization header was printed',
     );
     for (final r in server.requests) {
-      expect(r.method, 'GET', reason: '$r');
+      expect(
+        r.method == 'GET' || r.path.endsWith('/dispatches'),
+        isTrue,
+        reason: 'only reads, and the dispatch that is refused: $r',
+      );
     }
     for (final r in apple?.requests ?? const <FakeRequest>[]) {
       expect(r.method, 'GET', reason: '${r.method} ${r.path}');
@@ -241,10 +264,11 @@ void main() {
   List<Map<String, Object?>> checksOf(Map<String, Object?> json) =>
       (json['checks']! as List<Object?>).cast<Map<String, Object?>>();
 
-  /// The checks of [json] that have this [status], by name.
+  /// The checks of [json] that have this [status], by name. The refused dispatch of a build whose checks all passed is
+  /// not one of the checks.
   List<String> named(Map<String, Object?> json, String status) => [
     for (final c in checksOf(json))
-      if (c['status'] == status) '${c['check']}',
+      if (c['status'] == status && c['check'] != 'dispatch') '${c['check']}',
   ];
 
   List<String> paths() => [
@@ -254,14 +278,16 @@ void main() {
   const repoPath = '/repos/example-org/example-app';
 
   group('a build with nothing wrong', () {
-    test('makes every check with GET requests, shows its plan, and stops where the dispatch will be', () async {
+    test('makes every check with GET requests, shows its plan, and goes on to the dispatch', () async {
       final (code, out, err) = await wincode([]);
-      expect(code, 64, reason: '$out$err');
+      expect(code, 77, reason: '$out$err');
       expect(
-        err,
-        contains('wincode build: dispatch not implemented yet (part 5b)'),
+        out,
+        contains(
+          'FAIL  GitHub refused POST /repos/example-org/example-app/actions/workflows/wincode-ios.yml/dispatches',
+        ),
       );
-      expect(err, contains('Nothing was started.'));
+      expect(out, contains('Nothing was started.'));
       for (final line in [
         'PASS  wincode.yaml names the workflow, flutter_version and min_xcode_version',
         'PASS  the token comes from GH_TOKEN, a fine-grained token',
@@ -329,8 +355,10 @@ Build plan:
         'GET $repoPath/contents/ios/Flutter/beta.xcconfig',
         'GET /repos/flutter/flutter/git/ref/tags/3.47.7',
         'GET $repoPath/actions/workflows/wincode-ios.yml/runs',
+        // The checks passed, and the fake GitHub refuses the dispatch that follows.
+        'POST $repoPath/actions/workflows/wincode-ios.yml/dispatches',
       });
-      expect(paths(), hasLength(12), reason: 'no request twice');
+      expect(paths(), hasLength(13), reason: 'no request twice');
       // Every file is read at the commit, not at the branch, and the token goes with every request.
       for (final r in github!.requests.where(
         (r) => r.path.contains('/contents/'),
@@ -342,7 +370,7 @@ Build plan:
         expect(r.token, _token);
         expect(r.headers['x-github-api-version'], '2026-03-10');
       }
-      final runs = github!.requests.last;
+      final runs = github!.requests.firstWhere((r) => r.path.endsWith('/runs'));
       expect(runs.query['event'], 'workflow_dispatch');
       expect(runs.query['created'], '>=2026-11-14T12:00:00Z');
     });
@@ -351,7 +379,7 @@ Build plan:
       '--json has the fields of the ADR, null where nothing is known yet',
       () async {
         final (code, json, id) = await buildJson([]);
-        expect((code, id), (64, 'not-implemented'));
+        expect((code, id), _passedChecks);
         expect(json['command'], 'build');
         expect(json['app'], isNull);
         expect(json['ok'], isFalse);
@@ -635,7 +663,7 @@ Build plan:
             return ProcessResult(1, 0, '$_token\n', '');
           },
         );
-        expect(code, 64, reason: '$out$err');
+        expect(code, _passedChecks.$1, reason: '$out$err');
         expect(
           out,
           contains(
@@ -702,7 +730,7 @@ Build plan:
       test('--allow-public builds in it, and says so', () async {
         repo.isPrivate = false;
         final (code, out, err) = await wincode(['--allow-public']);
-        expect(code, 64, reason: '$out$err');
+        expect(code, _passedChecks.$1, reason: '$out$err');
         expect(
           out,
           contains(
@@ -743,7 +771,7 @@ Build plan:
       test('--ref builds another ref, and reads it', () async {
         repo.refs['release/2.4'] = repo.commit;
         final (code, out, _) = await wincode(['--ref', 'release/2.4']);
-        expect(code, 64);
+        expect(code, _passedChecks.$1);
         expect(out, contains('PASS  release/2.4 is commit 1a2b3c4'));
         expect(paths(), contains('GET $repoPath/commits/release/2.4'));
       });
@@ -796,7 +824,7 @@ Build plan:
           ..truncated = true
           ..schemes = [];
         final (code, json, _) = await buildJson([]);
-        expect(code, 64);
+        expect(code, _passedChecks.$1);
         expect(named(json, 'WARN'), containsAll(['project', 'scheme']));
         expect(named(json, 'FAIL'), isEmpty);
       });
@@ -996,11 +1024,7 @@ Build plan:
             [],
             yaml: _flat(xcode: want),
           );
-          expect(
-            (code, id),
-            (64, 'not-implemented'),
-            reason: '$have against $want',
-          );
+          expect((code, id), _passedChecks, reason: '$have against $want');
           expect(named(json, 'FAIL'), isEmpty);
           await github!.close();
           github = null;
@@ -1015,7 +1039,7 @@ Build plan:
           repo.files['.github/workflows/wincode-ios.yml'] = workflowText
               .replaceFirst('/Applications/Xcode_26.6.app', change);
           final (code, json, id) = await buildJson([]);
-          expect((code, id), (64, 'not-implemented'));
+          expect((code, id), _passedChecks);
           expect(named(json, 'WARN'), contains('xcode'));
           await github!.close();
           github = null;
@@ -1061,7 +1085,7 @@ Build plan:
           [],
           yaml: _flat(flutter: '3.48.0-0.1.pre'),
         );
-        expect(code, 64);
+        expect(code, _passedChecks.$1);
         expect(
           paths(),
           contains('GET /repos/flutter/flutter/git/ref/tags/3.48.0-0.1.pre'),
@@ -1071,7 +1095,7 @@ Build plan:
       test('the tag is checked when pubspec.yaml sets no constraint, and when there is no pubspec.yaml', () async {
         repo.files['pubspec.yaml'] = 'name: demo\nversion: 2.3.0+57\n';
         final (code, json, _) = await buildJson([]);
-        expect(code, 64);
+        expect(code, _passedChecks.$1);
         expect(
           checksOf(json).firstWhere((c) => c['check'] == 'flutter')['what'],
           contains('sets no environment: flutter: constraint'),
@@ -1149,7 +1173,7 @@ Build plan:
               extra: 'flavor: alpha\ntarget: lib/main_alpha.dart\n',
             ),
           );
-          expect(code, 64);
+          expect(code, _passedChecks.$1);
           expect(named(json, 'FAIL'), isEmpty);
           expect((json['plan']! as Map)['scheme'], 'Alpha');
           expect((json['plan']! as Map)['configuration'], 'Release-alpha');
@@ -1189,7 +1213,7 @@ Build plan:
               extra: 'flavor: alpha\n',
             ),
           );
-          expect(code, 64);
+          expect(code, _passedChecks.$1);
           expect((json['plan']! as Map)['scheme'], 'ALPHA');
         },
       );
@@ -1262,7 +1286,7 @@ Build plan:
               extra: 'flavor: alpha\n',
             ),
           );
-          expect(code, 64);
+          expect(code, _passedChecks.$1);
           expect(named(json, 'WARN'), contains('bundle-id'));
           expect(named(json, 'FAIL'), isEmpty);
         },
@@ -1273,7 +1297,7 @@ Build plan:
         () async {
           repo.files['ios/Runner.xcodeproj/project.pbxproj'] = 'garbage';
           final (code, json, _) = await buildJson([]);
-          expect(code, 64);
+          expect(code, _passedChecks.$1);
           expect(named(json, 'WARN'), contains('configuration'));
         },
       );
@@ -1353,7 +1377,7 @@ Build plan:
           fakeRun(4, '$tag-2.3.0-59-0a0a0a0a', conclusion: 'cancelled'),
         ]);
         final (code, json, _) = await buildJson([]);
-        expect(code, 64);
+        expect(code, _passedChecks.$1);
         expect(named(json, 'FAIL'), isEmpty);
       });
 
@@ -1372,7 +1396,7 @@ Build plan:
         await github!.close();
         github = null;
         final (code, ok, _) = await buildJson(['--build-number', '61']);
-        expect(code, 64);
+        expect(code, _passedChecks.$1);
         expect(ok['buildNumber'], '61');
       });
 
@@ -1409,7 +1433,7 @@ Build plan:
           ['--build-number', 'auto'],
           environment: {'GH_TOKEN': _token, 'WINCODE_ASC_KEY_DIR': keys.path},
         );
-        expect(code, 64);
+        expect(code, _passedChecks.$1);
         expect(json['buildNumber'], '44');
         final plan = json['plan']! as Map<String, Object?>;
         expect(plan['buildNumberSource'], 'auto');
@@ -1450,7 +1474,7 @@ Build plan:
           ['--build-number', 'auto'],
           environment: {'GH_TOKEN': _token, 'WINCODE_ASC_KEY_DIR': keys.path},
         );
-        expect(code, 64);
+        expect(code, _passedChecks.$1);
         expect(
           out,
           contains(
@@ -1495,7 +1519,7 @@ Build plan:
           ['--build-number', '58'],
           environment: {'GH_TOKEN': _token, 'WINCODE_ASC_KEY_DIR': keys.path},
         );
-        expect(ok, 64);
+        expect(ok, _passedChecks.$1);
         expect(named(json, 'WARN'), isNot(contains('build-number')));
       });
 
@@ -1543,7 +1567,7 @@ Build plan:
           yaml: _apps(),
           environment: environment,
         );
-        expect(code, 64);
+        expect(code, _passedChecks.$1);
         expect(json['app'], 'alpha');
         expect(json['buildNumber'], '21');
         final plan = json['plan']! as Map<String, Object?>;
@@ -1602,7 +1626,7 @@ Build plan:
             ? GhAnswer.error(429, 'Slow down', headers: {'retry-after': '3'})
             : null,
       );
-      expect(code, 64);
+      expect(code, _passedChecks.$1);
       expect(slept, [const Duration(seconds: 3)]);
     });
 
@@ -1810,7 +1834,7 @@ Build plan:
   group('--events', () {
     test('build writes a check event for each finding, the plan, and the result that is the object of --json', () async {
       final (code, out, err) = await wincode(['--events']);
-      expect(code, 64, reason: err);
+      expect(code, _passedChecks.$1, reason: err);
       final events = [
         for (final l in const LineSplitter().convert(out)) parse(l),
       ];
@@ -1818,12 +1842,14 @@ Build plan:
       expect(names.first, 'check');
       expect(names.last, 'result');
       expect(names.where((n) => n == 'plan'), hasLength(1));
+      // The plan comes after the checks, and then the dispatch that the fake GitHub refuses is one more check.
       expect(
-        names[names.length - 2],
+        names[names.length - 3],
         'plan',
-        reason: 'the plan comes after the checks, and before the result',
+        reason: 'the plan comes after the checks, and before the dispatch and the result',
       );
-      expect(names.take(names.length - 2), everyElement('check'));
+      expect(names.take(names.length - 3), everyElement('check'));
+      expect(names[names.length - 2], 'check');
       final plan = events.firstWhere((e) => e['event'] == 'plan');
       expect(
         plan.keys,
@@ -1855,7 +1881,7 @@ Build plan:
         ('example-org/example-app', true, 'macos-26', 45),
       );
       expect(events.last['ok'], isFalse);
-      expect((events.last['error']! as Map)['id'], 'not-implemented');
+      expect((events.last['error']! as Map)['id'], 'github-forbidden');
       expect(err, contains('PASS'));
       expect(out, isNot(contains('PASS  ')));
       await github!.close();

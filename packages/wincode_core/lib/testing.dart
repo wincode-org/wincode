@@ -6,11 +6,16 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart';
+
 import 'src/plist.dart';
 import 'src/zip.dart';
 
 export 'src/test_signer.dart'
     show TestRsaKey, pemOf, signTestIpa, testCertificate;
+
+/// The SHA-256 of [bytes] as lower-case hexadecimal.
+String sha256Hex(List<int> bytes) => sha256.convert(bytes).toString();
 
 /// A zip archive of [files], in order: deflated when [deflate], else stored. A name that ends in `/` is a folder.
 Uint8List zipOf(Map<String, List<int>> files, {bool deflate = true}) {

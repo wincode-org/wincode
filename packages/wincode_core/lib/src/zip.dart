@@ -104,6 +104,25 @@ class ZipArchive {
     return out.takeBytes();
   }
 
+  /// Writes the entry [name], inflated, to [file], with its size and CRC-32 checked as [read] checks them. Memory holds
+  /// one chunk whatever the size of the entry, so [ZipLimits.readSize] does not apply: this is for an entry too large to
+  /// read, such as an IPA inside the artifact of a build. Throws an [ArgumentError] when there is no such entry and a
+  /// [FormatException] when it cannot be read; a file that was started is deleted then.
+  void extractTo(String name, File file) {
+    final entry = _entry(name);
+    final out = file.openSync(mode: FileMode.writeOnly);
+    var done = false;
+    try {
+      _stream(name, entry, out.writeFromSync);
+      done = true;
+    } finally {
+      out.closeSync();
+      if (!done && file.existsSync()) {
+        file.deleteSync();
+      }
+    }
+  }
+
   /// The size of the entry [name] as its header claims.
   int sizeOf(String name) => _entry(name).size;
 

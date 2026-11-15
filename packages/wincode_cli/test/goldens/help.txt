@@ -15,7 +15,7 @@ Global options:
     --dry-run          Send, write and run nothing, and print what would be done.
 
 Available commands:
-  build       Build the app's unsigned IPA on a GitHub macOS runner (ADR-0015). Part 5a: the checks and the plan; the run is not started yet.
+  build       Build the app's unsigned IPA on a GitHub macOS runner (ADR-0015).
   doctor      Check the setup, or a Mach-O binary against the SDK or a reference build.
   init        Write wincode.yaml for the Flutter project in this folder.
   preflight   Check the signed IPA and App Store Connect before an upload. Read-only.
@@ -33,16 +33,20 @@ Exit codes:
   65  upload: Apple took the IPA and then failed its processing
   69  a tool, the SDK or the network is missing
   70  a bug in winCode
-  75  upload: Apple had not finished processing within --timeout
+  75  upload or build: Apple had not finished processing, or the run was still going, when winCode stopped waiting (--timeout)
   77  Apple or GitHub refused the credentials
   78  wincode.yaml or an environment variable is wrong
 
 $ wincode help build
-Build the app's unsigned IPA on a GitHub macOS runner (ADR-0015). Part 5a: the checks and the plan; the run is not started yet.
+Build the app's unsigned IPA on a GitHub macOS runner (ADR-0015).
 
-Before a run is paid for, winCode reads the project at the commit of the ref through GitHub's API and checks it: the token and the repository, the workflow and its contract and inputs, the Flutter release against pubspec.yaml and flutter/flutter's tags, the Xcode against min_xcode_version, the scheme, the configuration and the bundle ID that Flutter would build, the entry point, the version, and the build number (auto asks App Store Connect and the last 24 hours of runs). It sends GET requests only.
+Before a run is paid for, winCode reads the project at the commit of the ref through GitHub's API and checks it: the token and the repository, the workflow and its contract and inputs, the Flutter release against pubspec.yaml and flutter/flutter's tags, the Xcode against min_xcode_version, the scheme, the configuration and the bundle ID that Flutter would build, the entry point, the version, and the build number (auto asks App Store Connect and the last 24 hours of runs). It prints its plan and asks before it starts the run: --yes skips that, and without a terminal, in CI or with --json or --events, --yes is required.
 
---dry-run sends no request at all: it prints the plan from wincode.yaml and the options, and the dispatch request as it would go out. wincode doctor --build makes the same checks and prints no plan.
+It then starts the workflow, once, and reads the run every 30 s until it ends, or --timeout has passed. The run is never cancelled unasked: Ctrl-C at a terminal asks whether to cancel it, and answers no by default. When it succeeded, winCode downloads the artifact, checks the hash that the workflow recorded and GitHub's digest, and that the IPA is the app, version and build number that were asked for and is not signed, and puts it in the output folder as unsigned.ipa. With --allow-public, in a public repository, it then deletes the artifact.
+
+--dry-run sends no request at all: it prints the plan from wincode.yaml and the options, and the dispatch request as it would go out. wincode doctor --build makes the checks without starting anything.
+
+Exit codes: 0 the IPA is in the output folder, 1 a check or the run failed, 64 usage, 69 GitHub cannot be reached, 75 the run was still going when winCode stopped waiting (collect it with --run), 77 GitHub refused the token, 78 the setup is wrong.
 
 Usage: wincode build [--app <name>]
 -h, --help                     Print this usage information.
@@ -50,7 +54,11 @@ Usage: wincode build [--app <name>]
     --ref=<branch or tag>      Build this branch or tag instead of the @<ref> of workflow: in wincode.yaml. A commit SHA is refused: GitHub starts a workflow on a branch or a tag.
     --build-name=<x.y.z>       The version (CFBundleShortVersionString), for this build only. Without it: build_name in wincode.yaml, else pubspec.yaml's version at the ref.
     --build-number=<n|auto>    The build number, or auto: one above the highest that App Store Connect and the last day's runs of the app know. Without it: auto for a file of apps, and pubspec.yaml's number at the ref for a flat file.
-    --allow-public             Build in a public repository, whose artifacts anyone with a GitHub account can download until they expire.
+    --allow-public             Build in a public repository, whose artifacts anyone with a GitHub account can download until they expire. winCode deletes the artifact as soon as it has downloaded and checked it.
+    --timeout=<minutes>        How long to wait for the run, from the dispatch: a number of minutes, such as 60, or of seconds with an s. When it passes, the exit code is 75 and the run goes on: this ends the wait, never the run.
+                               (defaults to "60")
+-y, --yes                      Start the run without asking. Needed in CI, with --json or --events, and without a terminal.
+    --run=<id>                 Start nothing: wait for this run, which an earlier wincode build started, then download and check its IPA. Cannot be combined with --ref, --build-name or --build-number: the run has them.
 
 Run "wincode help" to see global options.
 

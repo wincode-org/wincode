@@ -2,7 +2,7 @@
 
 The `wincode` command. Its design is [ADR-0013](../../docs/adr/0013-wincode-cli-build-sign-upload.md).
 
-Status: `doctor`, `preflight`, `init` and `sign` work, and `upload` is tested against a fake App Store Connect and exercised against App Store Connect from `wincode` (build 15, VALID). `preflight` and `doctor` read an app's App Store Connect key through its `credentials` reference (ADR-0014; layout below), and `sign` its distribution key. `sign` signs with an unencrypted PEM key only (ADR-0013, phase 3a); encrypted keys come in phase 3b. On Windows `sign` runs zsign in WSL2; on Linux it runs zsign directly, with no WSL2 (built, exercised on Linux CI with a throwaway certificate and on Linux (WSL2) with a real key; not yet run on a real server). `upload` needs no WSL2 and runs on Linux too. `build` makes every check that comes before a dispatch and prints its plan (part 5a of [ADR-0015](../../docs/adr/0015-wincode-build.md)); it does not start the run yet, and ends with `not-implemented` (64). `status` is registered; it prints `not implemented yet, see ADR-0013` and exits with 64 until its phase. `wincode.yaml` may describe several apps ([ADR-0014](../../docs/adr/0014-one-project-many-apps.md)): `--app <name>` chooses the app of `preflight`, `doctor` and `init`, `--all` runs `preflight` and `doctor` for every app, and `init --app` adds an app to a file of apps, or moves a flat file under `apps:` (below).
+Status: `doctor`, `preflight`, `init` and `sign` work, and `upload` is tested against a fake App Store Connect and exercised against App Store Connect from `wincode` (build 15, VALID). `preflight` and `doctor` read an app's App Store Connect key through its `credentials` reference (ADR-0014; layout below), and `sign` its distribution key. `sign` signs with an unencrypted PEM key only (ADR-0013, phase 3a); encrypted keys come in phase 3b. On Windows `sign` runs zsign in WSL2; on Linux it runs zsign directly, with no WSL2 (built, exercised on Linux CI with a throwaway certificate and on Linux (WSL2) with a real key; not yet run on a real server). `upload` needs no WSL2 and runs on Linux too. `build` makes every check that comes before a dispatch, prints its plan, asks, starts the workflow on a GitHub runner, follows the run, and downloads and checks its unsigned IPA ([ADR-0015](../../docs/adr/0015-wincode-build.md), parts 5a and 5b; tested against a fake GitHub, and run end to end on the Linux workflow of a test repository, not yet on a macOS runner). `status` is registered; it prints `not implemented yet, see ADR-0013` and exits with 64 until its phase. `wincode.yaml` may describe several apps ([ADR-0014](../../docs/adr/0014-one-project-many-apps.md)): `--app <name>` chooses the app of `preflight`, `doctor` and `init`, `--all` runs `preflight` and `doctor` for every app, and `init --app` adds an app to a file of apps, or moves a flat file under `apps:` (below).
 
 ```
 dart run wincode_cli:wincode <command> [arguments]
@@ -15,7 +15,7 @@ dart run wincode_cli:wincode <command> [arguments]
 | `sign [<unsigned .ipa>]` | Sign the IPA for the App Store with zsign (in WSL2 on Windows, directly on Linux), and check every signature | works (3a); Linux exercised on Linux (WSL2) with a real key |
 | `upload [<signed .ipa>]` | Upload the signed IPA to App Store Connect and wait for its processing | built (4), not yet run against Apple |
 | `status` | Show the state of the app's latest uploads in App Store Connect. Read-only | 4 |
-| `build` | Build the unsigned IPA on the app's macOS runner (GitHub Actions) and download it | checks and plan (5a); the dispatch is 5b |
+| `build` | Build the unsigned IPA on the app's macOS runner (GitHub Actions) and download it | built (5), run end to end on a Linux runner; not yet on macOS |
 | `doctor` | Check the setup (with `--sign`, what `sign` needs; with `--build`, what `build` checks), or a Mach-O binary against the SDK or a reference build | works |
 
 ## Global options
@@ -56,11 +56,11 @@ They go before or after the command.
 | --- | --- |
 | 0 | Done |
 | 1 | Failed: a check found a problem, an input is wrong, or Apple or GitHub refused the work |
-| 64 | Usage error (`--events` with `--json`, a commit as `--ref`), a public repository without `--allow-public`, or not implemented yet |
+| 64 | Usage error (`--events` with `--json`, a commit as `--ref`), `build` without `--yes` where it cannot ask, a public repository without `--allow-public`, or not implemented yet |
 | 65 | `upload`: Apple took the IPA and then failed its processing |
 | 69 | A tool, the SDK or the network is missing; GitHub is down, or limits the token for longer than `build` waits |
 | 70 | A bug in winCode |
-| 75 | `upload`: Apple had not finished its processing within `--timeout` |
+| 75 | `upload`: Apple had not finished its processing within `--timeout`. `build`: the run was still going when winCode stopped waiting, at `--timeout` or after Ctrl-C |
 | 77 | Apple or GitHub refused the credentials |
 | 78 | `wincode.yaml` or an environment variable is wrong |
 
@@ -335,10 +335,27 @@ The requests are the spike's, in its order: `GET /v1/apps`, `POST /v1/buildUploa
 
 ```
 dart run wincode_cli:wincode build [--app <name>] [--ref <branch or tag>] [--build-name <x.y.z>] [--build-number <n>|auto]
-                                   [--allow-public] [--events]
+                                   [--timeout <minutes>] [--yes] [--allow-public] [--events] [--run <id>]
 ```
 
-Part 5a of ADR-0015: everything before the dispatch. `build` reads the project at the commit of the ref through GitHub's REST API (version 2026-03-10), makes the checks below with GET requests only, prints its plan, and ends with `not-implemented` (64): "dispatch not implemented yet (part 5b)". Nothing is started, and no macOS minute is used. `--timeout`, `--yes` and `--run` come with the dispatch.
+`build` reads the project at the commit of the ref through GitHub's REST API (version 2026-03-10), makes the checks below, prints its plan, and asks `Start this build on GitHub? It uses macOS minutes. [y/N]`. Then it starts the workflow once, reads the run every 30 seconds until it ends, downloads the artifact, checks it, and puts the unsigned IPA in the app's output folder as `unsigned.ipa`, which `sign` reads by default. Each step of the chain keeps its own exit code and question:
+
+```sh
+wincode build --app alpha --yes && wincode sign --app alpha && wincode upload --app alpha
+```
+
+| Option | What it does |
+| --- | --- |
+| `--yes` | Start without the question. Needed in CI, with `--json` or `--events`, and without a terminal: otherwise `confirmation-required` (64), before any request |
+| `--timeout <minutes>` | How long to wait for the run, from the dispatch: 60 by default, or seconds with an `s`. It ends the wait, never the run: exit 75 `run-timeout` |
+| `--run <id>` | Start nothing: wait for run `<id>`, which an earlier `build` started, then download and check its IPA. It needs only the workflow, the token and the repository, and checks the IPA against the version and build number in the run's name. Cannot be combined with `--ref`, `--build-name`, `--build-number` or `--dry-run` |
+| `--allow-public` | Build in a public repository. winCode deletes the artifact once the IPA is in place |
+
+**The run is never started twice, and never cancelled unasked.** If the answer to the dispatch is lost, the run may exist: `build` says so (`offline`, 69), names the run to look for, and does not send the dispatch again. Ctrl-C at a terminal asks `Cancel the run on GitHub too?` (default no; Enter, anything but `y` and a second Ctrl-C are a no) and exits 75 (`wait-stopped`) with the command that collects the run; with `--json` or `--events`, or on SIGTERM, it asks nothing. A run that builds another commit than the one the checks read stops the build with `ref-moved` (1), reports the run, downloads nothing and cancels nothing.
+
+**The artifact** is downloaded through the redirect without the token, and checked in this order: the zip's SHA-256 against the `digest` that GitHub reports (`artifact-integrity`), the zip's files (`artifact-content`), the IPA's SHA-256 against the hash that the build job recorded (`artifact-integrity`), and the IPA itself: one app, the bundle ID of the app, no `embedded.mobileprovision` (`ipa-signed`), and the version and build number that were asked for (`ipa-version-mismatch`). `unsigned.ipa` is replaced only when every check passed.
+
+`--events` writes `dispatched`, `run`, `job`, `step`, `wait` (every 60 seconds, with the minutes the jobs have used so far), `artifact` and `ipa` events as they happen, and ends with the object that `--json` prints. The text for people (one line each time the run, a job or a step changes) goes to stderr. The result has `runId`, `runUrl`, `conclusion`, `ipa` and `minutes`.
 
 The token is looked for in `WINCODE_GH_TOKEN_<APP>` (the app's name in capitals, `-` written as `_`; none for a flat file), `GH_TOKEN`, `GITHUB_TOKEN`, then `gh auth token`. It goes to `api.github.com` only, is registered with the redactor as a secret, and is never printed. A fine-grained token with Actions (read and write), Contents (read) and Metadata (read) on the repository is the least it needs.
 
@@ -364,7 +381,7 @@ The checks, in order, each with the id of its failure (ADR-0015, sections 2, 3 a
 
 The build number is `--build-number <n>`, or `auto`, or by default `auto` in a file of apps and `pubspec.yaml`'s `+N` in a flat file. `auto` is one above the highest build number that App Store Connect has for the app (its builds and its build uploads, read with the app's credentials) and that the app's successful runs of the last 24 hours carry; the run's name, `wincode <app tag>-<version>-<number>-<random>`, holds the number, and the app tag is a hash of the bundle ID.
 
-`--dry-run` sends no request and starts no program: it prints the plan from `wincode.yaml` and the options, with a placeholder for what only GitHub or App Store Connect can say, and the dispatch request as it would go out. `wincode doctor --build` makes the same checks and prints no plan.
+`--dry-run` sends no request and starts no program: it prints the plan from `wincode.yaml` and the options, with a placeholder for what only GitHub or App Store Connect can say, and the dispatch request as it would go out. `wincode doctor --build` makes the same checks and prints no plan, and starts nothing.
 
 ## doctor
 

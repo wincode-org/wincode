@@ -9,6 +9,7 @@ import 'package:wincode_core/wincode_core.dart';
 
 import 'src/build.dart';
 import 'src/build_number.dart' show isDottedNumber;
+import 'src/build_run.dart';
 import 'src/config.dart';
 import 'src/credentials.dart';
 import 'src/events.dart';
@@ -100,8 +101,10 @@ const _planned = [
 /// api.github.com; only tests connect to a fake server), [workingDirectory] (default: the current
 /// folder), [readLine] and [terminal] (default: standard input), [run] (default: starts the program), [zsign]
 /// (default: the runner for [platform], which runs zsign through `wsl.exe` on Windows and directly on Linux),
-/// [platform] (default: `Platform.operatingSystem`) and [pollInterval] (default: 30 s, how often `upload` asks Apple
-/// for the state of the processing) are there for tests.
+/// [platform] (default: `Platform.operatingSystem`), [pollInterval] (default: 30 s, how often `upload` asks Apple for
+/// the state of the processing and `build` asks GitHub for the state of the run), [sleep] (default: waits), [interrupts]
+/// (default: Ctrl-C, and SIGTERM where there is one) and [answer] (default: the next line of standard input, which a
+/// signal can also answer; the question of `build`) are there for tests.
 Future<int> runWincode(
   List<String> args,
   StringSink out,
@@ -117,6 +120,9 @@ Future<int> runWincode(
   ZsignRunner? zsign,
   String? platform,
   Duration pollInterval = const Duration(seconds: 30),
+  Future<void> Function(Duration)? sleep,
+  Stream<ProcessSignal> Function()? interrupts,
+  Future<String?> Function()? answer,
 }) async {
   environment ??= Platform.environment;
   zsign ??= zsignRunnerFor(
@@ -157,6 +163,11 @@ Future<int> runWincode(
       connect,
       connectGithub,
       run,
+      answer,
+      terminal ?? stdin.hasTerminal,
+      pollInterval,
+      sleep ?? Future<void>.delayed,
+      interrupts ?? systemInterrupts,
     ),
     _Preflight(
       out,
@@ -345,7 +356,7 @@ Exit codes:
   65  upload: Apple took the IPA and then failed its processing
   69  a tool, the SDK or the network is missing
   70  a bug in winCode
-  75  upload: Apple had not finished processing within --timeout
+  75  upload or build: Apple had not finished processing, or the run was still going, when winCode stopped waiting (--timeout)
   77  Apple or GitHub refused the credentials
   78  wincode.yaml or an environment variable is wrong''';
 
@@ -374,6 +385,18 @@ abstract class _Command extends Command<int> {
 
   /// Whether `--events` was given. Only a command that called [addEventsFlag] may ask.
   bool get eventsOutput => argResults!.flag('events');
+
+  /// `--timeout`: minutes, or seconds with an `s`.
+  Duration timeoutOf(String text) {
+    final match = RegExp(r'^(\d+)(s?)$').firstMatch(text.trim());
+    final n = int.tryParse(match?[1] ?? '');
+    if (match == null || n == null || n == 0) {
+      usageException(
+        '--timeout is a number of minutes, such as 20, or of seconds with an s, such as 90s: got $text',
+      );
+    }
+    return match[2] == 's' ? Duration(seconds: n) : Duration(minutes: n);
+  }
 
   /// Refuses `--events` together with `--json`: stdout would then have two shapes.
   void checkEventsOption() {
@@ -1200,7 +1223,7 @@ class _Upload extends _Command {
     if (rest.isNotEmpty && argResults!.wasParsed('ipa')) {
       usageException('Name the IPA once: either --ipa <file> or <file>.');
     }
-    final timeout = _timeout(argResults!.option('timeout')!);
+    final timeout = timeoutOf(argResults!.option('timeout')!);
     final path = globalResults!.option('config')!;
     final settings = loadSettings(path, redactor: redactor);
     final app = selectApps(
@@ -1263,18 +1286,6 @@ class _Upload extends _Command {
     events?.result(object);
     return exitCodeOf(result.findings).code;
   }
-
-  /// `--timeout`: minutes, or seconds with an `s`.
-  Duration _timeout(String text) {
-    final match = RegExp(r'^(\d+)(s?)$').firstMatch(text.trim());
-    final n = int.tryParse(match?[1] ?? '');
-    if (match == null || n == null || n == 0) {
-      usageException(
-        '--timeout is a number of minutes, such as 20, or of seconds with an s, such as 90s: got $text',
-      );
-    }
-    return match[2] == 's' ? Duration(seconds: n) : Duration(minutes: n);
-  }
 }
 
 class _Build extends _Command {
@@ -1287,6 +1298,11 @@ class _Build extends _Command {
     this.connect,
     this.connectGithub,
     this.runProcess,
+    this.answer,
+    this.terminal,
+    this.pollInterval,
+    this.sleep,
+    this.interrupts,
   ) {
     addEventsFlag();
     argParser
@@ -1314,7 +1330,30 @@ class _Build extends _Command {
       ..addFlag(
         'allow-public',
         negatable: false,
-        help: 'Build in a public repository, whose artifacts anyone with a GitHub account can download until they expire.',
+        help:
+            'Build in a public repository, whose artifacts anyone with a GitHub account can download until they expire. '
+            'winCode deletes the artifact as soon as it has downloaded and checked it.',
+      )
+      ..addOption(
+        'timeout',
+        valueHelp: 'minutes',
+        defaultsTo: '${defaultBuildTimeout.inMinutes}',
+        help:
+            'How long to wait for the run, from the dispatch: a number of minutes, such as 60, or of seconds with an s. '
+            'When it passes, the exit code is 75 and the run goes on: this ends the wait, never the run.',
+      )
+      ..addFlag(
+        'yes',
+        abbr: 'y',
+        negatable: false,
+        help: 'Start the run without asking. Needed in CI, with --json or --events, and without a terminal.',
+      )
+      ..addOption(
+        'run',
+        valueHelp: 'id',
+        help:
+            'Start nothing: wait for this run, which an earlier wincode build started, then download and check its '
+            'IPA. Cannot be combined with --ref, --build-name or --build-number: the run has them.',
       );
   }
 
@@ -1325,21 +1364,34 @@ class _Build extends _Command {
   final AscConnect connect;
   final GithubConnect connectGithub;
   final RunProcess runProcess;
+  final Future<String?> Function()? answer;
+  final bool terminal;
+  final Duration pollInterval;
+  final Future<void> Function(Duration) sleep;
+  final Stream<ProcessSignal> Function() interrupts;
 
   @override
   final name = 'build';
 
   @override
   final description =
-      "Build the app's unsigned IPA on a GitHub macOS runner (ADR-0015). Part 5a: the checks and the plan; the run is not "
-      'started yet.\n\n'
+      "Build the app's unsigned IPA on a GitHub macOS runner (ADR-0015).\n\n"
       'Before a run is paid for, winCode reads the project at the commit of the ref through GitHub\'s API and checks '
       'it: the token and the repository, the workflow and its contract and inputs, the Flutter release against '
       'pubspec.yaml and flutter/flutter\'s tags, the Xcode against min_xcode_version, the scheme, the configuration '
       'and the bundle ID that Flutter would build, the entry point, the version, and the build number (auto asks App '
-      'Store Connect and the last 24 hours of runs). It sends GET requests only.\n\n'
+      'Store Connect and the last 24 hours of runs). It prints its plan and asks before it starts the run: --yes '
+      'skips that, and without a terminal, in CI or with --json or --events, --yes is required.\n\n'
+      'It then starts the workflow, once, and reads the run every 30 s until it ends, or --timeout has passed. The run '
+      'is never cancelled unasked: Ctrl-C at a terminal asks whether to cancel it, and answers no by default. When it '
+      'succeeded, winCode downloads the artifact, checks the hash that the workflow recorded and GitHub\'s digest, and '
+      'that the IPA is the app, version and build number that were asked for and is not signed, and puts it in the '
+      'output folder as unsigned.ipa. With --allow-public, in a public repository, it then deletes the artifact.\n\n'
       '--dry-run sends no request at all: it prints the plan from wincode.yaml and the options, and the dispatch '
-      'request as it would go out. wincode doctor --build makes the same checks and prints no plan.';
+      'request as it would go out. wincode doctor --build makes the checks without starting anything.\n\n'
+      'Exit codes: 0 the IPA is in the output folder, 1 a check or the run failed, 64 usage, 69 GitHub cannot be '
+      'reached, 75 the run was still going when winCode stopped waiting (collect it with --run), 77 GitHub refused '
+      'the token, 78 the setup is wrong.';
 
   @override
   String get invocation => 'wincode build [--app <name>]';
@@ -1354,6 +1406,24 @@ class _Build extends _Command {
     }
     checkEventsOption();
     final options = _options();
+    final collecting = _runId();
+    final dry = globalResults!.flag('dry-run');
+    if (collecting != null) {
+      for (final option in ['ref', 'build-name', 'build-number']) {
+        if (argResults!.wasParsed(option)) {
+          usageException(
+            '--run and --$option cannot be given together: the run was started with its ref, version and build number, '
+            'and carries them in its name.',
+          );
+        }
+      }
+      if (dry) {
+        usageException(
+          '--run and --dry-run cannot be given together: --run starts nothing, and there is no plan to print.',
+        );
+      }
+    }
+    final timeout = timeoutOf(argResults!.option('timeout')!);
     final path = globalResults!.option('config')!;
     final settings = loadSettings(path, redactor: redactor);
     final app = selectApps(
@@ -1364,6 +1434,23 @@ class _Build extends _Command {
       readOnly: false,
       redactor: redactor,
     ).single;
+    // The question is asked at a terminal only, and never in CI or where stdout is for a program.
+    final yes = argResults!.flag('yes');
+    final canAsk =
+        !jsonOutput && !eventsOutput && !runsInCi(environment) && terminal;
+    if (!dry && collecting == null && !yes && !canAsk) {
+      throw const WincodeException(
+        ExitCode.usage,
+        'confirmation-required',
+        'build needs your confirmation, and cannot ask here',
+        why:
+            'a build uses macOS minutes, which a private repository pays for. build asks before it starts one, but only '
+            'at a terminal, and not in CI, with --json or with --events.',
+        next:
+            'run wincode build --dry-run to read the plan, wincode doctor --build to make the checks, then run it in a '
+            'terminal, or give --yes. Nothing was started.',
+      );
+    }
     final events = eventsOutput ? EventWriter(out, clock, app: app.name) : null;
     // With --json or --events, stdout carries the JSON only.
     final report = jsonOutput || events != null ? err : out;
@@ -1379,9 +1466,10 @@ class _Build extends _Command {
       log: globalResults!.flag('verbose') ? err.writeln : null,
       events: events,
     );
-    final dry = globalResults!.flag('dry-run');
     final List<Finding> findings;
     final BuildPlan plan;
+    GithubClient? client;
+    int? workflowId;
     var request = const <String>[];
     if (dry) {
       final result = checker.dryRun();
@@ -1389,13 +1477,18 @@ class _Build extends _Command {
       plan = result.report.plan;
       request = result.request;
     } else {
-      final result = await checker.check();
+      final result = collecting == null
+          ? await checker.check()
+          : await checker.collect();
       findings = result.findings;
       plan = result.plan;
+      client = result.client;
+      workflowId = result.workflowId;
     }
     final failed = findings.any((f) => f.status == 'FAIL');
     if (!failed) {
-      events?.emit('plan', plan.toEvent());
+      // The plan of a run that is collected is the run's own: it holds the little that its name says.
+      if (collecting == null) events?.emit('plan', plan.toEvent());
       if (dry) {
         findings.add(
           const Finding.info(
@@ -1406,39 +1499,56 @@ class _Build extends _Command {
       }
     }
     writeFindings(findings, report);
-    if (!failed) {
+    final written = findings.length;
+    if (!failed && collecting == null) {
       report
         ..writeln()
         ..writeAll(plan.lines(), '\n')
         ..writeln();
       request.forEach(report.writeln);
     }
-    // Without --dry-run, a build that passed every check stops where the dispatch will be (ADR-0015, part 5b).
-    final stopped = !failed && !dry;
-    if (stopped) {
-      err.writeln(_dispatchNotYet.describe('wincode $name'));
-    } else {
-      writeSummary(findings, report, command: name);
+    BuildRun? build;
+    if (!failed && !dry) {
+      build = BuildRun(
+        config: app,
+        plan: plan,
+        client: client!,
+        findings: findings,
+        redactor: redactor,
+        clock: clock,
+        sleep: sleep,
+        report: report,
+        progress: err,
+        signals: interrupts(),
+        readAnswer: answer ?? stdinLines(),
+        canAsk: canAsk,
+        timeout: timeout,
+        pollInterval: pollInterval,
+        cleanup: plan.private == false && options.allowPublic,
+        events: events,
+      );
+      if (collecting == null) {
+        await build.start(yes: yes);
+      } else {
+        await build.collect(collecting, workflowId: workflowId!);
+      }
+      writeFindings(findings.sublist(written), report);
     }
+    writeSummary(findings, report, command: name);
     final result = {
       ...jsonOf(findings, command: name, app: app.name),
-      if (stopped) ...{
-        'ok': false,
-        'exitCode': _dispatchNotYet.exitCode.code,
-        'error': _dispatchNotYet.toJson(),
-      },
       'repository': plan.repository,
       'workflow': plan.workflow,
       'ref': plan.ref,
       'commit': plan.commit,
       'requestId': plan.requestId,
-      'runId': null,
-      'runUrl': null,
-      'conclusion': null,
+      'runId': build?.runId,
+      'runUrl': build?.runUrl,
+      'conclusion': build?.conclusion,
       'buildName': plan.buildName,
       'buildNumber': plan.buildNumber,
-      'ipa': null,
-      'minutes': null,
+      'ipa': build?.ipa,
+      'minutes': build?.minutes,
       'plan': plan.toJson(),
       if (dry) ...{'dryRun': true, 'request': request},
     };
@@ -1446,19 +1556,21 @@ class _Build extends _Command {
       out.writeln(jsonEncode(result));
     }
     events?.result(result);
-    return stopped ? _dispatchNotYet.exitCode.code : exitCodeOf(findings).code;
+    return exitCodeOf(findings).code;
   }
 
-  /// Where a build that passed every check stops in this part of ADR-0015: the dispatch is part 5b.
-  static const _dispatchNotYet = WincodeException(
-    ExitCode.usage,
-    'not-implemented',
-    'dispatch not implemented yet (part 5b)',
-    why: 'this version of winCode makes the checks of a build and prints its plan, and does not start the run.',
-    next:
-        'run wincode build --dry-run for the plan without any request, or wincode doctor --build for the checks alone. '
-        'Nothing was started.',
-  );
+  /// `--run`: the number of the run to collect, or null.
+  int? _runId() {
+    final text = argResults!.option('run');
+    if (text == null) return null;
+    final id = int.tryParse(text);
+    if (id == null || id <= 0 || !RegExp(r'^\d+$').hasMatch(text)) {
+      usageException(
+        '--run is the number of a run, as it ends the address of the run: .../actions/runs/<id>.',
+      );
+    }
+    return id;
+  }
 
   /// The options of the command line, checked.
   BuildOptions _options() {
