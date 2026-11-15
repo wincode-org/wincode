@@ -6,6 +6,7 @@ import 'package:wincode_core/wincode_core.dart';
 
 import 'config.dart';
 import 'credentials.dart';
+import 'events.dart';
 import 'failure.dart';
 import 'init.dart' show ReadLine;
 import 'preflight.dart';
@@ -68,6 +69,7 @@ class Uploader {
     this.timeout = defaultUploadTimeout,
     this.pollInterval = const Duration(seconds: 30),
     this.log,
+    this.events,
   });
 
   final WincodeConfig config;
@@ -89,6 +91,21 @@ class Uploader {
 
   /// Gets each HTTP request with `--verbose`.
   final void Function(String line)? log;
+
+  /// With `--events`, gets the events of the run (ADR-0015, section 9): a `check` for each finding as it is made, the
+  /// `plan`, the stages of the `upload`, and Apple's `processing` states.
+  final EventWriter? events;
+
+  /// A new list for the findings of a run: with [events], each finding added to it is reported as it comes.
+  List<Finding> _findings() =>
+      events == null ? <Finding>[] : EventFindings(events!);
+
+  void _planEvent(UploadPlan plan) => events?.emit('plan', {
+    'file': plan.fileName,
+    'size': plan.size,
+    'version': plan.version,
+    'build': plan.build,
+  });
 
   /// How many reads of the state in a row may fail before the wait gives up. Each read has its own retries.
   static const _pollFailures = 3;
@@ -150,7 +167,7 @@ class Uploader {
 
   Future<UploadResult> _dryRun(File ipa) async {
     final dry = await _preflight(ipa).dryRun();
-    final findings = <Finding>[...dry.failures];
+    final findings = _findings()..addAll(dry.failures);
     if (!_failed(findings)) {
       // Another Preflight: the first one has an empty answer of App Store Connect to compare the profiles with.
       final local = _preflight(ipa);
@@ -178,6 +195,7 @@ class Uploader {
       findings.add(Finding.fail('ipa', e.problem));
       return _stopped(findings);
     }
+    _planEvent(plan);
     writeFindings(findings, report);
     _printPlan(plan, dry: true);
     final requests = _requests(plan, authorization: dry.authorization);
@@ -230,7 +248,7 @@ class Uploader {
   // The upload.
 
   Future<UploadResult> _upload(File ipa, {required bool yes}) async {
-    final findings = <Finding>[];
+    final findings = _findings();
     findings.addAll(await _preflight(ipa).check());
     if (_failed(findings)) {
       return _stopped(findings);
@@ -253,6 +271,7 @@ class Uploader {
       findings.add(Finding.fail('ipa', e.problem));
       return _stopped(findings);
     }
+    _planEvent(plan);
     writeFindings(findings, report);
     _printPlan(plan, dry: false);
     if (!yes) {
@@ -337,6 +356,7 @@ class Uploader {
             'uploading again.',
       );
       created = true;
+      events?.emit('upload', {'stage': 'created'});
       final uploadId = '${upload['id']}';
       redactor.hide(uploadId, '<build upload ID>');
       json['buildUploadId'] = uploadId;
@@ -399,6 +419,7 @@ class Uploader {
 
       // 4. The parts.
       final reader = await ipa.open();
+      var sentBytes = 0;
       try {
         for (final part in parts) {
           await reader.setPosition(part.offset);
@@ -414,6 +435,12 @@ class Uploader {
             );
           }
           await client.sendPart(part, bytes);
+          sentBytes += bytes.length;
+          events?.emit('upload', {
+            'stage': 'parts',
+            'sentBytes': sentBytes,
+            'totalBytes': plan.size,
+          });
           _say('part ${part.number} sent: ${bytes.length} bytes');
         }
       } finally {
@@ -434,6 +461,7 @@ class Uploader {
         {'assetDeliveryState': final Object? state} => state,
         _ => null,
       };
+      events?.emit('upload', {'stage': 'committed'});
       _say('commit accepted; file: ${_pyJson(delivery, ascii: false)}');
 
       // 6. Apple's processing result.
@@ -518,13 +546,16 @@ class Uploader {
       final state = statusMap['state'];
       final fileState = delivery['state'];
       final build = included['builds']?['processingState'];
+      var changed = false;
       if (seen != (state, fileState, build)) {
+        changed = true;
         seen = (state, fileState, build);
         json['state'] = {'upload': state, 'file': fileState, 'build': build};
         _say(
           'upload $state, file $fileState, build ${build ?? 'not created yet'}',
         );
       }
+      final news = <Map<String, Object?>>[];
       for (final (source, details) in [
         ('upload', statusMap),
         ('file', delivery),
@@ -535,9 +566,22 @@ class Uploader {
                 '$source ${kind.substring(0, kind.length - 1)}: ${_pyJson(detail, ascii: false)}';
             if (said.add(line)) {
               _say(line);
+              news.add({
+                'source': source,
+                'kind': kind.substring(0, kind.length - 1),
+                'message': detail,
+              });
             }
           }
         }
+      }
+      if (changed || news.isNotEmpty) {
+        events?.emit('processing', {
+          'upload': state,
+          'file': fileState,
+          'build': build,
+          'messages': news,
+        });
       }
       if (state == 'FAILED' ||
           fileState == 'FAILED' ||

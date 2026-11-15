@@ -8,6 +8,7 @@ import 'package:wincode_core/wincode_core.dart';
 
 import 'config.dart';
 import 'credentials.dart';
+import 'events.dart';
 import 'failure.dart';
 import 'key_location.dart';
 import 'key_permissions.dart';
@@ -107,6 +108,7 @@ class Signer {
     required this.run,
     this.zsignRunner,
     this.log,
+    this.events,
   });
 
   final WincodeConfig config;
@@ -125,6 +127,13 @@ class Signer {
 
   /// Gets each step with `--verbose`.
   final void Function(String line)? log;
+
+  /// With `--events`, gets a `check` event for each finding as it is made, and the `signing` events (ADR-0015, section 9).
+  final EventWriter? events;
+
+  /// A new list for the findings of a run: with [events], each finding added to it is reported as it comes.
+  List<Finding> _findings() =>
+      events == null ? <Finding>[] : EventFindings(events!);
 
   String get _bundleId => config.bundleId;
   String get _teamId => config.teamId;
@@ -155,7 +164,7 @@ class Signer {
     required bool offline,
     required bool dryRun,
   }) async {
-    final findings = <Finding>[];
+    final findings = _findings();
     bool failed() => findings.any((f) => f.status == 'FAIL');
     final now = clock().toUtc();
     redactor.hide(input.path, '<unsigned IPA>');
@@ -219,7 +228,7 @@ class Signer {
     bool withPreflight = true,
   }) async {
     redactor.hide(ipa.path, '<signed IPA>');
-    final findings = <Finding>[];
+    final findings = _findings();
     if (!ipa.existsSync()) {
       return findings..add(
         Finding.fail(
@@ -989,7 +998,9 @@ class Signer {
         paths['input']!,
       ], cd: paths['temp']!);
       log?.call('${command.executable} ${command.arguments.join(' ')}');
+      events?.emit('signing', {'status': 'started'});
       final outcome = await runner.run(command, work: temp);
+      events?.emit('signing', {'status': 'ended', 'end': outcome.end.name});
       if (log case final log?) {
         outcome.said.forEach(log);
       }

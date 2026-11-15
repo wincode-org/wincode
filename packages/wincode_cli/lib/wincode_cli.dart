@@ -9,6 +9,7 @@ import 'package:wincode_core/wincode_core.dart';
 
 import 'src/config.dart';
 import 'src/credentials.dart';
+import 'src/events.dart';
 import 'src/failure.dart';
 import 'src/init.dart';
 import 'src/preflight.dart';
@@ -118,6 +119,7 @@ Future<int> runWincode(
   // A usage error comes before the arguments are parsed, so the flags can only be looked up in the list itself.
   final flags = args.takeWhile((a) => a != '--');
   var json = flags.contains('--json');
+  var events = flags.contains('--events');
   var verbose = flags.contains('--verbose');
   final redactor = Redactor.forRun(
     flag: flags.contains('--redact'),
@@ -174,9 +176,10 @@ Future<int> runWincode(
 
   int report(WincodeException e) {
     err.writeln(e.describe(command.isEmpty ? 'wincode' : 'wincode $command'));
-    if (json) {
+    if (json || events) {
       out.writeln(
         jsonEncode({
+          if (!json) 'event': 'result',
           if (command.isNotEmpty) 'command': command,
           'ok': false,
           'exitCode': e.exitCode.code,
@@ -195,15 +198,19 @@ Future<int> runWincode(
     json = results.flag('json');
     verbose = results.flag('verbose');
     command = results.command?.name ?? '';
+    events =
+        results.command?.options.contains('events') == true &&
+        results.command!.flag('events');
     return await runner.runCommand(results) ?? ExitCode.ok.code;
   } on UsageException catch (e) {
     err
       ..writeln(e.message)
       ..writeln()
       ..writeln(e.usage);
-    if (json) {
+    if (json || events) {
       out.writeln(
         jsonEncode({
+          if (!json) 'event': 'result',
           'ok': false,
           'exitCode': ExitCode.usage.code,
           'error': {'id': 'usage', 'what': e.message},
@@ -323,6 +330,29 @@ abstract class _Command extends Command<int> {
 
   /// Whether `--json` was given. Not called `json`: inside a subclass, that name finds `dart:convert`'s codec first.
   bool get jsonOutput => globalResults!.flag('json');
+
+  /// Adds `--events` to the command (ADR-0015, section 9). `build`, `sign` and `upload` take it.
+  void addEventsFlag() => argParser.addFlag(
+    'events',
+    negatable: false,
+    help:
+        'Write progress as JSON lines on stdout, one event each as it happens, and the result as the last line: the '
+        'object that --json prints, with "event": "result". The messages for people go to stderr. A command that asks '
+        'needs --yes. Cannot be combined with --json.',
+  );
+
+  /// Whether `--events` was given. Only a command that called [addEventsFlag] may ask.
+  bool get eventsOutput => argResults!.flag('events');
+
+  /// Refuses `--events` together with `--json`: stdout would then have two shapes.
+  void checkEventsOption() {
+    if (eventsOutput && jsonOutput) {
+      usageException(
+        '--events and --json cannot be given together: --json prints one object when the command ends, and --events '
+        'prints one object per line as it runs, ending with that same object.',
+      );
+    }
+  }
 
   @override
   void printUsage() => out.writeln(usage);
@@ -909,6 +939,7 @@ class _Sign extends _Command {
     this.runProcess,
     this.zsign,
   ) {
+    addEventsFlag();
     argParser
       ..addFlag(
         'offline',
@@ -961,6 +992,7 @@ class _Sign extends _Command {
     if (globalResults!.flag('all')) {
       refuseAll(name, writesOf[name]!);
     }
+    checkEventsOption();
     final rest = argResults!.rest;
     if (rest.length > 1) {
       usageException('Give at most one IPA.');
@@ -975,6 +1007,7 @@ class _Sign extends _Command {
       readOnly: false,
       redactor: redactor,
     ).single;
+    final events = eventsOutput ? EventWriter(out, clock, app: app.name) : null;
     final signer = Signer(
       config: app,
       environment: environment,
@@ -984,6 +1017,7 @@ class _Sign extends _Command {
       run: runProcess,
       zsignRunner: zsign,
       log: globalResults!.flag('verbose') ? err.writeln : null,
+      events: events,
     );
     final verifyOnly = argResults!.flag('verify-only');
     final offline = argResults!.flag('offline');
@@ -999,16 +1033,20 @@ class _Sign extends _Command {
             offline: offline,
             dryRun: dryRun,
           );
-    // With --json, stdout carries the JSON object only.
-    writeReport(findings, jsonOutput ? err : out, command: name);
+    // With --json or --events, stdout carries the JSON only.
+    writeReport(
+      findings,
+      jsonOutput || events != null ? err : out,
+      command: name,
+    );
+    final result = {
+      ...jsonOf(findings, command: name, app: app.name),
+      if (verifyOnly) 'verifyOnly': true,
+    };
     if (jsonOutput) {
-      out.writeln(
-        jsonEncode({
-          ...jsonOf(findings, command: name, app: app.name),
-          if (verifyOnly) 'verifyOnly': true,
-        }),
-      );
+      out.writeln(jsonEncode(result));
     }
+    events?.result(result);
     return exitCodeOf(findings).code;
   }
 }
@@ -1026,6 +1064,7 @@ class _Upload extends _Command {
     this.terminal,
     this.pollInterval,
   ) {
+    addEventsFlag();
     argParser
       ..addOption(
         'ipa',
@@ -1087,6 +1126,7 @@ class _Upload extends _Command {
     if (globalResults!.flag('all')) {
       refuseAll(name, writesOf[name]!);
     }
+    checkEventsOption();
     final rest = argResults!.rest;
     if (rest.length > 1) {
       usageException('Give at most one IPA.');
@@ -1108,7 +1148,11 @@ class _Upload extends _Command {
     final dryRun = globalResults!.flag('dry-run');
     final yes = argResults!.flag('yes');
     final interactive =
-        !yes && !jsonOutput && !runsInCi(environment) && terminal;
+        !yes &&
+        !jsonOutput &&
+        !eventsOutput &&
+        !runsInCi(environment) &&
+        terminal;
     if (!dryRun && !yes && !interactive) {
       throw const WincodeException(
         ExitCode.usage,
@@ -1116,7 +1160,7 @@ class _Upload extends _Command {
         'upload needs your confirmation, and cannot ask here',
         why:
             'an upload cannot be taken back: the build number is used from the moment Apple has the file. upload asks '
-            'you to type the name of the app, but only at a terminal, and not in CI or with --json.',
+            'you to type the name of the app, but only at a terminal, and not in CI, with --json or with --events.',
         next:
             'run wincode upload --dry-run to read the plan, then run it in a terminal, or give --yes. Nothing was '
             'uploaded.',
@@ -1126,8 +1170,9 @@ class _Upload extends _Command {
         argResults!.option('ipa') ??
         rest.firstOrNull ??
         '${app.output.path}${Platform.pathSeparator}signed.ipa';
-    // With --json, stdout carries the JSON object only.
-    final report = jsonOutput ? err : out;
+    // With --json or --events, stdout carries the JSON only.
+    final report = jsonOutput || eventsOutput ? err : out;
+    final events = eventsOutput ? EventWriter(out, clock, app: app.name) : null;
     final result = await Uploader(
       config: app,
       environment: environment,
@@ -1140,15 +1185,16 @@ class _Upload extends _Command {
       timeout: timeout,
       pollInterval: pollInterval,
       log: globalResults!.flag('verbose') ? err.writeln : null,
+      events: events,
     ).upload(File(ipa), dryRun: dryRun, yes: yes);
+    final object = {
+      ...jsonOf(result.findings, command: name, app: app.name),
+      ...result.json,
+    };
     if (jsonOutput) {
-      out.writeln(
-        jsonEncode({
-          ...jsonOf(result.findings, command: name, app: app.name),
-          ...result.json,
-        }),
-      );
+      out.writeln(jsonEncode(object));
     }
+    events?.result(object);
     return exitCodeOf(result.findings).code;
   }
 

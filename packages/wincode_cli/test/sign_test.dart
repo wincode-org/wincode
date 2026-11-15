@@ -1101,6 +1101,95 @@ void main() {
     });
   });
 
+  group('--events (ADR-0015, section 9)', () {
+    List<Map<String, Object?>> lines(String out) => [
+      for (final l in const LineSplitter().convert(out))
+        jsonDecode(l) as Map<String, Object?>,
+    ];
+
+    test('signing writes its checks and the two signing events in order, and ends with the object of --json', () async {
+      final (code, out, err) = await wincode(['sign', '--offline', '--events']);
+      expect(code, 0, reason: '$out$err');
+      final events = lines(out);
+      final names = [
+        for (final e in events)
+          e['event'] == 'signing' ? 'signing:${e['status']}' : '${e['event']}',
+      ];
+      final started = names.indexOf('signing:started');
+      final ended = names.indexOf('signing:ended');
+      expect(started, greaterThan(0));
+      expect(ended, started + 1);
+      expect(names.take(started), everyElement('check'));
+      expect(names.sublist(ended + 1, names.length - 1), everyElement('check'));
+      expect(names.last, 'result');
+      expect(events[ended], containsPair('end', 'ok'));
+      expect(events[started].containsKey('end'), isFalse);
+      // The inputs were checked before zsign ran, and the signatures were read back after.
+      final ids = [
+        for (final e in events)
+          if (e['event'] == 'check') e['id'],
+      ];
+      expect(ids.indexOf('code-signature'), greaterThan(ended - 1));
+      expect(
+        events.first,
+        allOf(
+          containsPair('event', 'check'),
+          containsPair('time', '2026-11-11T12:00:00Z'),
+          containsPair('app', null),
+        ),
+      );
+      // Text for people went to stderr, and stdout holds JSON lines only.
+      expect(err, contains('PASS'));
+      expect(out, isNot(contains('PASS  ')));
+
+      final (_, json, _) = await wincode(['sign', '--offline', '--json']);
+      expect(Map.of(events.last)..remove('event'), jsonDecode(json));
+    });
+
+    test(
+      '--verify-only writes check events only, and the result says verifyOnly',
+      () async {
+        await wincode(['sign', '--offline']);
+        final (code, out, err) = await wincode([
+          'sign',
+          '--verify-only',
+          '--offline',
+          '--events',
+        ]);
+        expect(code, 0, reason: '$out$err');
+        final events = lines(out);
+        expect(events.map((e) => e['event']).toSet(), {'check', 'result'});
+        expect(events.last['verifyOnly'], isTrue);
+      },
+    );
+
+    test('a check that fails is a check event, no signing starts, and the result has the error', () async {
+      File(inside(output(), 'unsigned.ipa')).deleteSync();
+      final (code, out, _) = await wincode(['sign', '--offline', '--events']);
+      expect(code, 1);
+      final events = lines(out);
+      expect(events.map((e) => e['event']), isNot(contains('signing')));
+      expect(events.where((e) => e['status'] == 'FAIL'), isNotEmpty);
+      expect(events.last['event'], 'result');
+      expect(events.last['ok'], isFalse);
+      expect(events.last['exitCode'], 1);
+    });
+
+    test('--events and --json together are a usage error', () async {
+      final (code, out, err) = await wincode(['sign', '--events', '--json']);
+      expect(code, 64, reason: err);
+      expect(errorId(out), 'usage');
+      expect(err, contains('--events and --json cannot be given together'));
+      expect(started, isEmpty, reason: 'zsign was not started');
+    });
+
+    test('a command that does not take --events says so', () async {
+      final (code, _, err) = await wincode(['preflight', '--events']);
+      expect(code, 64);
+      expect(err, contains('--events'));
+    });
+  });
+
   group('wincode doctor --sign', () {
     Future<(int, String)> doctor() async {
       final (code, out, err) = await wincode(['doctor', '--sign']);
