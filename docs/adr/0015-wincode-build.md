@@ -1,8 +1,9 @@
 # 0015. wincode build: the unsigned IPA from a GitHub macOS runner
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-15
-- Amends: ADR-0013 (sections 1, 3, 6, 7, 8 and 11, phase 5 in section 10, and the alternative "The REST API instead of `gh`") and ADR-0014 (sections 1, 6 and 8). Design only: nothing here is implemented, and no workflow was run for it.
+- Amended: 2026-11-15, after review: the Flutter release and the oldest Xcode come from the project and are checked before the dispatch (section 2); `auto` is the default build number in a file of apps (section 3); the maintainer's answers to the open questions are decisions (section 14)
+- Amends: ADR-0013 (sections 1, 3, 6, 7, 8 and 11, phase 5 in section 10, and the alternative "The REST API instead of `gh`") and ADR-0014 (sections 1, 6 and 8). Design only: nothing here is implemented, and no macOS workflow was run for it.
 
 ## Context
 
@@ -23,6 +24,7 @@
   - a build number per app, since App Store Connect keeps one sequence per app record and `pubspec.yaml` has one number for all of them;
   - an entry point per flavor, such as `lib/main_<flavor>.dart`;
   - nothing passed through `--dart-define`: some projects refuse it and keep each flavor's values in the flavor's own files;
+  - the Flutter release that the project is made with, and an Xcode that App Store Connect accepts. Today both are values inside the workflow file, so one workflow cannot vary them per app, and nothing compares them with the project;
   - a check, before any minute is spent, that the flavor's scheme and configuration exist.
 
   The last need is not theoretical. flutter_tools 3.47 builds the configuration `Release-<Scheme>` for a flavor. When the project has no such configuration, it builds plain `Release` and reports no error (`XcodeProjectInfo.buildConfigurationFor`). The run then succeeds with another configuration's bundle ID, and only the IPA's check finds it, after the minutes are spent.
@@ -48,11 +50,11 @@ It also takes the global options of ADR-0013: `--config`, `--json`, `--redact`, 
 | `--app <name>` | The app (ADR-0014, section 3). `--all` is refused (`all-not-allowed`, 64): each run is paid for, and one run builds one app |
 | `--ref <branch or tag>` | Build this branch or tag instead of the `@<ref>` of `workflow:`. A 40-hex commit SHA is refused (64): GitHub dispatches a workflow on a branch or a tag, not on a commit |
 | `--build-name <x.y.z>` | The version, for this build only (section 2) |
-| `--build-number <n>` or `--build-number auto` | The build number (section 3). Without it, the build number comes from `pubspec.yaml` at the ref |
+| `--build-number <n>` or `--build-number auto` | The build number (section 3). Without it: `auto` in a file of apps, and `pubspec.yaml`'s number at the ref in a flat file |
 | `--timeout <minutes>` | How long to wait for the run, counted from the dispatch: 60 minutes by default, or a number of seconds ending in `s`, as `upload` takes it. It ends the wait, never the run (section 4) |
 | `--yes` | Start the run without the question of section 7. Needed with `--json` or `--events`, in CI, and without a terminal |
 | `--allow-public` | Build in a public repository (section 6) |
-| `--events` | Write progress as JSON lines on stdout (section 9) |
+| `--events` | Write progress as JSON lines on stdout (section 9). `sign` and `upload` take it too |
 | `--run <id>` | Start nothing: wait for run `<id>`, which an earlier `build` started, then download and check its IPA (section 4). `--ref`, `--build-name` and `--build-number` are refused with it (64), since the run already has them |
 
 **Chaining: there is no `build --then sign,upload` and no `ship` command.**
@@ -63,7 +65,7 @@ It also takes the global options of ADR-0013: `--config`, `--json`, `--redact`, 
 | B. `wincode ship` now | It is ADR-0008's name for the lane | The same problems, plus a design of its own: a plan of the three steps before anything starts, one confirmation up front, a record so that a second run resumes after the failed step instead of building again, events across the steps, and a mapping of exit codes. ADR-0013 (section 9) waits until each step works, and `build` does not exist yet |
 | **C. Neither: the caller chains the steps** (chosen) | Each step keeps its exit code, its object and its confirmation. A calling tool already runs one step at a time (ADR-0014, section 7) | Three commands to type, or one shell line |
 
-**C is chosen.** The steps hand over through the app's output folder: `build` writes `unsigned.ipa`, which `sign` reads by default, and `sign` writes `signed.ipa`, which `upload` reads.
+**C is chosen,** and there is no `ship` for now (section 14). The steps hand over through the app's output folder: `build` writes `unsigned.ipa`, which `sign` reads by default, and `sign` writes `signed.ipa`, which `upload` reads.
 
 ```sh
 wincode build --app alpha --yes && wincode sign --app alpha && wincode upload --app alpha
@@ -71,20 +73,23 @@ wincode build --app alpha --yes && wincode sign --app alpha && wincode upload --
 
 ### 2. What an app builds: inputs in `wincode.yaml`, checked at the ref
 
-**Two new keys** are allowed in a flat file, in an app's entry and in `defaults`:
+**Four new keys** are allowed in a flat file, in an app's entry and in `defaults`. A value in `defaults` serves the whole project, and an app's own value replaces it (ADR-0014, section 1):
 
 | Key | What it is, and what the loader checks |
 | --- | --- |
 | `build_name` | The version (`CFBundleShortVersionString`). `build` gives it to Flutter as `--build-name`, instead of the part of `pubspec.yaml`'s `version` before `+`, so that the App Store version can run ahead of the Android one. It is one to three whole numbers joined by dots, the shape that Apple takes and that `preflight` already reads (`^\d+(\.\d+){0,2}$`) |
 | `target` | The Dart entry point, which `build` gives to Flutter as `--target`. It is a path in the project under `lib/`, ending in `.dart`, of at most 64 characters: letters, digits, `.`, `_`, `-` and `/`, with no `..` part. The default is Flutter's own, `lib/main.dart` |
+| `flutter_version` | The Flutter release that builds the app, as `flutter/flutter` tags it: `3.47.7`, or a pre-release such as `3.48.0-0.1.pre`. The workflow clones exactly that tag. Three whole numbers joined by dots, optionally followed by `-` and letters, digits and dots, at most 32 characters |
+| `min_xcode_version` | The oldest Xcode that may build the app, such as `"26.0"`, since App Store Connect refuses builds made with an older one. The workflow stops when its Xcode is older. One to three whole numbers joined by dots. It must be quoted: YAML reads `26.0` as a number, which the loader refuses with a message that says to quote it |
 
+- **`flutter_version` and `min_xcode_version` are needed by `build` and `doctor --build` only,** so `init`, `sign`, `preflight` and `upload` work without them. When one is missing, the build stops with `flutter-version-missing` or `min-xcode-missing` (78). Both go to the workflow as inputs (section 8), so each app of one workflow builds with its own values.
 - **The version comes from,** in this order: `--build-name`; the app's `build_name`; `build_name` in `defaults`; `pubspec.yaml`'s `version` at the ref. If none of them gives one, the build stops with `build-name-missing` (78).
 - **`flavor`** stays as ADR-0014 defines it, but the workflow now takes it as an input (section 8) instead of a value under `env`.
 - **`configuration`** is now also read by `build`, for the check below. ADR-0014 said "Read by `init` only". It is not sent to the workflow: `flutter build ipa` has no option for the Xcode configuration, and derives it from the flavor.
 - **There is no key for the build number,** since it changes with every build (section 3).
 - **No `--dart-define`, and no free-form arguments.** Each input has a fixed meaning, and `flutter build ipa` takes it as an option of its own: `--flavor`, `--target`, `--build-name`, `--build-number`. A project that keeps each flavor's values in its own files needs nothing more.
 
-  A workflow that a user has changed can still take more values through `workflow_inputs` (ADR-0014), which the reference workflow does not read. `build_name` and `target` join the input names reserved there. `workflow_inputs` holds at most 20 entries, so that a dispatch stays within GitHub's limit of 25 inputs.
+  A workflow that a user has changed can still take more values through `workflow_inputs` (ADR-0014), which the reference workflow does not read. `build_name`, `target`, `flutter_version` and `min_xcode_version` join the input names reserved there. `build` sends seven inputs of its own, so `workflow_inputs` holds at most 18 entries, and a dispatch stays within GitHub's limit of 25 inputs.
 - **A DEV variant and a store variant of one app are two apps,** each with its own bundle ID. App Store Connect sees them the same way: each has its own app record and its own build numbers.
 
   ```yaml
@@ -92,6 +97,8 @@ wincode build --app alpha --yes && wincode sign --app alpha && wincode upload --
     team_id: TEAM000001
     credentials: team-one
     workflow: example-org/example-app/.github/workflows/wincode-ios.yml@main
+    flutter_version: 3.47.7
+    min_xcode_version: "26.0"
     build_name: 2.4.0
   apps:
     alpha:
@@ -105,14 +112,16 @@ wincode build --app alpha --yes && wincode sign --app alpha && wincode upload --
       build_name: 2.5.0
   ```
 
-  Variants that share one bundle ID cannot be two apps of one file, because ADR-0014 refuses a repeated bundle ID. An example is a DEV flavor shipped to testers under the store app's record. Open question 1 asks what to do about them.
+  Variants that share one bundle ID are not supported, as decided in review: ADR-0014's refusal of a repeated bundle ID stays. A DEV flavor that testers get through TestFlight has its own bundle ID, and so its own app record.
 
 **`build` checks the project at the ref's commit before the dispatch,** through GitHub's API. It checks that commit because that is what the runner builds. The local checkout may be on another branch, may hold changes that were never pushed, or may not exist at all on a server.
 
 | What | The rule | When it does not hold |
 | --- | --- | --- |
-| Version and number | `pubspec.yaml` at the commit gives them when nothing else does | `build-name-missing`, `build-number-missing` (78) |
+| Version and number | `pubspec.yaml` at the commit gives the version when nothing else does, and the build number in a flat file when no option does | `build-name-missing`, `build-number-missing` (78) |
 | Target | The file exists at the commit | `target-missing` (78) |
+| Flutter | When `pubspec.yaml` at the commit sets `environment: flutter:`, that constraint allows `flutter_version`, by pub's rules for version constraints | `flutter-version-mismatch` (78) |
+| Xcode | The workflow's `XCODE_APP` at the commit names its version, as GitHub's runner images name each Xcode (`/Applications/Xcode_<version>.app`). That version is not older than `min_xcode_version` | `xcode-too-old` (78). A WARN when `XCODE_APP` names no version, such as `/Applications/Xcode.app`: the job then checks it, as its first step |
 | Scheme | flutter_tools 3.47 builds the scheme named after the flavor with its first letter in capitals (`store` gives `Store`), or `Runner` when there is no flavor. If no scheme has exactly that name, it takes the one scheme that matches it ignoring case. The scheme must be a shared scheme of `ios/Runner.xcodeproj` (`xcshareddata/xcschemes/`). A scheme kept only in someone's `xcuserdata` is not in the repository, so the runner does not have it | `scheme-missing` (78) |
 | Configuration | flutter_tools 3.47 builds `Release-<Scheme>`, matched ignoring case. Failing that, it builds the one configuration whose name holds both `Release` and the scheme. If none does, it builds `Release`; if several do, it stops. The configuration it would build must be the app's `configuration`, ignoring case; the default is `Release-<flavor>` | `configuration-mismatch` (78). The message says so when Flutter would fall back to `Release` |
 | Bundle ID | The configuration's `PRODUCT_BUNDLE_IDENTIFIER` must be `bundle_id`. It is read with `wincode_core`'s reader, as `init` reads it | `bundle-id-mismatch` (1, ADR-0013's id). A WARN when it cannot be resolved, for example from an xcconfig file that is not committed |
@@ -123,7 +132,11 @@ wincode build --app alpha --yes && wincode sign --app alpha && wincode upload --
   - its whole tree in one listing (`GET .../git/trees/{sha}?recursive=1`), which shows the shared schemes and whether the target exists;
   - `project.pbxproj`, each xcconfig file under `ios/`, `pubspec.yaml`, and the workflow file (section 8), read raw through the Contents API at that commit.
 - **`wincode_core`'s build-settings reader gets a parameter** that reads a file by its path, from the local disk by default. `init` and `build` then resolve settings with the same reader.
-- **The rules are those of flutter_tools 3.47,** the release that the reference workflow pins. If a later Flutter changes them, the IPA's bundle ID check after the run still catches a wrong build, and the rules are updated with the template.
+- **Pub's rules for version constraints** come from `pub_semver`, the Dart team's package (BSD-3-Clause). It is already in the CLI's lock file through `test`, and becomes a direct dependency, pinned exactly, in implementation pull request 3.
+- **Two things are not checked before the dispatch:**
+  - `pubspec.yaml`'s Dart constraint (`environment: sdk:`), which would need the Dart version of each Flutter release. `flutter pub get` on the runner refuses a mismatch within the job's first minutes;
+  - whether the runner image has the Xcode that `XCODE_APP` names. `xcode-select` fails at the job's first step.
+- **The scheme and configuration rules are those of flutter_tools 3.47.** If the release that `flutter_version` names has other rules, the IPA's bundle ID check after the run still catches a wrong build, and winCode's rules are updated when Flutter changes them.
 - **The Flutter project is at the repository's root,** where the reference workflow builds it.
 
 ### 3. The build number
@@ -132,15 +145,15 @@ wincode build --app alpha --yes && wincode sign --app alpha && wincode upload --
 | --- | --- | --- |
 | A. Always given on the command line | Nothing is hidden | Every caller has to look up the highest number first |
 | B. Always `auto` | No bookkeeping | It needs the App Store Connect key in a step that otherwise needs none, and it cannot work with build numbers that contain dots |
-| **C. `pubspec.yaml`'s number by default, or `--build-number <n>`, or `--build-number auto`** (chosen) | A one-app project works as it does by hand, and `auto` is there for a file of apps. In every case the number is decided before the dispatch | Three sources to explain |
+| **C. `auto` by default in a file of apps, `pubspec.yaml`'s number by default in a flat file, and `--build-number <n>` or `--build-number auto` to choose** (chosen) | In a file of apps, `pubspec.yaml`'s number may be another platform's and fits no app's sequence, while every app has the credentials that `auto` needs (ADR-0014). A one-app flat project works as it does by hand. In every case the number is decided before the dispatch | Two defaults to explain |
 
-**C is chosen.** Whatever its source, the number is decided before the dispatch and sent as the `build_number` input, and the plan says where it came from. When there is no source, the build stops with `build-number-missing` (78): no option was given, and `pubspec.yaml`'s `version` has no `+N`.
+**C is chosen,** with `auto` as the default of a file of apps since the review. Whatever its source, the number is decided before the dispatch and sent as the `build_number` input, and the plan says where it came from. When there is no source, the build stops with `build-number-missing` (78): a flat file, no option, and a `version` in `pubspec.yaml` without `+N`.
 
 **`auto` gives the highest number known for the app, plus one.** It looks in two places:
 - **App Store Connect:** the app's builds, read with `preflight`'s GET requests and the app's credentials (ADR-0014, section 2). It also reads the app's build uploads, if `GET /v1/apps/{id}/buildUploads` exists; the implementation checks that first. An upload that Apple has not yet turned into a build holds its number too.
 - **The app's recent runs** (below).
 
-The highest number must be a whole number. A highest number with dots, such as `57.1`, fails `auto` with `build-number-auto` (1): winCode does not guess the next step of someone else's numbering scheme. An app with no credentials fails `auto` with `credentials-missing` (78).
+The highest number must be a whole number. A highest number with dots, such as `57.1`, fails `auto` with `build-number-auto` (1): winCode does not guess the next step of someone else's numbering scheme. In a flat file without credentials, `auto` fails with `credentials-missing` (78); in a file of apps, every app has them.
 
 **A number given on the command line, or taken from `pubspec.yaml`, is checked the same way** when the app has credentials. If it is not above the highest, the build stops with `build-number-not-higher` (1, ADR-0013's id) before any minute is spent on a build that `upload` would refuse. Without credentials, the check is a WARN, and `preflight` checks the number before the upload, as today.
 
@@ -208,12 +221,18 @@ winCode never cancels a run on its own: the minutes already spent are spent, and
 
 **B is chosen.** It reverses ADR-0013's section 3 and its alternative "The REST API instead of `gh`".
 
-**winCode looks for the token in this order,** the order in which `gh` itself reads the variables:
-1. `GH_TOKEN`;
-2. `GITHUB_TOKEN`;
-3. `gh auth token --hostname github.com`, when `gh` is installed and logged in. A desktop user of `gh` needs nothing more.
+**winCode looks for the token in this order.** One token serves every app, and an app can have its own:
+1. `WINCODE_GH_TOKEN_<APP>`, for the app being built, when it is set.
+   - `<APP>` is the app's name in capital letters with `-` written as `_` (`alpha-dev` gives `ALPHA_DEV`), as ADR-0014 (section 2) names the variables of a credentials reference.
+   - A flat file has no app name, so it has no such variable.
+   - The variable form of every app's name is registered with the redactor, as a reference's is.
+2. `GH_TOKEN`;
+3. `GITHUB_TOKEN`;
+4. `gh auth token --hostname github.com`, when `gh` is installed and logged in. A desktop user of `gh` needs nothing more.
 
-When none gives a token, the build stops with `github-token-missing` (77). On a Linux server without `gh`, set `GH_TOKEN` in the service's environment, from the server's secret store.
+Sources 2 to 4 come in the order in which `gh` itself reads them. When none gives a token, the build stops with `github-token-missing` (77). On a Linux server without `gh`, set `GH_TOKEN` in the service's environment, from the server's secret store, and `WINCODE_GH_TOKEN_<APP>` for an app whose repository needs another token.
+
+**GitHub Enterprise Server is not supported,** as decided in review: the API host is always `api.github.com`, and `GH_ENTERPRISE_TOKEN` is not read.
 
 **The least that the token needs** is a fine-grained personal access token limited to the app's repositories, with:
 - **Actions: read and write,** to start a run, read runs, jobs and artifacts, cancel a run and delete an artifact;
@@ -253,7 +272,7 @@ The job also writes the hash into its step summary, on the run's page. Retention
 5. **The IPA.** The checks of ADR-0013's step 6: one `Payload/<name>.app`, whose bundle ID is `bundle_id`, and no `embedded.mobileprovision`. Its version and build number must also be the ones requested (`ipa-version-mismatch`, 1).
 6. **Move.** The IPA replaces `<output>/unsigned.ipa` only once every check has passed. `signed.ipa` is left alone.
 
-`wincode_core`'s zip reader opens both archives. It refuses Zip64, which neither archive needs at these sizes; the first real run confirms that GitHub's zip opens.
+`wincode_core`'s zip reader opens both archives. It refuses Zip64, which neither archive needs at these sizes; the first real run confirms that GitHub's zip opens. Its `read` keeps at most 64 MB of an entry in memory, and an IPA can be larger, so the reader gets a method that streams an entry to a file, for the IPA.
 
 **Public repositories:**
 
@@ -262,9 +281,10 @@ The job also writes the hash into its step summary, on the run's page. Retention
 | A. Build anyway; the reference workflow's comment only warns today | Nothing to type | Anyone with a GitHub account can download the app's IPA for a day |
 | B. Refuse | Nothing leaks | Standard runners cost nothing in a public repository, whose code is public anyway |
 | **C. Refuse unless `--allow-public`, and with it delete the artifact as soon as it has been checked** (chosen) | The user decides each time, in writing. The IPA is downloadable for minutes, not a day | It is still downloadable during those minutes |
-| D. Encrypt the IPA on the runner | The IPA stays private even in a public repository | It needs a key on the runner, as a repository secret. Not designed here (open question 2) |
+| D. Encrypt the IPA on the runner | The IPA stays private even in a public repository | It needs a key on the runner, as a repository secret. Rejected in review |
+| E. With `--allow-public`, delete the whole run too | The log and the inputs go as well | They hold no secret, and the artifact is the one copy of the IPA. Rejected in review |
 
-**C is chosen.**
+**C is chosen, and kept after review.**
 - The repository's visibility comes from `GET /repos/{owner}/{repo}`.
 - A public repository without the flag stops the build with `repository-public` (64), before the dispatch.
 - With the flag, `DELETE .../actions/artifacts/{id}` follows the checks. If the delete fails, a WARN says that the IPA stays downloadable until it expires, and links the run.
@@ -289,6 +309,8 @@ The job also writes the hash into its step summary, on the run's page. Retention
     workflow:    .github/workflows/wincode-ios.yml, contract 2, as winCode's template
     ref:         main, commit 1a2b3c4
     runner:      macos-26, stopped after 45 minutes (timeout-minutes)
+    xcode:       26.6 (XCODE_APP), at least 26.0 (min_xcode_version)
+    flutter:     3.47.7 (flutter_version), allowed by pubspec.yaml
     flavor:      store, scheme Store, configuration Release-store
     target:      lib/main_store.dart
     version:     2.4.0 (build_name in wincode.yaml)
@@ -296,6 +318,7 @@ The job also writes the hash into its step summary, on the run's page. Retention
   Start this build on GitHub? It uses macOS minutes. [y/N]
   ```
 
+  - The question is y/N, as decided in review: a build spends money, but it takes nothing that cannot be given back. `upload` keeps its typed app name.
   - Any answer but `y` or `yes` starts nothing: `build-cancelled` (1), like `upload-cancelled`.
   - `--yes` skips the question.
   - Without a terminal, with `--json` or `--events`, or in CI, a missing `--yes` is `confirmation-required` (64), before any request, as for `upload`.
@@ -303,7 +326,7 @@ The job also writes the hash into its step summary, on the run's page. Retention
   - the `plan` event and the result carry the runner's label (`runsOn`), the workflow's `timeoutMinutes`, and whether the repository is `private`;
   - a `wait` event every 60 seconds carries the minutes so far;
   - the result's `minutes` gives each job's time, from its `started_at` and `completed_at`, rounded up per job, as an estimate.
-- **winCode shows no prices and reads no billing data.** Prices and included usage depend on the account's plan. GitHub's timing endpoints are being closed down, and they leave the macOS multiplier out.
+- **Cost is shown in minutes only,** as decided in review. winCode shows no prices and reads no billing data: prices and included usage depend on the account's plan. GitHub's timing endpoints are being closed down, and they leave the macOS multiplier out.
 
 ### 8. Template drift
 
@@ -311,9 +334,9 @@ The job also writes the hash into its step summary, on the run's page. Retention
 
 **Before the dispatch,** `build` reads the workflow file at the ref's commit:
 - **Another contract number, or none:** `workflow-contract` (78), and nothing starts.
-  - A contract 1 workflow does not declare the inputs `build_name`, `build_number` and `target`, and GitHub refuses a dispatch with inputs that the workflow does not declare.
-  - The message gives both numbers. The next step is to replace the workflow with this winCode's reference workflow, or to update winCode if the workflow is the newer one.
-- **The same contract, with other lines changed:** a WARN with the number of lines that differ from winCode's template. The values that a user is expected to set are blanked first: `FLUTTER_VERSION`, `XCODE_APP`, `runs-on` and `timeout-minutes`.
+  - A contract 1 workflow does not declare the inputs that contract 2 adds, and GitHub refuses a dispatch with inputs that the workflow does not declare.
+  - The message gives both numbers. The next step is `wincode init --workflow`, which updates the workflow (below), or a newer winCode when the workflow is the newer one.
+- **The same contract, with other lines changed:** a WARN with the number of lines that differ from winCode's template. The values that a user is expected to set are blanked first: `XCODE_APP`, `runs-on` and `timeout-minutes`.
   - `--verbose` prints the differences, with `init`'s `diffLines`.
   - The build goes on: a changed workflow belongs to its owner, and the contract and the IPA's checks still hold.
 - **The file itself:**
@@ -322,12 +345,24 @@ The job also writes the hash into its step summary, on the run's page. Retention
   - A 422 from the dispatch for an input is `workflow-input-unknown` (78), as ADR-0014 planned.
   - GitHub runs the workflow file as it is at the dispatched ref, which is the copy winCode checked. The first real run confirms this.
 
-**winCode never writes to the app's repository.** It reads the workflow and says what differs; replacing the workflow is the user's commit. `init --workflow` still writes only a new file (open question 7).
+**`build` never writes to the app's repository.** It reads the workflow and says what differs.
+
+**`init --workflow` updates the workflow, and only when the user runs it** (decided in review):
+- with no workflow file, it writes the reference workflow, as today;
+- with one, it prints the diff between that file and the reference workflow, in which the old file's `XCODE_APP`, `runs-on` and `timeout-minutes` are kept. Then it asks at a terminal, or takes `--yes` where it cannot ask; otherwise it stops with `init-input-missing` (64) and writes nothing;
+- before writing, it copies the old file byte for byte to `wincode-ios.yml.bak` next to it. GitHub runs only `.yml` and `.yaml` files, so the backup never runs. An existing `.bak` stops it (`backup-exists`, 1) unless `--force` is given, as in ADR-0014's migration (section 5);
+- `--dry-run` prints the diff and writes nothing;
+- when `wincode.yaml` exists, `init --workflow` changes the workflow only, and needs no `--app`;
+- committing and pushing the new file stays the user's step.
+
+This replaces ADR-0013's rule that `init` never replaces the workflow file.
 
 **Contract 2 changes the reference workflow in these ways:**
 - it adds the contract line;
-- it takes the inputs `request_id`, `build_name` and `build_number` (required) and `flavor` and `target` (optional, empty by default), all strings. `FLAVOR` leaves `env`;
-- inputs reach the shell only as environment variables of the build step (`BUILD_NAME`, `BUILD_NUMBER`, `FLAVOR`, `TARGET`), never as `${{ inputs.* }}` inside `run:`, so that no input is ever read as shell code;
+- it takes the inputs `request_id`, `build_name`, `build_number`, `flutter_version` and `min_xcode_version` (required) and `flavor` and `target` (optional, empty by default), all strings. `FLUTTER_VERSION` and `FLAVOR` leave `env`; `XCODE_APP` stays there, as the choice of an Xcode that the runner image has;
+- inputs reach the shell only as environment variables of their steps (`MIN_XCODE_VERSION`, `FLUTTER_VERSION`, `BUILD_NAME`, `BUILD_NUMBER`, `FLAVOR`, `TARGET`), never as `${{ inputs.* }}` inside `run:`, so that no input is ever read as shell code;
+- the Xcode step stops the job when the Xcode it selected is older than `min_xcode_version`;
+- the Flutter step clones the tag `flutter_version`;
 - the build passes `--build-name` and `--build-number`, and `--flavor` and `--target` when they are set;
 - it writes the hash file, and the hash in the step summary;
 - the artifact holds both files.
@@ -354,6 +389,14 @@ on:
         description: The build number (CFBundleVersion)
         required: true
         type: string
+      flutter_version:
+        description: The Flutter release, a tag of flutter/flutter
+        required: true
+        type: string
+      min_xcode_version:
+        description: The oldest Xcode that may build the app
+        required: true
+        type: string
       flavor:
         description: The flavor, or empty for an app without flavors
         required: false
@@ -365,7 +408,27 @@ on:
         type: string
         default: ""
 
-# (permissions, the job, checkout, Xcode and Flutter as in contract 1, without FLAVOR under env)
+# (permissions, the job and checkout as in contract 1; env keeps XCODE_APP only)
+
+      - name: Xcode
+        env:
+          MIN_XCODE_VERSION: ${{ inputs.min_xcode_version }}
+        run: |
+          sudo xcode-select -s "$XCODE_APP"
+          xcodebuild -version
+          have=$(xcodebuild -version | sed -n 's/^Xcode //p')
+          oldest=$(printf '%s\n%s\n' "$MIN_XCODE_VERSION" "$have" | sort -s -t . -k 1,1n -k 2,2n -k 3,3n | head -n 1)
+          if [ "$oldest" != "$MIN_XCODE_VERSION" ]; then
+            echo "::error::Xcode $have is older than $MIN_XCODE_VERSION, the oldest that wincode.yaml allows"
+            exit 1
+          fi
+
+      - name: Flutter
+        env:
+          FLUTTER_VERSION: ${{ inputs.flutter_version }}
+        run: |
+          git clone -q --depth 1 --branch "$FLUTTER_VERSION" https://github.com/flutter/flutter.git "$RUNNER_TEMP/flutter"
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
 
       - name: Build the archive, unsigned
         env:
@@ -397,10 +460,11 @@ on:
 
 **`--json` is unchanged:** one object on stdout when `build` ends.
 
-**`--events`,** for `build` only, writes one JSON object per line on stdout, as things happen.
+**`--events`,** for `build`, `sign` and `upload` (`sign` and `upload` since the review), writes one JSON object per line on stdout, as things happen.
 - Its last line is the same object that `--json` gives, with `"event": "result"` added.
 - `--events` and `--json` together are a usage error (64), so that stdout always has one shape.
 - Text for people goes to stderr in both cases.
+- A command that asks a question needs `--yes` with `--events`, as with `--json`: `build`, and `upload` for its typed name.
 
 Each event has `event`, `time` (UTC, ISO 8601) and `app`. `app` is the app's name, its placeholder when redaction is on, or null for a flat file.
 
@@ -415,6 +479,13 @@ Each event has `event`, `time` (UTC, ISO 8601) and `app`. `app` is the app's nam
 | `artifact` | the artifact is downloaded | `name`, `size`, `digest`, `expiresAt` |
 | `ipa` | the IPA passed its checks | `path`, `size`, `sha256`, `bundleId`, `version`, `build` |
 | `result` | last | the `--json` object |
+
+`sign` and `upload` use the same envelope and the same `check`, `wait` and `result` events, plus their own:
+
+| Command | Its own events |
+| --- | --- |
+| `sign` | `signing` when zsign starts and when it ends (`status`). Its `check` events cover the inputs before signing and the read-back of every signature after |
+| `upload` | `plan`, the upload it is about to make (file, size, version, build); `upload` at each stage (`created`; the parts, with `sentBytes` and `totalBytes`; `committed`); `processing` at each change of Apple's state, with Apple's messages as sent. Its `check` events are the findings of its `preflight` |
 
 ```json
 {"event":"dispatched","time":"2026-11-15T10:02:11Z","app":"alpha","requestId":"3f9a0c1d2b4e-2.4.0-58-7c21e0aa","runId":1234567890,"runUrl":"https://github.com/example-org/example-app/actions/runs/1234567890"}
@@ -450,7 +521,7 @@ A field that is not known yet is null: for example `runId`, when a check failed 
 | 70 | A bug |
 | 75 | A run was started, or named with `--run`, and was still going when winCode stopped waiting: at `--timeout` (`run-timeout`), or after Ctrl-C (`wait-stopped`). Collect it with `--run <id>` |
 | 77 | No GitHub token, or GitHub refused it (401, or a 403 that is not a rate limit). Or App Store Connect refused the key, when `build` reads it |
-| 78 | The setup: no `workflow:`, `repository-not-found`, `ref-not-found`, `workflow-not-found`, `workflow-disabled`, `workflow-contract`, `workflow-input-unknown`, `scheme-missing`, `configuration-mismatch`, `target-missing`, `build-name-missing`, `build-number-missing`, `credentials-missing` |
+| 78 | The setup: no `workflow:`, `repository-not-found`, `ref-not-found`, `workflow-not-found`, `workflow-disabled`, `workflow-contract`, `workflow-input-unknown`, `scheme-missing`, `configuration-mismatch`, `target-missing`, `build-name-missing`, `build-number-missing`, `credentials-missing`, `flutter-version-missing`, `min-xcode-missing`, `flutter-version-mismatch`, `xcode-too-old` |
 
 75 was "`upload` only" in ADR-0013, and is now `upload` and `build`.
 
@@ -462,13 +533,13 @@ A field that is not known yet is null: for example `runId`, when a check failed 
 
 | Check | What it shows | Result |
 | --- | --- | --- |
-| Settings | `workflow:` is there and well formed; `flavor`, `target` and `build_name` are valid | FAIL (78) |
-| Token | Where it comes from, and its kind | FAIL `github-token-missing`. INFO for a classic token or `gh`'s login, which can do more than `build` needs |
+| Settings | `workflow:`, `flutter_version` and `min_xcode_version` are there and well formed; `flavor`, `target` and `build_name` are valid | FAIL (78) |
+| Token | Where it comes from (the app's `WINCODE_GH_TOKEN_<APP>`, `GH_TOKEN`, `GITHUB_TOKEN` or `gh`), and its kind | FAIL `github-token-missing`. INFO for a classic token or `gh`'s login, which can do more than `build` needs |
 | Repository | It can be read; its visibility and default branch | FAIL `repository-not-found`. WARN when it is public: `build` will need `--allow-public` |
 | Workflow | It is on the default branch, and active | FAIL `workflow-not-found`, `workflow-disabled` |
 | Ref | The commit it points to | FAIL `ref-not-found` (78) |
 | Contract | The workflow at that commit has contract 2 | FAIL `workflow-contract`; WARN for other differences |
-| Project | The checks of section 2 at that commit | As in section 2 |
+| Project | The checks of section 2 at that commit, the Flutter release and the workflow's Xcode among them | As in section 2 |
 | Build number | The number that `build` would take, where it comes from, and any run of this app in progress | As in section 3. INFO when the app has no credentials |
 
 An INFO line says that Actions write is not tested ahead. Every request that needs it changes something; the dispatch itself refuses a token without it, before anything runs.
@@ -487,8 +558,8 @@ All messages use the three-line form of ADR-0013 (section 6).
 
    ```
    wincode build: the workflow at main says contract 1, and this wincode needs contract 2
-     why: contract 2 adds the inputs build_name, build_number and target, which a contract 1 workflow does not declare, and GitHub refuses a run with inputs that its workflow does not declare. Nothing was started.
-     next: replace .github/workflows/wincode-ios.yml with the reference workflow of this winCode version (templates/wincode-ios.yml in winCode), keep your values under env, push it to main, then run wincode build again.
+     why: contract 2 adds inputs, such as build_name and flutter_version, that a contract 1 workflow does not declare, and GitHub refuses a run with inputs that its workflow does not declare. Nothing was started.
+     next: run wincode init --workflow, which shows the changes and keeps the old file as wincode-ios.yml.bak, then push the workflow to main and run wincode build again.
    ```
 
 2. **Configuration fallback** (`configuration-mismatch`, 78):
@@ -534,9 +605,9 @@ All messages use the three-line form of ADR-0013 (section 6).
 7. **No token** (`github-token-missing`, 77). When `gh` is installed but not logged in, the first line says so.
 
    ```
-   wincode build: no GitHub token: GH_TOKEN and GITHUB_TOKEN are not set, and gh is not installed
+   wincode build: no GitHub token: WINCODE_GH_TOKEN_ALPHA, GH_TOKEN and GITHUB_TOKEN are not set, and gh is not installed
      why: winCode starts the workflow through GitHub's API, which needs a token with Actions (read and write) and Contents (read) on the repository.
-     next: set GH_TOKEN to a fine-grained token limited to example-org/example-app with those permissions, or install gh and run gh auth login.
+     next: set GH_TOKEN to a fine-grained token limited to example-org/example-app with those permissions (WINCODE_GH_TOKEN_ALPHA for this app only), or install gh and run gh auth login.
    ```
 
 8. **Build in progress** (`build-in-progress`, 1):
@@ -547,22 +618,32 @@ All messages use the three-line form of ADR-0013 (section 6).
      next: collect it with wincode build --app alpha --run <id>, or cancel it at <URL>, then run wincode build again.
    ```
 
+9. **Xcode too old** (`xcode-too-old`, 78):
+
+   ```
+   wincode build: the workflow selects Xcode 26.0, and wincode.yaml asks for 26.4 or later
+     why: min_xcode_version is the oldest Xcode that may build alpha, and the job would stop at its Xcode step, after a billed minute. Nothing was started.
+     next: set XCODE_APP in .github/workflows/wincode-ios.yml to an Xcode of 26.4 or later that the runner image has, push it to main, then run wincode build again.
+   ```
+
 ### 13. Implementation plan, and acceptance
 
-The work comes in four pull requests, each of one concern:
-1. **Contract 2 of the reference workflow.** The template, its embedded copy, and actionlint in CI. `init --workflow` writes it byte for byte.
+The work comes in five pull requests, each of one concern:
+1. **Contract 2 of the reference workflow.** The template, its embedded copy, and actionlint in CI. `init --workflow` writes it byte for byte to a new file, and updates an existing one (section 8).
 2. **The GitHub client** (`lib/src/github.dart`), and the start of `doctor --build`.
    - The client covers token sources, the API version, the one host, redirects without the token, rate limits and redaction.
    - The tests use a fake GitHub server on `127.0.0.1`.
    - `doctor --build` gets its settings, token, repository, workflow and contract checks.
 3. **The project at the ref.**
-   - `wincode_core`'s reader with a file source, the scheme and configuration rules, and the keys `build_name` and `target` in the loader.
-   - The build number: `pubspec.yaml`, given, `auto`, and the run list.
+   - `wincode_core`'s reader with a file source, the scheme and configuration rules, and the keys `build_name`, `target`, `flutter_version` and `min_xcode_version` in the loader.
+   - The Flutter and Xcode checks, with `pub_semver`.
+   - The build number: `auto` and `pubspec.yaml` as the two defaults, a given number, and the run list.
    - The rest of `doctor --build`.
 4. **`build` itself:**
    - the plan, the question, the dispatch, the wait, the events, Ctrl-C, the timeout and `--run`;
-   - the download, the integrity and IPA checks, and the result;
+   - the download, the zip reader's method that streams an entry to a file, the integrity and IPA checks, and the result;
    - `--dry-run` and the goldens.
+5. **`--events` for `sign` and `upload`.**
 
 **Before any macOS minute,** with the maintainer's yes, a test repository dispatches a small Linux workflow that uploads a small file. It confirms GitHub's behaviour on cheap minutes:
 - the run's ID in the dispatch's answer;
@@ -582,53 +663,59 @@ The work comes in four pull requests, each of one concern:
   - `--run` collects a run;
   - the artifact is downloaded through a redirect that does not carry the token, and each integrity failure is reported;
   - a public repository is refused, and with `--allow-public` the artifact is deleted.
-- **No paid run on a failed check.** Each check before the dispatch fails with no dispatch request: the fake server fails the test if it gets one. The checks are the contract, the scheme, the configuration fallback, the bundle ID, the target, the build number not higher, a build in progress, a public repository and a missing confirmation.
+- **No paid run on a failed check.** Each check before the dispatch fails with no dispatch request: the fake server fails the test if it gets one. The checks are the contract, the scheme, the configuration fallback, the bundle ID, the target, a `pubspec.yaml` that does not allow the Flutter release, an Xcode older than the minimum, the build number not higher, a build in progress, a public repository and a missing confirmation.
 - **Two apps of one workflow** start two runs, each with its own inputs and app tag.
+- **The default build number** is `auto` in a file of apps and `pubspec.yaml`'s number in a flat file.
+- **The token:** `WINCODE_GH_TOKEN_<APP>` wins over `GH_TOKEN` for its own app only, and its name is redacted.
 - **`--dry-run` sends no request:** a server that fails on any request proves it.
-- **`--events`:** golden lines, each line valid JSON, and the last line equal to `--json`'s object.
+- **`--events`,** for `build`, `sign` and `upload`: golden lines, each line valid JSON, and the last line equal to `--json`'s object. `upload --events` without `--yes` is `confirmation-required`.
 - **No secret in any output,** `--verbose` included: no token, no signed link, no `Authorization` header.
-- **The template:** it passes actionlint, and `init --workflow` writes it byte for byte.
+- **The template:** it passes actionlint, and `init --workflow` writes it byte for byte to a new file.
+- **The update of a workflow** by `init --workflow` shows the diff with the old file's values kept, asks, and writes the `.bak`. It stops on an existing `.bak` unless `--force`, writes nothing with `--dry-run`, and leaves `wincode.yaml` alone.
 - **The real run:** `wincode build`, `wincode sign` and `wincode upload` of one app of a file of apps, in a row, end with a build processed as valid. It uses macOS minutes and an upload, with the maintainer's yes. It also confirms whether `GET /v1/apps/{id}/buildUploads` lists uploads.
 
-### 14. Out of scope, and open questions
+### 14. Out of scope, and the review's decisions
 
 Out of scope:
-- `ship` and `--then` (section 1);
+- `ship` and `--then`, for now (section 1);
 - `--all` for `build`;
-- GitHub Enterprise Server;
-- a Flutter project that is not at the repository's root;
-- Flutter and Xcode versions per app (already out of scope in ADR-0014).
+- GitHub Enterprise Server (section 5);
+- a Flutter project that is not at the repository's root.
 
-Open questions for the maintainer:
-1. **Variants with one bundle ID.** Should a DEV flavor that ships under the store app's record be allowed in the same file? It could be, for example, `variants:` under an app, chosen with `--variant`. Or should it stay a second file chosen with `--config`?
-2. **Public repositories.** After the download, is deleting the artifact enough, or should winCode also delete the run, with its log and inputs? Should the IPA be encrypted on the runner with a key kept as a repository secret? Or should public repositories be refused outright, with no flag?
-3. **`auto` by default.** Should `auto` be the default in a file of apps, where `pubspec.yaml`'s one number fits no app's sequence? And is 24 hours the right window for the runs that hold a number?
-4. **One token,** or a token per repository (for example `GH_TOKEN_<OWNER>_<REPO>`), for a server that builds apps of several organisations?
-5. **`--events` for `sign` and `upload`,** so that a calling tool follows the whole lane in one way?
-6. **GitHub Enterprise Server:** another API host, and `GH_ENTERPRISE_TOKEN`?
-7. **Updating the workflow.** Should `init --workflow --force` replace an existing workflow while keeping the values under `env`? Should winCode print its reference workflow instead? Or should it do neither?
-8. **The wait.** Is 60 minutes the right default for `--timeout`? Should winCode ever cancel a run itself, for example at the timeout?
-9. **Cost.** Are minutes per job enough for a calling tool, or should winCode estimate a price from a rate that the user sets?
-10. **`ship`.** When should it come, and should it keep a record of the steps so that a second run can resume?
-11. **The question before the dispatch.** Should it be y/N, or the app's name typed in full, as `upload` asks? A build spends money, but it takes nothing that cannot be given back.
+The first draft asked the maintainer eleven questions. The answers are decisions now, applied in the sections named:
+1. **Variants:** no shared bundle ID. Each variant is an app with its own bundle ID, and ADR-0014's refusal of a repeated bundle ID stays (section 2).
+2. **Public repositories:** refused without `--allow-public`. With it, winCode deletes only the artifact, and nothing is encrypted (section 6).
+3. **`auto`:** the default in a file of apps, with the 24-hour window for runs (section 3).
+4. **Tokens:** one `GH_TOKEN`, with an optional variable per app, `WINCODE_GH_TOKEN_<APP>`, named as a credentials reference's variables are (section 5).
+5. **`--events`:** for `sign` and `upload` too (section 9).
+6. **GitHub Enterprise Server:** not supported (section 5).
+7. **Updating the workflow:** `init --workflow`, only when the user runs it, shows the diff and writes with a `.bak` (section 8).
+8. **The wait:** 60 minutes by default for `--timeout`, and winCode never cancels a run on its own (section 4).
+9. **Cost:** in minutes only (section 7).
+10. **`ship`:** not for now (section 1).
+11. **The question before a build:** y/N; `upload` keeps the typed app name (section 7).
+
+The review also added the Flutter and Xcode versions from the project (section 2) and the `auto` default (section 3). No question is left open.
 
 ## Consequences
 
 - **No command needs `gh` any more.** It is one of three places a token can come from. A Linux server needs `wincode` and `GH_TOKEN`; a desktop user logged in to `gh` needs nothing new.
 - **winCode holds a GitHub token,** in memory, during `build` and `doctor --build`. ADR-0013's "winCode holds no GitHub token at all" (section 7) gives way to the rules of section 5.
-- **Each repository updates its workflow to contract 2** before `build` works there. Repositories that copied the reference workflow with `init --workflow` copy it again and keep their values under `env`. No `build` has run yet, so no existing run breaks.
+- **Each repository updates its workflow to contract 2** before `build` works there. `init --workflow` does it, keeping the old file's `XCODE_APP`, `runs-on` and `timeout-minutes`; the Flutter release moves from the workflow's `env` to `flutter_version` in `wincode.yaml`. No `build` has run yet, so no existing run breaks.
 - **ADR-0014's phase 5 changes:**
-  - `build_number` is always sent, and the workflow requires it;
-  - `build_name` and `target` are new inputs, reserved in `workflow_inputs`, which holds at most 20 entries;
+  - `build_number` is always sent, and the workflow requires it; in a file of apps it is `auto` unless given;
+  - `build_name`, `target`, `flutter_version` and `min_xcode_version` are new inputs, reserved in `workflow_inputs`, which holds at most 18 entries;
   - `configuration` is read by `build` too;
-  - the version per app, which ADR-0014 (section 8) left out of scope, is now `build_name`.
-- **`build` reads App Store Connect** when the app has credentials, with GET requests only, to check the build number. Without credentials it still runs, except with `auto`.
+  - two things that ADR-0014 (section 8) left out of scope are now keys: the version per app (`build_name`), and the Flutter and Xcode versions per app (`flutter_version`, `min_xcode_version`).
+- **A project adds two keys before its first build:** `flutter_version` and `min_xcode_version`, once in `defaults` or per app.
+- **`build` reads App Store Connect** when the app has credentials, with GET requests only, to check the build number. In a flat file without credentials it still runs, except with `auto`.
+- **`init --workflow` can replace a workflow,** after a diff and a question, and keeps a `.bak`. ADR-0013's "it never replaces that file" no longer holds.
+- **`sign` and `upload` gain `--events`.**
 - **A public repository needs `--allow-public`,** where ADR-0013's reference workflow only warned.
 - **The run list on GitHub shows** a hash of each app's bundle ID, its version and its build number. None of them is secret, and no app's name appears.
 - **Cost stays visible:** a question before every paid run at a terminal, `--yes` in automation, and the minutes per job in the result.
 - **To revisit:**
-  - the open questions;
-  - flutter_tools' scheme and configuration rules, each time the template moves to a new Flutter;
+  - flutter_tools' scheme and configuration rules, each time a project moves to a new Flutter;
   - what the Linux rehearsal and the first real run confirm (section 13).
 
 ## Alternatives considered
@@ -641,6 +728,10 @@ Open questions for the maintainer:
 - **A counter file for build numbers,** in the repository or on disk: that means a commit for every build, or a file to keep in step between machines.
 - **Reserving the number at Apple** by creating the build upload before the build: a write to Apple before anything is built, and a record left behind when the build fails.
 - **`--dart-define` for the version, the number or the entry point:** some projects refuse it, and Flutter has options of its own for all three.
+- **The Flutter and Xcode versions only in the workflow file,** as in contract 1: one workflow cannot vary them per app, and nothing compares them with the project.
+- **The Flutter version from the project's own files,** such as an FVM configuration or `pubspec.yaml`'s `environment: flutter:`. Not every project has an FVM file, and a constraint is a range, not one release; winCode checks the constraint against the key instead (section 2).
+- **The runner's default Xcode:** winCode could not check it before the dispatch.
+- **Encrypting the IPA, or deleting the whole run, in a public repository:** rejected in review (section 6).
 - **Checking the local checkout instead of the ref:** section 2.
 - **An online `--dry-run`:** it would break ADR-0013's promise that `--dry-run` sends nothing, on which scripts rely. `doctor --build` is the online preview.
 - **NDJSON under `--json`:** `--json` means one object for every command, and callers rely on that.

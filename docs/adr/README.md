@@ -18,4 +18,4 @@ Architecture Decision Records. Copy `0000-template.md` for each new decision.
 | [0012](0012-linux-toolchain-gaps-and-hybrid-lane.md) | Linux toolchain gaps, and the hybrid lane for apps that need a Mac build | Proposed |
 | [0013](0013-wincode-cli-build-sign-upload.md) | wincode CLI: build, sign, upload | Proposed |
 | [0014](0014-one-project-many-apps.md) | One project, many apps: several apps in one wincode.yaml, a credentials reference per app | Accepted |
-| [0015](0015-wincode-build.md) | wincode build: the unsigned IPA from a GitHub macOS runner, started and followed through GitHub's REST API | Proposed |
+| [0015](0015-wincode-build.md) | wincode build: the unsigned IPA from a GitHub macOS runner, started and followed through GitHub's REST API | Accepted |
