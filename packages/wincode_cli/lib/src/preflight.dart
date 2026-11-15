@@ -4,6 +4,7 @@ import 'dart:math';
 import 'package:wincode_asc/wincode_asc.dart';
 import 'package:wincode_core/wincode_core.dart';
 
+import 'build_number.dart';
 import 'config.dart';
 import 'credentials.dart';
 import 'failure.dart';
@@ -769,7 +770,7 @@ class Preflight {
                   'build the flavor whose bundle ID is $_bundleId, or use the wincode.yaml of that app (--config).',
             ),
           ),
-        if (version == null || !_isDottedNumber(version))
+        if (version == null || !isDottedNumber(version))
           Finding.fail(
             'ipa',
             WincodeException(
@@ -782,7 +783,7 @@ class Preflight {
               next: 'set the version in pubspec.yaml (version: 1.2.3+N), then build and sign again.',
             ),
           ),
-        if (build == null || !_isDottedNumber(build))
+        if (build == null || !isDottedNumber(build))
           Finding.fail(
             'ipa',
             WincodeException(
@@ -808,7 +809,7 @@ class Preflight {
       }
       _ipaChecked = true;
       findings.add(_signature(zip, app, text('CFBundleExecutable'), now));
-      return (build != null && _isDottedNumber(build) ? build : null, findings);
+      return (build != null && isDottedNumber(build) ? build : null, findings);
     } on FormatException catch (e) {
       return (null, [unreadable(e.message)]);
     } on FileSystemException catch (e) {
@@ -997,6 +998,9 @@ WincodeException ascProblem(
         'upload' =>
           'accept the agreements in App Store Connect (Business), or use a key whose role may upload builds, such as '
               'App Manager or Admin (Users and Access, Integrations).',
+        'build' =>
+          'accept the agreements in App Store Connect (Business), or use a key whose role may read apps and builds '
+              '(Users and Access, Integrations).',
         _ =>
           'accept the agreements in App Store Connect (Business), or use a key whose role may read certificates '
               '(Users and Access, Integrations).',
@@ -1040,11 +1044,8 @@ WincodeException ascProblem(
 /// the IPA always fails, in the `ipa` check, even when the app has no builds yet.
 List<Finding> buildNumberFindings(List<AscResource> builds, String? build) {
   final numbers =
-      builds
-          .map((b) => _attribute(b, 'version'))
-          .where(_isDottedNumber)
-          .toList()
-        ..sort(_compareBuildNumbers);
+      builds.map((b) => _attribute(b, 'version')).where(isDottedNumber).toList()
+        ..sort(compareBuildNumbers);
   final highest = numbers.lastOrNull;
   return [
     Finding.info(
@@ -1061,7 +1062,7 @@ List<Finding> buildNumberFindings(List<AscResource> builds, String? build) {
         'build-number',
         'build $build is the first build of this app',
       )
-    else if (_compareBuildNumbers(build, highest) > 0)
+    else if (compareBuildNumbers(build, highest) > 0)
       Finding.pass(
         'build-number',
         'build $build is higher than $highest, the highest existing build',
@@ -1081,20 +1082,6 @@ List<Finding> buildNumberFindings(List<AscResource> builds, String? build) {
         ),
       ),
   ];
-}
-
-bool _isDottedNumber(String text) =>
-    RegExp(r'^\d+(\.\d+){0,2}$').hasMatch(text);
-
-int _compareBuildNumbers(String a, String b) {
-  final x = a.split('.').map(BigInt.parse).toList();
-  final y = b.split('.').map(BigInt.parse).toList();
-  for (var i = 0; i < x.length && i < y.length; i++) {
-    if (x[i] != y[i]) {
-      return x[i].compareTo(y[i]);
-    }
-  }
-  return x.length.compareTo(y.length);
 }
 
 final _infoPlist = RegExp(r'^Payload/[^/]+\.app/Info\.plist$');

@@ -65,7 +65,8 @@ class GhAnswer {
 /// GitHub on 127.0.0.1: [answer] decides what each request gets, and [requests] records them. With [token], a request
 /// that does not carry it gets 401, as from GitHub.
 class FakeGithub {
-  FakeGithub._(this._server, this.answer, this.token) {
+  FakeGithub._(this._server, this.answer, this.token)
+    : uri = Uri.http('${_server.address.address}:${_server.port}') {
     _server.listen(_handle);
   }
 
@@ -83,8 +84,8 @@ class FakeGithub {
   final String? token;
   final requests = <GhRequest>[];
 
-  /// The base URL of the API, such as `http://127.0.0.1:1234`.
-  Uri get uri => Uri.http('${_server.address.address}:${_server.port}');
+  /// The base URL of the API, such as `http://127.0.0.1:1234`. It stays after [close], to test a server that is gone.
+  final Uri uri;
 
   Future<void> _handle(HttpRequest request) async {
     final headers = <String, String>{};
