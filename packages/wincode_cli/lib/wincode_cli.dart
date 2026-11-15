@@ -41,6 +41,7 @@ export 'src/credentials.dart'
         resolveDistKey;
 export 'src/failure.dart' show ExitCode, WincodeException;
 export 'src/key_location.dart' show requireOutsideGit;
+export 'src/key_permissions.dart' show KeyTarget, makePrivate, requirePrivate;
 export 'src/init.dart' show ReadLine;
 export 'src/preflight.dart' show AscConnect;
 export 'src/redact.dart' show Redactor, runsInCi;
@@ -49,15 +50,22 @@ export 'src/upload.dart' show defaultUploadTimeout;
 export 'src/zsign.dart'
     show
         StartProcess,
+        UnsupportedZsignRunner,
+        WslZsignRunner,
+        ZsignCommand,
         ZsignEnd,
         ZsignRunner,
         distroVariable,
+        nativeStateKey,
         parseWslList,
+        wincodeDataDirectory,
         zsignCommit,
         zsignPath,
+        zsignRunnerFor,
         zsignSourceSha256,
         zsignStateFile,
         zsignVersion;
+export 'src/zsign_native.dart' show NativeZsignRunner, nativeZsignPath;
 
 /// The commands that ADR-0013 designs and later phases implement: name, summary, arguments and phase.
 const _planned = [
@@ -83,8 +91,9 @@ const _planned = [
 ///
 /// [clock] (default: the system's), [connect] (default: App Store Connect), [workingDirectory] (default: the current
 /// folder), [readLine] and [terminal] (default: standard input), [run] (default: starts the program), [zsign]
-/// (default: runs zsign through `wsl.exe`) and [pollInterval] (default: 30 s, how often `upload` asks Apple for the
-/// state of the processing) are there for tests.
+/// (default: the runner for [platform], which runs zsign through `wsl.exe` on Windows and directly on Linux),
+/// [platform] (default: `Platform.operatingSystem`) and [pollInterval] (default: 30 s, how often `upload` asks Apple
+/// for the state of the processing) are there for tests.
 Future<int> runWincode(
   List<String> args,
   StringSink out,
@@ -97,9 +106,15 @@ Future<int> runWincode(
   bool? terminal,
   RunProcess run = runProcess,
   ZsignRunner? zsign,
+  String? platform,
   Duration pollInterval = const Duration(seconds: 30),
 }) async {
   environment ??= Platform.environment;
+  zsign ??= zsignRunnerFor(
+    platform ?? Platform.operatingSystem,
+    environment: environment,
+    runTool: run,
+  );
   // A usage error comes before the arguments are parsed, so the flags can only be looked up in the list itself.
   final flags = args.takeWhile((a) => a != '--');
   var json = flags.contains('--json');
@@ -112,7 +127,7 @@ Future<int> runWincode(
   err = redactor.sink(err);
   final runner = _Wincode(
     out,
-    _Doctor(out, err, environment, redactor, run),
+    _Doctor(out, err, environment, redactor, run, zsign),
     _Preflight(
       out,
       err,
@@ -140,7 +155,7 @@ Future<int> runWincode(
       clock ?? DateTime.now,
       connect,
       run,
-      zsign ?? ZsignRunner(),
+      zsign,
     ),
     _Upload(
       out,
@@ -361,6 +376,7 @@ class _Doctor extends _Command {
     this.environment,
     this.redactor,
     this.runProcess,
+    this.zsign,
   ) {
     argParser
       ..addOption(
@@ -382,8 +398,9 @@ class _Doctor extends _Command {
         'sign',
         negatable: false,
         help:
-            'Also check what wincode sign needs: WSL2 version 2, the pinned zsign and its recorded SHA-256 (recorded '
-            'by the first check that finds it), and where the distribution key is.',
+            'Also check what wincode sign needs: on Windows WSL2 version 2, on Linux nothing but zsign itself; the '
+            'pinned zsign and its recorded SHA-256 (recorded by the first check that finds it), and where the '
+            'distribution key is.',
       );
   }
 
@@ -391,6 +408,7 @@ class _Doctor extends _Command {
   final Map<String, String> environment;
   final Redactor redactor;
   final RunProcess runProcess;
+  final ZsignRunner zsign;
 
   @override
   final name = 'doctor';
@@ -400,10 +418,11 @@ class _Doctor extends _Command {
       'Check the setup, or a Mach-O binary against the SDK or a reference build.\n\n'
       'Without options, doctor checks the setup of the app in wincode.yaml and sends nothing: that the file loads, '
       'and that the app\'s App Store Connect key is where its credentials say (a folder with one AuthKey_<Key ID>.p8 '
-      'and an issuer-id, outside git working trees and OneDrive). With --sign, it also checks WSL2, the pinned zsign '
-      '$zsignVersion (${zsignCommit.substring(0, 8)}), whose build commands it prints, and where the distribution '
-      'key is; the first check that finds zsign records its SHA-256 outside the repository, and wincode sign runs '
-      'only that binary. To check a binary, give --binary and at least one of --sdk and --reference.';
+      'and an issuer-id, outside git working trees and OneDrive, and on Linux closed to other users). With --sign, it '
+      'also checks WSL2 on Windows, the pinned zsign $zsignVersion (${zsignCommit.substring(0, 8)}), whose build '
+      'commands it prints, and where the distribution key is; the first check that finds zsign records its SHA-256 '
+      'outside the repository, and wincode sign runs only that binary. To check a binary, give --binary and at least '
+      'one of --sdk and --reference.';
 
   @override
   bool get takesArguments => false;
@@ -416,7 +435,7 @@ class _Doctor extends _Command {
     if (binary == null && sdk == null && reference == null) {
       if (argResults!.flag('sign') && globalResults!.flag('dry-run')) {
         usageException(
-          'doctor --sign runs read-only commands in WSL2 and records the SHA-256 of zsign; it has no --dry-run.',
+          'doctor --sign runs read-only commands (in WSL2 on Windows) and records the SHA-256 of zsign; it has no --dry-run.',
         );
       }
       return _setup();
@@ -540,11 +559,9 @@ extension on _Doctor {
       }
       if (argResults!.flag('sign')) {
         findings.addAll(
-          await signSetupFindings(
+          await zsign.setupFindings(
             app,
-            environment: environment,
             redactor: redactor,
-            run: this.runProcess,
             log: globalResults!.flag('verbose') ? err.writeln : null,
           ),
         );
@@ -924,13 +941,15 @@ class _Sign extends _Command {
 
   @override
   final description =
-      'Sign the IPA for the App Store with zsign in WSL2, and check the result (ADR-0013, phase 3a).\n\n'
+      'Sign the IPA for the App Store with zsign (in WSL2 on Windows, directly on Linux), and check the result '
+      '(ADR-0013, phase 3a).\n\n'
       'Before zsign runs: the unsigned IPA (unsigned.ipa in the output folder by default) holds the app of '
       'wincode.yaml in Payload/ only, without extensions; the profile is an App Store profile of the team and app, '
       'not expired; the distribution key, found through the app\'s credentials (or WINCODE_DIST_KEY for a file '
       'without them), is an unencrypted RSA PEM key whose certificate is in the profile, an Apple Distribution '
       'certificate of the team that has not expired and that App Store Connect still lists; and the entitlements '
-      'are allowed by the profile. zsign then reads the key in place through wslpath and never gets a password. '
+      'are allowed by the profile. On Linux the key and its folders must also be closed to other users (mode 0600 and '
+      '0700). zsign then reads the key in place (through wslpath, in WSL2) and never gets a password. '
       'After it: every signature is checked and preflight\'s local checks run, and only then is the IPA moved to '
       'signed.ipa in the output folder. Its temporary files there are deleted whatever happens.';
 
@@ -963,7 +982,7 @@ class _Sign extends _Command {
       clock: clock,
       connect: connect,
       run: runProcess,
-      runner: zsign,
+      zsignRunner: zsign,
       log: globalResults!.flag('verbose') ? err.writeln : null,
     );
     final verifyOnly = argResults!.flag('verify-only');

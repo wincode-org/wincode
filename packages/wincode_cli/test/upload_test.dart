@@ -16,6 +16,8 @@ import 'package:wincode_core/wincode_core.dart'
         readProvisioningProfile,
         writePlistBinary;
 
+import 'private.dart';
+
 /// The time of every run: tokens, expiry dates, and the timestamps of the steps.
 final _now = DateTime.utc(2026, 11, 13, 12);
 final _expires = _now.add(const Duration(days: 300));
@@ -294,8 +296,10 @@ void main() {
         [for (var i = 0; i < length; i++) random.nextInt(16).toRadixString(16)]
             .join();
     issuer = [hex(8), hex(4), hex(4), hex(4), hex(12)].join('-');
-    keys = Directory(inside(temp, 'asc'))..createSync();
-    File(inside(keys, 'AuthKey_$_keyId.p8')).writeAsStringSync(ascKey.pem());
+    keys = private(Directory(inside(temp, 'asc'))..createSync());
+    private(
+      File(inside(keys, 'AuthKey_$_keyId.p8'))..writeAsStringSync(ascKey.pem()),
+    );
     File(inside(keys, 'issuer-id')).writeAsStringSync('$issuer\n');
     final app = Directory(inside(temp, 'app'))..createSync();
     config = File(inside(app, 'wincode.yaml'))
@@ -974,10 +978,10 @@ void main() {
     });
 
     test('a file of apps asks for the app\'s name, and --app chooses the app', () async {
-      final root = Directory(inside(temp, 'keys-root'))..createSync();
-      final folder = Directory(inside(root, 'test-one'))..createSync();
+      final root = private(Directory(inside(temp, 'keys-root'))..createSync());
+      final folder = private(Directory(inside(root, 'test-one'))..createSync());
       for (final name in ['AuthKey_$_keyId.p8', 'issuer-id']) {
-        File(inside(keys, name)).copySync(inside(folder, name));
+        private(File(inside(keys, name)).copySync(inside(folder, name)));
       }
       final apps = File(inside(config.parent, 'apps.yaml'))
         ..writeAsStringSync(

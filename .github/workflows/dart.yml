@@ -62,10 +62,11 @@ jobs:
           ../compiled/wincode.exe init --workflow --yes --bundle-id com.example.app --team-id TEAM000000
           cmp .github/workflows/wincode-ios.yml ../wc/packages/wincode_cli/templates/wincode-ios.yml
 
+
   zsign:
-    # ADR-0013 phase 3a: the zsign that winCode pins signs a generated app with a throwaway certificate, and
-    # wincode sign --verify-only checks the result. wincode sign itself starts zsign through wsl.exe, which this runner
-    # has not; the unit tests cover that part with a fake zsign. Nothing here is Apple's.
+    # ADR-0013, phase 3a and section 11: the zsign that winCode pins signs a generated app with a throwaway certificate,
+    # through the same code as a Linux server runs. wincode doctor --sign records the binary, wincode sign starts it
+    # directly and signs, and wincode sign --verify-only reads the result back. Nothing here is Apple's.
     name: zsign integration
     runs-on: ubuntu-latest
     env:
@@ -80,22 +81,27 @@ jobs:
       - uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1.8.1
         with:
           sdk: 3.13.4
-      # The commands that wincode doctor --sign prints, in a folder outside the checkout.
+      # The commands that wincode doctor --sign prints, in the folder where wincode looks for the binary on Linux:
+      # zsign/zsign-<commit>/bin/zsign under $XDG_DATA_HOME/wincode (nativeZsignPath in lib/src/zsign_native.dart).
       - name: build the pinned zsign
         run: |
           set -euo pipefail
+          echo "XDG_DATA_HOME=$RUNNER_TEMP/xdg" >> "$GITHUB_ENV"
           sudo apt-get update -q
           sudo apt-get install -y -q make g++ pkg-config libssl-dev
-          mkdir -p "$RUNNER_TEMP/zsign"
-          cd "$RUNNER_TEMP/zsign"
+          mkdir -p "$RUNNER_TEMP/xdg/wincode/zsign"
+          cd "$RUNNER_TEMP/xdg/wincode/zsign"
           curl -fsSL -o "zsign-$ZSIGN_COMMIT.tar.gz" "https://github.com/xtool-org/zsign/archive/$ZSIGN_COMMIT.tar.gz"
           echo "$ZSIGN_SHA256  zsign-$ZSIGN_COMMIT.tar.gz" | sha256sum -c -
           tar -xzf "zsign-$ZSIGN_COMMIT.tar.gz"
           make -s -C "zsign-$ZSIGN_COMMIT/build/linux" VERSION=1.9.0
           "zsign-$ZSIGN_COMMIT/bin/zsign" -v
-      # A throwaway CA signs the distribution certificate and the profile. zsign takes the certificate as a .p12 with
-      # the CA, since it looks the issuer of a PEM certificate up among Apple's own; an empty password needs no -p.
-      - name: sign a generated app, then check it with wincode sign --verify-only and upload --dry-run
+      # The flow of a Linux server, with a throwaway identity: a PEM key and a certificate from the profile, as in a
+      # real run. zsign finds the Apple intermediate that issued the certificate by the hash of the issuer's name, and
+      # a PEM key leaves it no other chain. So the throwaway CA is given the name of one of those intermediates (G3),
+      # and the certificate then gets zsign's embedded one, which nothing here verifies against. The CA's key is made
+      # here, is Apple's in no way, and nothing trusts it.
+      - name: sign a generated app with wincode sign, then check it with sign --verify-only and upload --dry-run
         working-directory: wc/packages/wincode_cli
         run: |
           set -euo pipefail
@@ -104,29 +110,66 @@ jobs:
           mkdir -p "$w"
           (
             cd "$w"
-            openssl req -x509 -newkey rsa:2048 -nodes -keyout ca.key -out ca.pem -days 90 -subj "/CN=Example Test CA"
+            openssl req -x509 -newkey rsa:2048 -nodes -keyout ca.key -out ca.pem -days 90 \
+              -subj "/CN=Apple Worldwide Developer Relations Certification Authority/OU=G3/O=Apple Inc./C=US"
             openssl req -newkey rsa:2048 -nodes -keyout dist.key -out leaf.csr \
               -subj "/CN=Apple Distribution: Example (TEAM000000)/OU=TEAM000000/O=Example"
             openssl x509 -req -in leaf.csr -CA ca.pem -CAkey ca.key -CAcreateserial -out leaf.pem -days 90
             openssl x509 -in leaf.pem -outform DER -out leaf.der
-            openssl pkcs12 -export -inkey dist.key -in leaf.pem -certfile ca.pem -passout pass: -out leaf.p12
+            # 9b16b75c is the issuer hash that zsign's embedded G3 intermediate answers to.
+            test "$(openssl x509 -in leaf.pem -noout -issuer_hash)" = 9b16b75c
           )
+          # The keys are closed to other users, as wincode requires on Linux (ADR-0013, section 11).
+          chmod 600 "$w/dist.key"
           dart run tool/zsign_fixture.dart "$w/fixture" "$w/leaf.der"
           openssl cms -sign -binary -nodetach -outform DER -in "$w/fixture/profile.plist" -signer "$w/ca.pem" \
             -inkey "$w/ca.key" -out "$w/fixture/profile.mobileprovision"
-          mkdir -p "$w/fixture/build"
-          "$RUNNER_TEMP/zsign/zsign-$ZSIGN_COMMIT/bin/zsign" -k "$w/leaf.p12" -m "$w/fixture/profile.mobileprovision" \
-            -e "$w/fixture/entitlements.plist" -z 9 -o "$w/fixture/build/signed.ipa" "$w/fixture/unsigned.ipa"
+          # doctor reads the App Store Connect key folder by name only: a placeholder in a folder closed to others.
+          mkdir -m 700 "$w/asc"
+          echo placeholder > "$w/asc/AuthKey_ABCDE12345.p8"
+          echo 00000000-0000-4000-8000-000000000001 > "$w/asc/issuer-id"
+          chmod 600 "$w/asc/AuthKey_ABCDE12345.p8"
+          export WINCODE_DIST_KEY="$w/dist.key"
+          cfg="$w/fixture/wincode.yaml"
+
+          # The first doctor --sign that finds the binary records its SHA-256, and wincode sign runs only that one.
+          WINCODE_ASC_KEY_DIR="$w/asc" dart run bin/wincode.dart doctor --sign --config "$cfg" | tee "$w/doctor.txt"
+          grep -F "is now recorded in" "$w/doctor.txt"
+          # A binary that is not the recorded one is not run.
+          zsign="$XDG_DATA_HOME/wincode/zsign/zsign-$ZSIGN_COMMIT/bin/zsign"
+          cp "$zsign" "$w/zsign.good"
+          echo changed >> "$zsign"
+          if dart run bin/wincode.dart sign --offline --json --config "$cfg" "$w/fixture/unsigned.ipa" > "$w/changed.json"; then
+            echo "a changed zsign was run"
+            exit 1
+          fi
+          grep -F '"id":"zsign-changed"' "$w/changed.json"
+          cp "$w/zsign.good" "$zsign"
+          # A key that other users can read is refused (78) before anything is signed.
+          chmod 644 "$w/dist.key"
+          code=0
+          dart run bin/wincode.dart sign --offline --json --config "$cfg" "$w/fixture/unsigned.ipa" > "$w/open.json" || code=$?
+          test "$code" -eq 78
+          grep -F '"id":"keys-permissions"' "$w/open.json"
+          chmod 600 "$w/dist.key"
+
+          # The real thing: wincode sign starts the pinned zsign itself, with the PEM key and the certificate of the
+          # profile, and checks every signature that zsign wrote. --offline keeps it from asking App Store Connect.
+          dart run bin/wincode.dart sign --offline --config "$cfg" "$w/fixture/unsigned.ipa" | tee "$w/sign.txt"
+          grep -F "on this machine, with the SHA-256 that doctor recorded" "$w/sign.txt"
+          grep -F "every signature checks out" "$w/sign.txt"
+          # Only signed.ipa is left in the output folder: the temporary folder is gone.
+          test "$(ls -A "$w/fixture/build")" = signed.ipa
           # --verify-only reads no private key, and --offline keeps it from asking App Store Connect.
           rm "$w/dist.key"
-          dart run bin/wincode.dart sign --verify-only --offline --config "$w/fixture/wincode.yaml"
+          dart run bin/wincode.dart sign --verify-only --offline --config "$cfg"
           # wincode upload runs on Linux too. With --dry-run it checks the IPA that zsign signed, prints the plan and the
           # requests, and sends nothing; it needs no App Store Connect key for that.
-          dart run bin/wincode.dart upload --dry-run --config "$w/fixture/wincode.yaml" | tee "$w/upload-dry-run.txt"
+          dart run bin/wincode.dart upload --dry-run --config "$cfg" | tee "$w/upload-dry-run.txt"
           grep -F "Upload plan (nothing is sent):" "$w/upload-dry-run.txt"
           grep -F "POST https://api.appstoreconnect.apple.com/v1/buildUploads" "$w/upload-dry-run.txt"
           # An IPA that is not signed is refused.
-          if dart run bin/wincode.dart upload --dry-run --ipa "$w/fixture/unsigned.ipa" --config "$w/fixture/wincode.yaml"; then
+          if dart run bin/wincode.dart upload --dry-run --ipa "$w/fixture/unsigned.ipa" --config "$cfg"; then
             echo "an unsigned IPA passed the check of upload"
             exit 1
           fi
@@ -134,11 +177,11 @@ jobs:
           mkdir -p "$w/changed/Payload/Example.app/assets"
           echo changed > "$w/changed/Payload/Example.app/assets/hello.txt"
           (cd "$w/changed" && zip -q "$w/fixture/build/signed.ipa" Payload/Example.app/assets/hello.txt)
-          if dart run bin/wincode.dart sign --verify-only --offline --config "$w/fixture/wincode.yaml"; then
+          if dart run bin/wincode.dart sign --verify-only --offline --config "$cfg"; then
             echo "a changed IPA passed the check"
             exit 1
           fi
-          if dart run bin/wincode.dart upload --dry-run --config "$w/fixture/wincode.yaml"; then
+          if dart run bin/wincode.dart upload --dry-run --config "$cfg"; then
             echo "a changed IPA passed the check of upload"
             exit 1
           fi

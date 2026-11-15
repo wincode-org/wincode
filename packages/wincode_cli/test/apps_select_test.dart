@@ -6,6 +6,8 @@ import 'package:wincode_asc/testing.dart';
 import 'package:wincode_cli/wincode_cli.dart';
 import 'package:wincode_core/wincode_core.dart' show RunProcess, runProcess;
 
+import 'private.dart';
+
 /// ADR-0014, sections 3, 5 and 7: choosing the app with `--app`, `--all` for the commands that only read, and `init --app`.
 void main() {
   late Directory temp;
@@ -35,10 +37,14 @@ void main() {
 
   /// A keys folder that passes: one `.p8` named like a key, and an `issuer-id`.
   void keys(String reference) {
-    final folder = Directory(inside(keysRoot(), reference))
-      ..createSync(recursive: true);
-    File(inside(folder.path, 'AuthKey_ABCDE12345.p8'))
-        .writeAsStringSync(throwaway.pem());
+    final folder = privateFolders(
+      Directory(inside(keysRoot(), reference))..createSync(recursive: true),
+      temp,
+    );
+    private(
+      File(inside(folder.path, 'AuthKey_ABCDE12345.p8'))
+        ..writeAsStringSync(throwaway.pem()),
+    );
     File(inside(folder.path, 'issuer-id')).writeAsStringSync('$issuer\n');
   }
 
@@ -420,7 +426,10 @@ void main() {
     test('preflight --all --dry-run runs each app, and a failing key stops only its own app', () async {
       config(three);
       keys('team-one');
-      Directory(inside(keysRoot(), 'team-two')).createSync(recursive: true);
+      privateFolders(
+        Directory(inside(keysRoot(), 'team-two'))..createSync(recursive: true),
+        temp,
+      );
       keys('team-three');
       final (code, out, _) = await onConfig('preflight', [
         '--all',
