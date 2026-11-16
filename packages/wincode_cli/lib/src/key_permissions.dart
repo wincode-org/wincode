@@ -121,6 +121,30 @@ Future<void> makePrivate(
   );
 }
 
+/// The permission bits (0777) that the filesystem reports for [path].
+int folderMode(String path) => FileStat.statSync(path).mode & _everyone;
+
+/// Whether [folder], which [makePrivate] has just closed, really is closed (mode 0700): `chmod` succeeds on a filesystem
+/// that ignores it, such as `/mnt/c` in WSL2 (a 9p mount without metadata), and the folder stays open. True on Windows,
+/// where modes mean nothing. [modeOf] reads the mode (default: [folderMode]); tests give their own.
+bool isPrivate(
+  Directory folder, {
+  int Function(String path) modeOf = folderMode,
+}) => Platform.isWindows || modeOf(folder.path) == 448; // 0700
+
+/// The warning for a folder that [makePrivate] closed and [isPrivate] says is open, with its [mode]. It never stops a
+/// run: the folder holds no key.
+WincodeException folderNotPrivate(int mode) => WincodeException(
+  ExitCode.ok,
+  'output-not-private',
+  'the signing folder is not private: its mode is ${_octal(mode)}, not 0700, though chmod 700 succeeded; the signing goes on',
+  why:
+      'the filesystem under the output folder ignores chmod (a Windows drive that WSL2 mounts as /mnt/c does). The '
+      "folder holds the certificate (public), the entitlements and zsign's work copy of the app, and never the key, so "
+      'no secret is exposed; but other users of this machine could read or change those files while zsign works.',
+  next: 'on a shared server, set output in wincode.yaml to a folder on the Linux disk.',
+);
+
 Future<bool> _chmod(List<String> arguments) async {
   try {
     return (await Process.run('chmod', arguments)).exitCode == 0;

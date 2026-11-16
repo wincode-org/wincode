@@ -10,6 +10,7 @@ import 'failure.dart';
 import 'preflight.dart' show Finding;
 import 'redact.dart';
 import 'zsign_native.dart';
+import 'zsign_output.dart' show zsignProblemLine;
 
 /// zsign as `wincode sign` runs it (ADR-0013, section 4, as built in phase 3a, and the Linux addendum of section 11):
 /// the source of the commit that xtool pins, built by the user at a fixed path, and run without a shell: through
@@ -703,7 +704,8 @@ abstract class ZsignRunner {
     void Function(String line)? log,
   });
 
-  /// Starts [command] and watches [work]. Returns how it ended, its exit code, and the last lines of its output.
+  /// Starts [command] and watches [work]. Returns how it ended, its exit code, and what it said: the lines that say error,
+  /// failed or invalid that came before its last 20 lines, then its last 20 lines.
   Future<({ZsignEnd end, int? exitCode, List<String> said})> run(
     ZsignCommand command, {
     required Directory work,
@@ -723,10 +725,17 @@ abstract class ZsignRunner {
       );
     }
     final said = <String>[];
+    // The first 40 lines that say error, failed or invalid, kept when they scroll out of the last 20 lines.
+    final problems = <(int, String)>[];
+    var count = 0;
     void keep(String line) {
+      count++;
       said.add(line);
       if (said.length > 20) {
         said.removeAt(0);
+      }
+      if (problems.length < 40 && zsignProblemLine.hasMatch(line)) {
+        problems.add((count, line));
       }
     }
 
@@ -773,7 +782,11 @@ abstract class ZsignRunner {
     return (
       end: stopped ?? (code == 0 ? ZsignEnd.ok : ZsignEnd.failed),
       exitCode: code,
-      said: said,
+      said: [
+        for (final (n, line) in problems)
+          if (n <= count - said.length) line,
+        ...said,
+      ],
     );
   }
 }

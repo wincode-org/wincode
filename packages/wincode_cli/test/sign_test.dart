@@ -6,6 +6,8 @@ import 'dart:typed_data';
 import 'package:test/test.dart';
 import 'package:wincode_asc/testing.dart';
 import 'package:wincode_asc/wincode_asc.dart';
+import 'package:wincode_cli/src/preflight.dart' show Finding, exitCodeOf;
+import 'package:wincode_cli/src/sign.dart' show Signer;
 import 'package:wincode_cli/wincode_cli.dart';
 import 'package:wincode_core/testing.dart';
 import 'package:wincode_core/wincode_core.dart'
@@ -58,6 +60,7 @@ String? _relativeToCurrent(String path) {
 Map<String, List<int>> _unsigned({
   String bundleId = _bundleId,
   bool extension = false,
+  bool? exportCompliance = false,
 }) => {
   'Payload/': [],
   'Payload/Runner.app/': [],
@@ -66,6 +69,7 @@ Map<String, List<int>> _unsigned({
     'CFBundleExecutable': 'Runner',
     'CFBundleShortVersionString': '1.0',
     'CFBundleVersion': '14',
+    'ITSAppUsesNonExemptEncryption': ?exportCompliance,
   }),
   'Payload/Runner.app/Runner': [
     ...executable(signed: false),
@@ -186,8 +190,9 @@ AscClient _noAppStoreConnect(
   void Function(String)? log,
 ) => throw StateError('App Store Connect was asked');
 
-/// How the fake zsign behaves.
-enum _Zsign { signs, fails, hangs, garbage, grows }
+/// How the fake zsign behaves. [says] writes junk as the signed IPA, says what the test gives it and ends with the exit
+/// code that the test gives it.
+enum _Zsign { signs, fails, hangs, garbage, grows, says }
 
 /// A process that the test drives: it says lines, writes files and ends when the test or [kill] says.
 class _FakeProcess implements Process {
@@ -252,6 +257,8 @@ void main() {
   late List<int> folderModes;
   late int keyCopies;
   Object? startFails;
+  late List<String> zsignSays;
+  late int zsignExit;
 
   String inside(Directory folder, String name) =>
       '${folder.path}${Platform.pathSeparator}$name';
@@ -327,6 +334,7 @@ void main() {
             ),
           ),
         );
+        zsignSays.forEach(process.say);
         process
           ..say('>>> Signing:  ${command.last}')
           ..say('>>> Done.')
@@ -336,6 +344,10 @@ void main() {
         process
           ..say('>>> Can not find a certificate that matches the private key.')
           ..finish(1);
+      case _Zsign.says:
+        out.writeAsBytesSync([1, 2, 3]);
+        zsignSays.forEach(process.say);
+        process.finish(zsignExit);
       case _Zsign.hangs:
         out.writeAsBytesSync([1, 2, 3]);
       case _Zsign.garbage:
@@ -374,6 +386,8 @@ void main() {
     folderModes = [];
     keyCopies = 0;
     startFails = null;
+    zsignSays = [];
+    zsignExit = 1;
     direct = false;
     behaviour = _Zsign.signs;
     environment = {
@@ -620,6 +634,24 @@ void main() {
       );
     });
 
+    test('an app that does not set ITSAppUsesNonExemptEncryption is warned about once, and signed', () async {
+      File(inside(output(), 'unsigned.ipa'))
+          .writeAsBytesSync(zipOf(_unsigned(exportCompliance: null)));
+      final (code, out, err) = await wincode(['sign', '--offline']);
+      expect(code, 0, reason: '$out$err');
+      expect(
+        out,
+        contains(
+          "WARN  the IPA's Info.plist does not set ITSAppUsesNonExemptEncryption\n",
+        ),
+      );
+      expect(
+        'does not set ITSAppUsesNonExemptEncryption'.allMatches(out),
+        hasLength(1),
+      );
+      expect(signed().existsSync(), isTrue);
+    });
+
     test('the report under --redact is test/goldens/sign.txt (UPDATE_GOLDENS=1 rewrites it)', () async {
       final (code, out, _) = await wincode(['sign', '--offline', '--redact']);
       expect(code, 0);
@@ -675,6 +707,143 @@ void main() {
         },
       );
     }
+
+    group("zsign's own words in a failure", () {
+      const error =
+          '>>> Error: cannot sign Frameworks/Foo.framework: invalid signature slot';
+      List<String> noisy() => [
+        for (var i = 1; i <= 30; i++) '>>> Signing: file $i',
+        error,
+        for (var i = 31; i <= 55; i++) '>>> Signing: file $i',
+        '>>> Done.',
+      ];
+      String whyOf(String json) =>
+          ((jsonDecode(json) as Map<String, Object?>)['error']!
+                  as Map<String, Object?>)['why']!
+              as String;
+
+      test('the lines that name an error come first, then the last ten, and never only ">>> Done."', () async {
+        behaviour = _Zsign.says;
+        zsignSays = noisy();
+        final (code, out, err) = await wincode(['sign', '--offline', '--json']);
+        expect(code, 1, reason: err);
+        expect(errorId(out), 'zsign-failed');
+        // The error line was printed 26 lines before the end: it had left the last 20 lines that were kept, and is
+        // shown all the same, once, with the last ten lines after it.
+        final expected = [
+          'zsign said:',
+          '    $error',
+          for (var i = 47; i <= 55; i++) '    >>> Signing: file $i',
+          '    >>> Done.',
+        ];
+        expect(whyOf(out), expected.join('\n'));
+        expect(err, contains('  why: ${expected.join('\n')}\n'));
+        expect(signed().existsSync(), isFalse);
+        expect(leftovers(), isEmpty);
+      });
+
+      test('a short output is shown whole, each line once', () async {
+        behaviour = _Zsign.says;
+        zsignSays = ['>>> Signing: a', error, '>>> Signing: b', '>>> Done.'];
+        final (_, out, _) = await wincode(['sign', '--offline', '--json']);
+        expect(
+          whyOf(out),
+          'zsign said:\n    >>> Signing: a\n    $error\n    >>> Signing: b\n    >>> Done.',
+        );
+      });
+
+      test('a very long output is cut to 40 lines, and says so', () async {
+        behaviour = _Zsign.says;
+        zsignSays = [for (var i = 1; i <= 5000; i++) '>>> failed on file $i'];
+        final (_, out, _) = await wincode(['sign', '--offline', '--json']);
+        final lines = whyOf(out).split('\n');
+        expect(lines, [
+          'zsign said:',
+          for (var i = 1; i <= 40; i++) '    >>> failed on file $i',
+          '    ... (cut)',
+        ]);
+      });
+
+      test('long lines are cut at 300 characters, and the whole text at 4,000', () async {
+        behaviour = _Zsign.says;
+        zsignSays = [
+          for (var i = 1; i <= 100; i++) 'failed $i ${'word ' * 100}',
+        ];
+        final (_, out, _) = await wincode(['sign', '--offline', '--json']);
+        final why = whyOf(out);
+        final lines = why.split('\n');
+        expect(lines.first, 'zsign said:');
+        expect(lines.last, '    ... (cut)');
+        for (final line in lines.skip(1).take(lines.length - 2)) {
+          expect(line.trim(), endsWith(' ... (cut)'));
+          expect(
+            line.trim().length,
+            lessThanOrEqualTo(300 + ' ... (cut)'.length),
+          );
+        }
+        // 4,000 characters of lines without their indentation, and the marker.
+        expect(
+          lines
+              .skip(1)
+              .take(lines.length - 2)
+              .fold<int>(0, (n, l) => n + l.trim().length + 1),
+          lessThanOrEqualTo(4000),
+        );
+        expect(lines.length, lessThan(42));
+      });
+
+      test('what the configuration hides is hidden, and so is anything that looks like a key, a password or a token', () async {
+        behaviour = _Zsign.says;
+        zsignSays = [
+          '>>> Signing: Payload/Runner.app of $_bundleId for team $_team',
+          '>>> Error: cannot read the key at ${direct ? distKey.path : wsl.toWsl(distKey.path)}',
+          '>>> Error: password=hunter2 refused',
+          '>>> Error: Authorization: Bearer abcdef0123 refused',
+          '-----BEGIN ${'PRIVATE'} KEY-----',
+          key.pem().split('\n')[1],
+          '>>> Error: the CDHash is ${'ab12' * 12}',
+          '>>> Done.',
+        ];
+        for (final redact in [true, false]) {
+          final (code, out, err) = await wincode([
+            'sign',
+            '--offline',
+            '--json',
+            if (redact) '--redact',
+          ]);
+          expect(code, 1, reason: err);
+          final printed = '$out$err';
+          for (final secret in [
+            'hunter2',
+            'abcdef0123',
+            'PRIVATE KEY',
+            key.pem().split('\n')[1],
+            'ab12ab12',
+          ]) {
+            expect(printed, isNot(contains(secret)), reason: '$redact $secret');
+          }
+          // The IDs of the configuration are hidden in what zsign said, as in every report that may be pasted into an
+          // issue; the rest of the report shows them unless --redact is given.
+          for (final id in [_bundleId, _team]) {
+            expect(whyOf(out), isNot(contains(id)), reason: '$redact $id');
+            if (redact) {
+              expect(printed, isNot(contains(id)), reason: '$id was printed');
+            }
+          }
+          expect(whyOf(out), contains('<bundle ID>'));
+          expect(whyOf(out), contains('Error: <hidden> refused'));
+        }
+      });
+
+      test('a zsign that succeeds shows nothing of what it said, even when it says error', () async {
+        zsignSays = ['>>> Error: no error, nothing failed, nothing invalid'];
+        final (code, out, err) = await wincode(['sign', '--offline']);
+        expect(code, 0, reason: '$out$err');
+        expect('$out$err', isNot(contains('zsign said')));
+        expect('$out$err', isNot(contains('nothing failed')));
+        expect(signed().existsSync(), isTrue);
+      });
+    });
 
     test(
       'an earlier signed.ipa is replaced only by one that passed the checks',
@@ -1421,9 +1590,114 @@ void main() {
     );
 
     test('works in a private temporary folder, which is mode 0700 while zsign runs', () async {
-      expect((await wincode(['sign', '--offline'])).$1, 0);
+      final (code, out, err) = await wincode(['sign', '--offline']);
+      expect(code, 0, reason: '$out$err');
       expect(folderModes, [448]); // 0700
+      // The mode that is really there is the one asked for, so there is nothing to warn about.
+      expect('$out$err', isNot(contains('not private')));
     }, skip: Platform.isWindows ? 'the mode is a POSIX one' : null);
+
+    group('a folder that chmod 700 did not close, as on /mnt/c in WSL2', () {
+      Future<List<Finding>> signWith(int Function(String path) modeOf) {
+        final redactor = Redactor(active: false);
+        return Signer(
+          config: loadConfig(config.path, redactor: redactor),
+          environment: environment,
+          redactor: redactor,
+          clock: () => _now,
+          connect: _noAppStoreConnect,
+          run: wsl.run,
+          zsignRunner: runner,
+          modeOf: modeOf,
+        ).sign(
+          File(inside(output(), 'unsigned.ipa')),
+          offline: true,
+          dryRun: false,
+        );
+      }
+
+      List<Finding> warnings(List<Finding> findings) => [
+        for (final f in findings)
+          if (f.check == 'folder-mode') f,
+      ];
+
+      test('is one warning, and the signing goes on to the same end with the same exit code', () async {
+        final asked = <String>[];
+        final findings = await signWith((path) {
+          asked.add(path);
+          return 511; // 0777
+        });
+        final [warning] = warnings(findings);
+        expect(warning.status, 'WARN');
+        expect(warning.problem!.id, 'output-not-private');
+        expect(warning.problem!.exitCode, ExitCode.ok);
+        expect(
+          warning.what,
+          contains('its mode is 0777, not 0700, though chmod 700 succeeded'),
+        );
+        expect(warning.problem!.why, contains('certificate (public)'));
+        expect(warning.problem!.why, contains('never the key'));
+        expect(warning.problem!.next, contains('Linux disk'));
+        // The folder that the warning is about is the one that was made for this signing, not a file of it.
+        expect(asked.toSet(), hasLength(1));
+        expect(asked.first, contains('.wincode-sign-'));
+        expect(findings.map((f) => f.status), isNot(contains('FAIL')));
+        expect(exitCodeOf(findings), ExitCode.ok);
+        expect(findings.last.what, startsWith('wrote '));
+        expect(signed().existsSync(), isTrue);
+        expect(leftovers(), isEmpty);
+        // The same run with a folder that took the mode ends the same way, without the warning.
+        signed().deleteSync();
+        final closed = await signWith((_) => 448); // 0700
+        expect(warnings(closed), isEmpty);
+        expect(exitCodeOf(closed), exitCodeOf(findings));
+        expect(closed.map((f) => f.what), [
+          for (final f in findings)
+            if (f.check != 'folder-mode') f.what,
+        ]);
+      }, skip: Platform.isWindows ? 'modes mean nothing on Windows' : null);
+
+      test('is one warning when zsign then fails, and the exit code is the failure of zsign', () async {
+        behaviour = _Zsign.fails;
+        final findings = await signWith((_) => 0x1ff);
+        expect(warnings(findings), hasLength(1));
+        expect(exitCodeOf(findings), ExitCode.failed);
+        expect(
+          findings.where((f) => f.status == 'FAIL').single.problem!.id,
+          'zsign-failed',
+        );
+      }, skip: Platform.isWindows ? 'modes mean nothing on Windows' : null);
+
+      test('is no warning on Windows, where modes mean nothing', () async {
+        expect(warnings(await signWith((_) => 0x1ff)), isEmpty);
+      }, skip: Platform.isWindows ? null : 'the check is for Windows');
+    });
+
+    test(
+      "shows zsign's error lines too: the runner is the one that keeps them",
+      () async {
+        behaviour = _Zsign.says;
+        zsignSays = [
+          for (var i = 1; i <= 30; i++) '>>> Signing: file $i',
+          '>>> Error: cannot sign Foo.framework: invalid signature slot',
+          for (var i = 31; i <= 55; i++) '>>> Signing: file $i',
+          '>>> Done.',
+        ];
+        final (code, out, err) = await wincode(['sign', '--offline', '--json']);
+        expect(code, 1, reason: err);
+        expect(errorId(out), 'zsign-failed');
+        expect(
+          err,
+          contains(
+            '  why: zsign said:\n'
+            '    >>> Error: cannot sign Foo.framework: invalid signature slot\n'
+            '    >>> Signing: file 47\n',
+          ),
+        );
+        expect(err, contains('    >>> Signing: file 55\n    >>> Done.\n'));
+        expect(leftovers(), isEmpty);
+      },
+    );
 
     test(
       'the result passes --verify-only, which needs no zsign at all',

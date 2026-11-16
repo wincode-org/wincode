@@ -3,6 +3,8 @@ import 'dart:io';
 
 import 'package:test/test.dart';
 import 'package:wincode_asc/testing.dart';
+import 'package:wincode_cli/src/key_permissions.dart'
+    show folderMode, folderNotPrivate, isPrivate;
 import 'package:wincode_cli/wincode_cli.dart';
 import 'package:wincode_core/wincode_core.dart' show RunProcess, runProcess;
 
@@ -264,6 +266,65 @@ void main() {
       expect((thrown! as WincodeException).id, 'chmod-unavailable');
       expect((thrown as WincodeException).exitCode, ExitCode.unavailable);
     }, skip: posix);
+  });
+
+  group('whether chmod 700 took effect on the temporary folder', () {
+    test('a folder that makePrivate closed is private, by the mode that is really there', () async {
+      final folder = Directory('${temp.path}${sep}work')..createSync();
+      chmod('755', folder);
+      await makePrivate(folder);
+      expect(folderMode(folder.path), 448); // 0700
+      expect(isPrivate(folder), isTrue);
+    }, skip: posix);
+
+    test('a folder at another mode is not private', () {
+      final folder = Directory('${temp.path}${sep}work')..createSync();
+      chmod('777', folder);
+      expect(folderMode(folder.path), 511); // 0777
+      expect(isPrivate(folder), isFalse);
+    }, skip: posix);
+
+    test(
+      'only exactly 0700 is private; the mode comes from where the test says',
+      () {
+        final folder = Directory('${temp.path}${sep}work');
+        final asked = <String>[];
+        bool private(int mode) => isPrivate(
+          folder,
+          modeOf: (path) {
+            asked.add(path);
+            return mode;
+          },
+        );
+        expect(private(448), isTrue); // 0700
+        for (final mode in [511, 504, 493, 448 | 1, 320, 0]) {
+          expect(private(mode), isFalse, reason: mode.toRadixString(8));
+        }
+        expect(asked.toSet(), {folder.path});
+      },
+      skip: posix,
+    );
+
+    test('the warning says what happened, why it does not matter much, and what to do', () {
+      final e = folderNotPrivate(511);
+      expect((e.id, e.exitCode), ('output-not-private', ExitCode.ok));
+      expect(
+        e.what,
+        'the signing folder is not private: its mode is 0777, not 0700, though chmod 700 succeeded; the signing goes on',
+      );
+      expect(e.why, contains('certificate (public)'));
+      expect(e.why, contains("zsign's work copy of the app"));
+      expect(e.why, contains('never the key'));
+      expect(
+        e.next,
+        'on a shared server, set output in wincode.yaml to a folder on the Linux disk.',
+      );
+    });
+
+    test('on Windows, where modes mean nothing, any mode is private', () {
+      final folder = Directory('${temp.path}${sep}work');
+      expect(isPrivate(folder, modeOf: (_) => 511), isTrue);
+    }, skip: Platform.isWindows ? null : 'Windows only');
   });
 
   test('on Windows nothing is checked', () async {

@@ -57,7 +57,10 @@ final _profileBytes = profileOf({
 });
 
 /// The app as `wincode build` hands it to `wincode sign`.
-Map<String, List<int>> _unsigned({String build = '15'}) => {
+Map<String, List<int>> _unsigned({
+  String build = '15',
+  bool? exportCompliance = false,
+}) => {
   'Payload/': [],
   'Payload/Runner.app/': [],
   'Payload/Runner.app/Info.plist': writePlistBinary({
@@ -65,6 +68,7 @@ Map<String, List<int>> _unsigned({String build = '15'}) => {
     'CFBundleExecutable': 'Runner',
     'CFBundleShortVersionString': '1.0',
     'CFBundleVersion': build,
+    'ITSAppUsesNonExemptEncryption': ?exportCompliance,
   }),
   'Payload/Runner.app/Runner': [
     ...executable(signed: false),
@@ -518,6 +522,23 @@ void main() {
       }
     });
 
+    test('an IPA without ITSAppUsesNonExemptEncryption is warned about once, and uploaded', () async {
+      final bytes = _signed(_unsigned(exportCompliance: null));
+      ipa.writeAsBytesSync(bytes);
+      scenario = _Scenario(bytes)..store = store.uri;
+      final (code, out, err) = await upload([]);
+      expect(code, 0, reason: '$out$err');
+      expect(
+        out,
+        contains(
+          "WARN  the IPA's Info.plist does not set ITSAppUsesNonExemptEncryption\n",
+        ),
+      );
+      expect('WARN'.allMatches(out), hasLength(1));
+      expect(out, endsWith('wincode upload: passed, with 1 warning\n'));
+      expect(writes(), contains('POST /v1/buildUploads'));
+    });
+
     test('the output of a run under --redact is test/goldens/upload.txt (UPDATE_GOLDENS=1 rewrites it)', () async {
       final report = StringBuffer();
       Future<void> run(
@@ -893,6 +914,25 @@ void main() {
         ),
       );
     });
+
+    test(
+      'an IPA without ITSAppUsesNonExemptEncryption is a warning, not a stop',
+      () async {
+        ipa.writeAsBytesSync(_signed(_unsigned(exportCompliance: null)));
+        final (code, out, err) = await upload(['--dry-run']);
+        expect(code, 0, reason: '$out$err');
+        expect(
+          out,
+          contains(
+            "WARN  the IPA's Info.plist does not set ITSAppUsesNonExemptEncryption\n",
+          ),
+        );
+        expect('WARN'.allMatches(out), hasLength(1));
+        expect(out, contains('Upload plan (nothing is sent):'));
+        expect(out, endsWith('wincode upload: passed, with 1 warning\n'));
+        expect(apple.requests, isEmpty);
+      },
+    );
 
     test('still refuses an IPA that is not signed, with no request', () async {
       ipa.writeAsBytesSync(zipOf(_unsigned()));
