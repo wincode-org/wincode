@@ -8,6 +8,8 @@
 - Amended: 2026-11-15, while building part 5b: a run that builds another commit than the one the checks read stops the build (`ref-moved`, section 4) instead of giving a warning; the ids and details that the code settled where this ADR was silent ("As built: part 5b", section 13)
 - Verified: 2026-11-15, a rehearsal on a Linux runner confirmed the GitHub behaviour that the design relies on: the dispatch's answer, `display_title`, what `digest` covers, the artifact's zip with `wincode_core`'s reader, and which copy of the workflow runs (section 13)
 - Verified: 2026-11-15, `wincode build` ran end to end on a Linux runner of the same test repository, with the maintainer's yes: the checks, the dispatch, the wait, the download through GitHub's redirect and every check of the IPA (section 13, "As built: part 5b"). No macOS runner was used
+- Amended: 2026-11-16, while building part 5c: contract 2 of the reference workflow, the update path of `init --workflow`, the warning for a workflow that differs from the template (`workflow-differs`), and the INFO line of `doctor --build`; a plain POSIX `awk` compares the Xcode versions, where the first draft used `sort` (section 8, "As built: part 5c")
+- Verified: 2026-11-16, `doctor --build` read the contract 2 template and a hand-written workflow of the test repository with GET requests only; nothing was dispatched and no runner was used (section 13, "As built: part 5c")
 
 ## Context
 
@@ -343,14 +345,14 @@ The job also writes the hash into its step summary, on the run's page. Retention
 
 ### 8. Template drift
 
-**The workflow states its contract** in a line `# wincode-workflow-contract: 2`. The number counts what `build` relies on: the inputs and their meaning, the run's name, and the artifact's name and files. It changes only when one of those changes; versions, steps and comments can change without it. The current template has no such line, and counts as contract 1.
+**The workflow states its contract** in a line `# wincode-workflow-contract: 2`. The number counts what `build` relies on: the inputs and their meaning, the run's name, and the artifact's name and files. It changes only when one of those changes; versions, steps and comments can change without it. Contract 1, the template before part 5c, had no such line, and a workflow without it counts as contract 1.
 
 **Before the dispatch,** `build` reads the workflow file at the ref's commit:
 - **Another contract number, or none:** `workflow-contract` (78), and nothing starts.
   - A contract 1 workflow does not declare the inputs that contract 2 adds, and GitHub refuses a dispatch with inputs that the workflow does not declare.
   - The message gives both numbers. The next step is `wincode init --workflow`, which updates the workflow (below), or a newer winCode when the workflow is the newer one.
-- **The same contract, with other lines changed:** a WARN with the number of lines that differ from winCode's template. The values that a user is expected to set are blanked first: `XCODE_APP`, `runs-on` and `timeout-minutes`.
-  - `--verbose` prints the differences, with `init`'s `diffLines`.
+- **The same contract, with other parts changed:** one WARN (`workflow-differs`) that names the parts that differ from winCode's template. The two files are compared as parsed YAML, so a comment, a blank line, the order of keys and the text of an input's `description` are never differences, and neither are the values that a user is expected to set: `XCODE_APP`, `runs-on` and `timeout-minutes`. An action's pin is not ignored: a bumped pin names its step. Part 5c settled the naming (see "As built: part 5c").
+  - `--verbose` prints the differing lines, with `init`'s `diffLines`.
   - The build goes on: a changed workflow belongs to its owner, and the contract and the IPA's checks still hold.
 - **The file itself:**
   - `GET .../actions/workflows/{file}` must find it (`workflow-not-found`, 78): GitHub dispatches only a workflow that is on the default branch.
@@ -365,7 +367,7 @@ The job also writes the hash into its step summary, on the run's page. Retention
 - with one, it prints the diff between that file and the reference workflow, in which the old file's `XCODE_APP`, `runs-on` and `timeout-minutes` are kept. Then it asks at a terminal, or takes `--yes` where it cannot ask; otherwise it stops with `init-input-missing` (64) and writes nothing;
 - before writing, it copies the old file byte for byte to `wincode-ios.yml.bak` next to it. GitHub runs only `.yml` and `.yaml` files, so the backup never runs. An existing `.bak` stops it (`backup-exists`, 1) unless `--force` is given, as in ADR-0014's migration (section 5);
 - `--dry-run` prints the diff and writes nothing;
-- when `wincode.yaml` exists, `init --workflow` changes the workflow only, and needs no `--app`;
+- when `wincode.yaml` exists, `init --workflow` changes the workflow, and in `wincode.yaml` only adds `flutter_version`, taken from the old workflow's `FLUTTER_VERSION`, when it has none; it needs no `--app`;
 - committing and pushing the new file stays the user's step.
 
 This replaces ADR-0013's rule that `init` never replaces the workflow file.
@@ -430,8 +432,16 @@ on:
           sudo xcode-select -s "$XCODE_APP"
           xcodebuild -version
           have=$(xcodebuild -version | sed -n 's/^Xcode //p')
-          oldest=$(printf '%s\n%s\n' "$MIN_XCODE_VERSION" "$have" | sort -s -t . -k 1,1n -k 2,2n -k 3,3n | head -n 1)
-          if [ "$oldest" != "$MIN_XCODE_VERSION" ]; then
+          if ! awk -v have="$have" -v min="$MIN_XCODE_VERSION" 'BEGIN {
+            n = split(have, h, ".")
+            m = split(min, w, ".")
+            if (m > n) n = m
+            for (i = 1; i <= n; i++) {
+              if (h[i] + 0 > w[i] + 0) exit 0
+              if (h[i] + 0 < w[i] + 0) exit 1
+            }
+            exit 0
+          }'; then
             echo "::error::Xcode $have is older than $MIN_XCODE_VERSION, the oldest that wincode.yaml allows"
             exit 1
           fi
@@ -705,7 +715,7 @@ The results:
   - the events: `check` carries the check's name as `id`; `signing` has `status` `started` or `ended`, and `end` (`ok`, `failed`, `timedOut`, `tooBig`) on the second; `upload` has `stage` `created`, `parts` (with `sentBytes` and `totalBytes`) or `committed`; `processing` carries Apple's three states and the messages that are new, each with its `source`, `kind` and `message` as Apple sent it; `plan` of `upload` has `file`, `size`, `version` and `build`. The schema is `eventFields` in `lib/src/events.dart`, and the writer refuses a field that it does not list.
 
 **As built: part 5b.** The second pull request holds the rest of `build`: the question, the dispatch, the wait, Ctrl-C, `--timeout`, `--yes`, `--run`, the artifact and its checks, and `--allow-public`'s deletion (the parts of item 4 that 5a left). It adds `ZipArchive.extractTo` to `wincode_core`, and to the GitHub client a write that is never repeated, a read with an `ETag`, a delete, and the download of an artifact through a redirect that carries no token.
-- **Left for the next parts:** item 1, the contract 2 template with the update path of `init --workflow`; the "other differences" warning of section 8, which compares with that template; and the real run on a macOS runner, which needs the maintainer's word. Until the template lands, the contract check passes only for a workflow written by hand.
+- **Left for the next parts** (done in part 5c, except the last): item 1, the contract 2 template with the update path of `init --workflow`; the "other differences" warning of section 8, which compares with that template; and the real run on a macOS runner, which needs the maintainer's word and is still left. Until the template landed, the contract check passed only for a workflow written by hand.
 - **The same commit (section 4, step 3)** was a warning in the first draft of this ADR. It is a stop since the review of part 5b: `ref-moved` (1). The commit that the checks read is the one `build` records when it resolves the ref, and the run's `head_sha` is compared with it as soon as the run is known.
 - **Ids that this ADR did not name,** given while building:
   - 1: `ref-moved`; `ipa-signed` (the IPA holds `embedded.mobileprovision`, and `build` refuses a signature it did not make); `output-unwritable` (the output folder cannot be made or written);
@@ -753,6 +763,47 @@ The results:
   - no token, no `Authorization` header and no part of the signed link was in the events, the text for people or the verbose log.
 - **What it did not show:** a branch that moves (`ref-moved` is tested against the fake only: the real run built the commit that was checked), Ctrl-C, the timeout, a failed or cancelled run, a rate limit, `--allow-public` (the repository is private), a full-size IPA, and macOS.
 
+**As built: part 5c.** The third pull request holds item 1: the contract 2 template, the update path of `init --workflow`, the warning for a workflow that differs from the template (section 8), the INFO line of `doctor --build` (section 10), and actionlint in CI. No dispatch was sent and no runner was used to build or check it.
+- **The template** (`packages/wincode_cli/templates/wincode-ios.yml`, embedded by `tool/embed_template.dart`) is the text of section 8, with these settled:
+  - **Two actions, each pinned to a commit with its release in a comment:** `actions/checkout` v7.0.1 is `3d3c42e5aac5ba805825da76410c181273ba90b1` and `actions/upload-artifact` v7.0.2 is `cf430e030ddbb5b0abf93d22962f4752f3646cd9`. Both were checked on 2026-11-16: each is the latest release (`GET /repos/<owner>/<repo>/releases/latest`), and its tag (`GET .../git/ref/tags/<tag>`) is a lightweight tag whose object is that commit, so there was no annotated tag to dereference. The pins are refreshed by hand, with the same two reads; nothing refreshes them.
+  - **The runner label and the Xcode path cannot be pinned,** since they name images that GitHub changes. They were checked against GitHub's runner-images repository on 2026-11-16: its `README.md` lists `macos-26` as a label of "macOS 26 Arm64", and `images/macos/macos-26-arm64-Readme.md` (image version 20261102.0473.1) lists Xcode 26.6, the default, at `/Applications/Xcode_26.6.app`. The template says the owner of the repository sets `XCODE_APP`, `runs-on` and `timeout-minutes`.
+  - **The Flutter step is plain shell:** a shallow clone of the tag (`git clone -q --depth 1 --branch "$FLUTTER_VERSION"`), with no third-party action, so that no code that is not GitHub's runs on the runner. The cost is no cache, about a minute.
+  - **The oldest-Xcode check is a plain POSIX `awk` program** that compares the two versions number by number (`split` on dots, then `+ 0`), so that GNU and BSD `awk` agree; it uses none of the extensions of gawk, and no `sort -V`. A missing component counts as 0 (`26` is `26.0`), and an Xcode that prints no version is older than any minimum. A test runs the step's own text under `sh`, with stubs for `sudo` and `xcodebuild`, for fifteen pairs of versions, under every `awk` that the machine has. On Ubuntu 24.04 those are GNU awk 5.2.1, mawk 1.3.4, original-awk (the one-true-awk, version 20231127, from which macOS's awk descends), and BusyBox 1.36.1's. All agreed. **macOS's own `awk` was not tested, and cannot be here:** the first real run on a macOS runner is its test.
+  - **The step summary and the hash file** are written by the packing step, after `shasum -a 256`, as section 6 says. The artifact `unsigned-ipa` keeps its two files for one day and fails when one is missing. No `${{ ... }}` is inside a `run:` block, no secret or token is read, and `persist-credentials` is false: tests read all three from the template.
+  - **actionlint** passes on the template (version 1.7.12, run with shellcheck 0.9.0 on Linux), and CI runs it (below).
+- **`init --workflow`** routes by what exists, without `--app`:
+
+  | State | What happens |
+  | --- | --- |
+  | The workflow exists | The update: the template with the old file's `XCODE_APP`, `runs-on` and `timeout-minutes` (each checked: `XCODE_APP` is `/Applications/<name>.app`, `runs-on` one label, `timeout-minutes` 1 to 999; a value that fails is not kept, and a note says which and what the new file has), the diff, the question, the `.bak`, the write |
+  | No workflow, and a `wincode.yaml` (without `--force`) | The template is written to a new file, with no question, since nothing is replaced. `wincode.yaml` is not touched. This used to be `config-exists`; `--force` keeps its old meaning there (replace `wincode.yaml`, and copy the workflow) |
+  | Neither | The full `init`, as before, plus the copy |
+  | `--app`, and the workflow exists | `workflow-exists` (1), whose next step is to run `wincode init --workflow` alone |
+
+  - **The options that describe `wincode.yaml`** (`--bundle-id`, `--team-id`, `--profile`, `--profile-dir`, `--entitlements`, `--workflow-ref`, `--output`, `--flavor`, `--configuration`, `--credentials`) are `init-value-invalid` (64) in the first two rows.
+  - **The question** is `[y/N]`, default no, and only `y` or `yes` writes. Without a terminal, in CI, with `--json`, and without `--yes`, it is `init-input-missing` (64) after the diff and before any write. `--force` is not a yes. `--dry-run` shows the diff and writes nothing.
+  - **The order of writes** is `wincode.yaml` (through the loader's own reload and rollback), then the `.bak`, then the workflow. If the workflow or the `.bak` cannot be written, all three files are put back as they were, and the failure is `workflow-unwritable` (1).
+  - **`wincode.yaml`** gets `flutter_version` only when the old workflow had a valid `FLUTTER_VERSION` and no `flutter_version` is set: at the top level of a flat file, under `defaults:` (made if absent) of a file of apps, by `yaml_edit`, so comments and order stay. When one is set anywhere (`defaults` or an app), it wins, and a note names the old workflow's release when it differs. Without a `wincode.yaml`, a note says to set `flutter_version: <release>` by hand. A non-empty `FLAVOR` of the old workflow is named in a note and moves nowhere, and `min_xcode_version` is never inferred: `XCODE_APP` is the Xcode the job selects, not the oldest that may build the app. After a workflow is written, one line names the keys that `wincode.yaml` still lacks for a build.
+  - **Line ends:** the old file may have a byte order mark and CRLF. The new file is LF, the `.bak` keeps the old bytes, and a file that differs from the new one only by CRLF is "up to date".
+  - **`--json`** has `workflow` as `copied`, `would-copy`, `updated`, `would-update` or `up-to-date`, `backup` (the name) when one was written, and `flutter_version` under `config` when it was added.
+  - `init` runs no `git` command and writes no file but `wincode-ios.yml`, its `.bak` and `wincode.yaml`: a test starts it with a process hook that fails when called, and compares the whole folder before and after.
+- **The warning** `workflow-differs` (a WARN of the check `workflow-contract`) is given by `build` and `doctor --build` when the workflow has contract 2 and is readable. It never stops a build.
+  - The two files are compared as parsed YAML, key by key. `runs-on`, `timeout-minutes`, `XCODE_APP` (at the top or in a job) and the `description` of an input are removed first, and an empty `env` with them. A pin is not.
+  - The parts are named: `input <name>`; `step "<name>"`, or the action's name when the step has none (`step "actions/checkout"`), with `(added)` or `(missing)` for a step that only one file has; `job <id> <key>` for another key of a job and `job <id>` for a job that only one file has; `on` for anything else under `on:`; `the order of the steps`; and any other top-level key by its name, such as `permissions`.
+  - `why` says that a changed workflow belongs to its owner, that the contract and the IPA's checks still hold, and that the three values are not counted; `next` is `wincode init --workflow`. With `--verbose`, the differing lines come out of the checker's log, as `init` shows them (`-` the workflow's, `+` the template's, with the workflow's three values put into the template first).
+- **`doctor --build`** gives one INFO line (check `actions-write`) after the token's, with the text of section 10. Plain `build` does not.
+- **CI** has a job `actionlint` (`.github/workflows/dart.yml`) that downloads actionlint 1.7.12 for Linux, checks its SHA-256 (`8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8`, from the release's checksums file and from the downloaded file), and lints the template. It lints the template only: with shellcheck, which the runner has, the repository's other workflows have findings that are older than this part.
+- **Ids that this ADR did not name,** given while building: `workflow-differs` (a WARN) and `workflow-unwritable` (1). Every other id is one that parts 5a and 5b already had: `workflow-unreadable` and `workflow-contract` (78), `init-input-missing` and `init-value-invalid` (64), `backup-exists`, `workflow-exists` and `init-edit-failed` (1), and `init-wrote-invalid` (70).
+- **Tests:** `fake_github` now serves the real template as the repository's workflow, so every test of `build` also shows that the template passes the contract, inputs and Xcode checks. One test that removed an input of the old, shorter fixture by its text now removes it from the template's text (with its `description` line).
+- **A report, not a fix: "The handle is invalid" on Windows.** The real check of part 5b saw that error once around standard input, and its text was not kept. Eight probes since then (an open pipe, a closed pipe, `NUL`, a tool's null stdin, a detached child, a detached child with stdio, standard input closed in the shell, and, from a process with no console and no standard handles, started from `wscript`) never raised it. In that last process `stdin.hasTerminal` is true and an asynchronous read never returns, which `build` meets only after a Ctrl-C asks its question, where a second Ctrl-C answers. It is not reproduced, so no code changed; GitHub issue 31 holds what was seen.
+
+**The real check of part 5c** (2026-11-16, Linux workflow only; no dispatch, no run, no macOS; `doctor --build` sends GET requests only, 12 each).
+- **The setup:** a new branch `rehearsal-5c` of the private test repository, from the branch of part 5b, whose one changed file is the workflow: winCode's template, written by `init --workflow` into a copy of the project, then changed in that copy only in the two values `runs-on` (`ubuntu-24.04`) and `timeout-minutes` (5), with a first line that says it is a fixture and is never to be copied. Its steps need macOS, and it is never to be dispatched. The branch's `main`, the first rehearsal branch and the one of part 5b were not touched. The workflow only runs on a dispatch, and afterwards the repository had no run for the branch.
+- **`init --workflow`** on the hand-written Linux workflow of part 5b (contract 2) showed the diff, kept `ubuntu-24.04` and 5 (and its Xcode, which equals the template's), wrote the `.bak` byte for byte, and left `wincode.yaml` as it was (it already set `flutter_version`). A second run said "up to date". With the file deleted, `init --workflow` wrote the template, and the file was the template byte for byte (5,584 bytes, equal hashes).
+- **`doctor --build` on `rehearsal-5c`:** PASS for the contract, for the seven inputs, for Xcode 26.6 against 26.0, for the Flutter constraint and tag 3.47.7, the scheme, the configuration and the bundle ID; no WARN for the workflow; the new INFO line. It also FAILed two checks that are not about the workflow: the key folder of the plain `doctor` (not set here), and `build-number-not-higher`, because the two successful runs of part 5b, less than a day old, hold the numbers 1 and 2 (the rule of section 3, on real runs, again).
+- **`doctor --build` on `rehearsal-5b`** (the hand-written workflow): the contract PASS, and one WARN, `workflow-differs`, naming six parts: `step "actions/checkout"`, `step "Xcode"`, `step "Flutter"`, `step "Build the archive, unsigned"` and `step "Package the app as an unsigned IPA"` (each `(missing)`) and `step "Pack a small IPA-shaped file"` (`(added)`). The same two other FAILs.
+- **What it did not show:** a run of the template, on Linux or on macOS (it needs the maintainer's word), the `awk` of macOS, a `wincode.yaml` that `init` changed on real data (the rehearsal project already set `flutter_version`; the tests cover it), and the first real build with `actions/checkout` and `actions/upload-artifact` as pinned.
+
 **Accepted when** these all hold. They replace ADR-0013's phase 5 criteria and ADR-0014's additions to them.
 - **Against a fake GitHub server** (no network in CI):
   - the dispatch carries every input, and the run is found from the dispatch's answer, and by its name after a 204;
@@ -773,7 +824,7 @@ The results:
 - **`--events`,** for `build`, `sign` and `upload`: golden lines, each line valid JSON, and the last line equal to `--json`'s object. `upload --events` without `--yes` is `confirmation-required`.
 - **No secret in any output,** `--verbose` included: no token, no signed link, no `Authorization` header.
 - **The template:** it passes actionlint, and `init --workflow` writes it byte for byte to a new file.
-- **The update of a workflow** by `init --workflow` shows the diff with the old file's values kept, asks, and writes the `.bak`. It stops on an existing `.bak` unless `--force`, writes nothing with `--dry-run`, and leaves `wincode.yaml` alone.
+- **The update of a workflow** by `init --workflow` shows the diff with the old file's values kept, asks, and writes the `.bak`. It stops on an existing `.bak` unless `--force`, writes nothing with `--dry-run`, and changes `wincode.yaml` only by adding `flutter_version`, when that has none.
 - **The real run:** `wincode build`, `wincode sign` and `wincode upload` of one app of a file of apps, in a row, end with a build processed as valid. It uses macOS minutes and an upload, with the maintainer's yes. It also confirms whether `GET /v1/apps/{id}/buildUploads` lists uploads.
 
 ### 14. Out of scope, and the review's decisions
