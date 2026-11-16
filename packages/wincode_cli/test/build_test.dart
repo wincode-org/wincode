@@ -1679,11 +1679,163 @@ Build plan:
     );
   });
 
+  group('a workflow that is not winCode\'s template', () {
+    const driftCheck = 'workflow-contract';
+
+    List<Map<String, Object?>> drifts(Map<String, Object?> json) => [
+      for (final c in checksOf(json))
+        if (c['check'] == driftCheck && c['status'] == 'WARN') c,
+    ];
+
+    test('the template itself passes the contract, the inputs and the Xcode, with no warning', () async {
+      final (code, json, id) = await buildJson([]);
+      expect((code, id), _passedChecks);
+      expect(drifts(json), isEmpty);
+      final passed = [
+        for (final c in checksOf(json))
+          if (c['status'] == 'PASS') '${c['what']}',
+      ];
+      expect(
+        passed,
+        containsAll([
+          'the workflow at main says contract 2, the one this wincode needs',
+          'the workflow declares every input that wincode build sends, and needs no other',
+          'the workflow selects Xcode 26.6, which is 26.0 or later',
+        ]),
+      );
+    });
+
+    test('the three values of its owner, comments and the order of keys are not differences', () async {
+      repo.files['.github/workflows/wincode-ios.yml'] =
+          '# A note of the owner\n${workflowText.replaceFirst('runs-on: macos-26', 'runs-on: macos-15').replaceFirst('timeout-minutes: 45', 'timeout-minutes: 90').replaceFirst('Xcode_26.6.app', 'Xcode_26.0.app').replaceFirst('permissions:\n  contents: read\n\n', '').replaceFirst('name: wincode-ios\n', 'permissions:\n  contents: read\nname: wincode-ios\n')}';
+      final (code, json, id) = await buildJson([]);
+      expect((code, id), _passedChecks);
+      expect(drifts(json), isEmpty);
+    });
+
+    test(
+      'is one warning that names its parts, and the build goes on',
+      () async {
+        repo.files['.github/workflows/wincode-ios.yml'] = workflowText
+            .replaceFirst(
+              '          xcodebuild -version\n',
+              '          xcodebuild -version\n          echo extra\n',
+            )
+            .replaceFirst(
+              'description: The entry point, or empty for lib/main.dart\n        required: false\n        type: string\n        default: ""',
+              'description: The entry point\n        required: false\n        type: string\n        default: lib/main.dart',
+            )
+            .replaceFirst('contents: read', 'contents: write');
+        final (code, json, id) = await buildJson([]);
+        expect((code, id), _passedChecks, reason: 'the build is not refused');
+        final found = drifts(json);
+        expect(found, hasLength(1));
+        expect(
+          found.single['what'],
+          'the workflow at main has contract 2 but differs from winCode\'s template in: permissions, input target, step "Xcode" (3 parts)',
+        );
+        expect(
+          [
+            for (final c in checksOf(json))
+              if (c['check'] == driftCheck) c['status'],
+          ],
+          ['PASS', 'WARN'],
+        );
+      },
+    );
+
+    test('names a step that was added, and one that is missing, and a pin that was bumped', () async {
+      repo.files['.github/workflows/wincode-ios.yml'] = workflowText
+          .replaceFirst(
+            'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1',
+            'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b2 # v7.0.2',
+          )
+          .replaceFirst(
+            '      - name: Flutter\n',
+            '      - name: Lint\n        run: echo lint\n\n      - name: Flutter\n',
+          );
+      // Flutter is renamed, so that the template's step is missing and the owner's is a new one.
+      repo.files['.github/workflows/wincode-ios.yml'] = repo
+          .files['.github/workflows/wincode-ios.yml']!
+          .replaceFirst('      - name: Flutter\n', '      - name: Flutter 3\n');
+      final (_, json, _) = await buildJson([]);
+      final text = '${drifts(json).single['what']}';
+      expect(text, contains('step "actions/checkout"'));
+      expect(text, contains('step "Lint" (added)'));
+      expect(text, contains('step "Flutter 3" (added)'));
+      expect(text, contains('step "Flutter" (missing)'));
+    });
+
+    test(
+      'with --verbose shows the differing lines, without the three values',
+      () async {
+        repo.files['.github/workflows/wincode-ios.yml'] = workflowText
+            .replaceFirst('runs-on: macos-26', 'runs-on: macos-15')
+            .replaceFirst(
+              '          xcodebuild -version\n',
+              '          xcodebuild -version\n          echo extra\n',
+            );
+        final (_, _, err) = await wincode(['--verbose']);
+        expect(err, contains('the workflow differs from winCode\'s template'));
+        expect(err, contains('-           echo extra'));
+        final diff = [
+          for (final l in err.split('\n'))
+            if (l.startsWith('- ') || l.startsWith('+ ')) l,
+        ];
+        expect(diff, isNotEmpty);
+        expect(diff.join('\n'), isNot(contains('runs-on')));
+      },
+    );
+
+    test(
+      'is shown by --json as a check, and by doctor --build as a WARN',
+      () async {
+        repo.files['.github/workflows/wincode-ios.yml'] = workflowText
+            .replaceFirst(
+              "if: github.event_name == 'workflow_dispatch'",
+              "if: github.event_name == 'workflow_dispatch' && true",
+            );
+        await startApple(builds: ['3']);
+        final (code, out, err) = await wincode(
+          ['--build'],
+          command: 'doctor',
+          environment: {'GH_TOKEN': _token, 'WINCODE_ASC_KEY_DIR': keys.path},
+        );
+        expect(code, 0, reason: '$out$err');
+        expect(
+          out,
+          contains(
+            'WARN  the workflow at main has contract 2 but differs from winCode\'s template in: job unsigned-ipa if (1 part)',
+          ),
+        );
+        expect(out, contains('PASS  the workflow at main says contract 2'));
+        expect(
+          out,
+          contains('run wincode init --workflow to see the differences.'),
+        );
+      },
+    );
+  });
+
   group('doctor --build', () {
     Map<String, String> asc() => {
       'GH_TOKEN': _token,
       'WINCODE_ASC_KEY_DIR': keys.path,
     };
+
+    test('says that Actions write is not tested ahead, and plain build does not', () async {
+      const line =
+          'Actions write permission is not tested ahead: every request that needs it changes something, and the dispatch itself refuses a token without it, before anything runs';
+      await startApple(builds: ['3']);
+      final (_, doctorOut, _) = await wincode(
+        ['--build'],
+        command: 'doctor',
+        environment: asc(),
+      );
+      expect(doctorOut, contains('INFO  $line'));
+      final (_, buildOut, _) = await wincode([]);
+      expect(buildOut, isNot(contains('Actions write permission')));
+    });
 
     test('makes the checks of build and prints no plan, and does not stop at the place of the dispatch', () async {
       await startApple(builds: ['3']);
