@@ -891,7 +891,7 @@ Next:
   });
 
   group('the reference workflow', () {
-    test('--workflow copies the template byte for byte, and never replaces a file', () async {
+    test('--workflow copies the template byte for byte, and never replaces a file unasked', () async {
       flutterProject(_same());
       final run = await init(['--yes', '--workflow', '--team-id', _team]);
       expect(run.code, 0, reason: run.err);
@@ -907,18 +907,43 @@ Next:
         ),
       );
 
+      expect(
+        run.out,
+        contains(
+          'Before the first wincode build, add flutter_version and min_xcode_version to wincode.yaml',
+        ),
+      );
+
+      // The same file again is up to date, and a file that cannot be read is not replaced (test/init_workflow_test.dart
+      // has the update itself).
+      final same = await init(['--yes', '--workflow']);
+      expect(same.code, 0, reason: same.err);
+      expect(same.out, contains('is already up to date.'));
       copy.writeAsStringSync('mine');
-      final again = await init([
+      final again = await init(['--yes', '--workflow', '--json']);
+      expect(again.code, 78);
+      expect(errorOf(again.out), containsPair('id', 'workflow-unreadable'));
+      expect(copy.readAsStringSync(), 'mine');
+      expect(File('${copy.path}.bak').existsSync(), isFalse);
+    });
+
+    test('--workflow --dry-run writes no workflow', () async {
+      flutterProject(_same());
+      final run = await init([
         '--yes',
-        '--force',
         '--workflow',
+        '--dry-run',
         '--team-id',
         _team,
-        '--json',
       ]);
-      expect(again.code, 1);
-      expect(errorOf(again.out), containsPair('id', 'workflow-exists'));
-      expect(copy.readAsStringSync(), 'mine');
+      expect(run.code, 0, reason: run.err);
+      expect(
+        run.out,
+        contains(
+          'It would copy the reference workflow to .github/workflows/wincode-ios.yml.',
+        ),
+      );
+      expect(Directory('${root.path}/.github').existsSync(), isFalse);
     });
 
     test('without --workflow nothing is copied', () async {
