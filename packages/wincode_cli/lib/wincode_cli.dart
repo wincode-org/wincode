@@ -99,8 +99,9 @@ const _planned = [
 ///
 /// [clock] (default: the system's), [connect] (default: App Store Connect), [connectGithub] (default: GitHub's API at
 /// api.github.com; only tests connect to a fake server), [workingDirectory] (default: the current
-/// folder), [readLine] and [terminal] (default: standard input), [run] (default: starts the program), [zsign]
-/// (default: the runner for [platform], which runs zsign through `wsl.exe` on Windows and directly on Linux),
+/// folder), [readLine] and [terminal] (default: standard input, which is a terminal only if it can be read), [run]
+/// (default: starts the program), [zsign] (default: the runner for [platform], which runs zsign through `wsl.exe` on
+/// Windows and directly on Linux),
 /// [platform] (default: `Platform.operatingSystem`), [pollInterval] (default: 30 s, how often `upload` asks Apple for
 /// the state of the processing and `build` asks GitHub for the state of the run), [sleep] (default: waits), [interrupts]
 /// (default: Ctrl-C, and SIGTERM where there is one) and [answer] (default: the next line of standard input, which a
@@ -130,6 +131,8 @@ Future<int> runWincode(
     environment: environment,
     runTool: run,
   );
+  // A terminal whose line mode cannot be read is no terminal: asking there would end in "The handle is invalid".
+  final atTerminal = terminal ?? stdinIsTerminal();
   // A usage error comes before the arguments are parsed, so the flags can only be looked up in the list itself.
   final flags = args.takeWhile((a) => a != '--');
   var json = flags.contains('--json');
@@ -164,7 +167,7 @@ Future<int> runWincode(
       connectGithub,
       run,
       answer,
-      terminal ?? stdin.hasTerminal,
+      atTerminal,
       pollInterval,
       sleep ?? Future<void>.delayed,
       interrupts ?? systemInterrupts,
@@ -186,7 +189,7 @@ Future<int> runWincode(
       clock ?? DateTime.now,
       workingDirectory ?? Directory.current,
       readLine ?? stdin.readLineSync,
-      terminal ?? stdin.hasTerminal,
+      atTerminal,
     ),
     _Sign(
       out,
@@ -207,7 +210,7 @@ Future<int> runWincode(
       connect,
       run,
       readLine ?? stdin.readLineSync,
-      terminal ?? stdin.hasTerminal,
+      atTerminal,
       pollInterval,
     ),
   );
@@ -1247,17 +1250,7 @@ class _Upload extends _Command {
         !runsInCi(environment) &&
         terminal;
     if (!dryRun && !yes && !interactive) {
-      throw const WincodeException(
-        ExitCode.usage,
-        'confirmation-required',
-        'upload needs your confirmation, and cannot ask here',
-        why:
-            'an upload cannot be taken back: the build number is used from the moment Apple has the file. upload asks '
-            'you to type the name of the app, but only at a terminal, and not in CI, with --json or with --events.',
-        next:
-            'run wincode upload --dry-run to read the plan, then run it in a terminal, or give --yes. Nothing was '
-            'uploaded.',
-      );
+      throw uploadConfirmationRequired;
     }
     final ipa =
         argResults!.option('ipa') ??
@@ -1443,17 +1436,7 @@ class _Build extends _Command {
     final canAsk =
         !jsonOutput && !eventsOutput && !runsInCi(environment) && terminal;
     if (!dry && collecting == null && !yes && !canAsk) {
-      throw const WincodeException(
-        ExitCode.usage,
-        'confirmation-required',
-        'build needs your confirmation, and cannot ask here',
-        why:
-            'a build uses macOS minutes, which a private repository pays for. build asks before it starts one, but only '
-            'at a terminal, and not in CI, with --json or with --events.',
-        next:
-            'run wincode build --dry-run to read the plan, wincode doctor --build to make the checks, then run it in a '
-            'terminal, or give --yes. Nothing was started.',
-      );
+      throw buildConfirmationRequired;
     }
     final events = eventsOutput ? EventWriter(out, clock, app: app.name) : null;
     // With --json or --events, stdout carries the JSON only.

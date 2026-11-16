@@ -44,20 +44,30 @@ Stream<ProcessSignal> systemInterrupts() {
   return controller.stream;
 }
 
+/// What `build` ends with when it has to ask whether to start a run and cannot: no terminal, CI, `--json` or
+/// `--events`, or a terminal that cannot be read.
+const buildConfirmationRequired = WincodeException(
+  ExitCode.usage,
+  'confirmation-required',
+  'build needs your confirmation, and cannot ask here',
+  why:
+      'a build uses macOS minutes, which a private repository pays for. build asks before it starts one, but only '
+      'at a terminal, and not in CI, with --json or with --events.',
+  next:
+      'run wincode build --dry-run to read the plan, wincode doctor --build to make the checks, then run it in a '
+      'terminal, or give --yes. Nothing was started.',
+);
+
 /// Reads the lines of standard input as they come, for a question that a signal can also answer. The blocking
-/// `readLineSync` cannot be raced against a second Ctrl-C.
+/// `readLineSync` cannot be raced against a second Ctrl-C. A standard input that cannot be read throws an
+/// [IOException], and what that comes to is for each question to say.
 Future<String?> Function() stdinLines() {
   StreamIterator<String>? lines;
   return () async {
-    try {
-      lines ??= StreamIterator(
-        stdin.transform(utf8.decoder).transform(const LineSplitter()),
-      );
-      return await lines!.moveNext() ? lines!.current : null;
-    } on IOException {
-      // Standard input is gone: nobody answers, which is a no.
-      return null;
-    }
+    lines ??= StreamIterator(
+      stdin.transform(utf8.decoder).transform(const LineSplitter()),
+    );
+    return await lines!.moveNext() ? lines!.current : null;
   };
 }
 
@@ -209,7 +219,15 @@ class BuildRun {
   Future<void> start({required bool yes}) async {
     if (!yes) {
       report.write('Start this build on GitHub? It uses macOS minutes. [y/N] ');
-      final answer = (await readAnswer())?.trim().toLowerCase();
+      final String? reply;
+      try {
+        reply = await readAnswer();
+      } on IOException {
+        // A terminal that cannot be read is no terminal.
+        report.writeln();
+        throw buildConfirmationRequired;
+      }
+      final answer = reply?.trim().toLowerCase();
       report.writeln();
       if (answer != 'y' && answer != 'yes') {
         findings.add(
@@ -814,11 +832,16 @@ class BuildRun {
       report.write(
         'Cancel the run on GitHub too? It has run for about $age minute${age == 1 ? '' : 's'}. [y/N] ',
       );
-      // No is the default: Enter, anything but y, and a second Ctrl-C.
-      final reply = await Future.any<String?>([
-        readAnswer(),
-        _signals.next.then<String?>((_) => null),
-      ]);
+      // No is the default: Enter, anything but y, a second Ctrl-C, and a standard input that cannot be read.
+      String? reply;
+      try {
+        reply = await Future.any<String?>([
+          readAnswer(),
+          _signals.next.then<String?>((_) => null),
+        ]);
+      } on IOException {
+        reply = null;
+      }
       report.writeln();
       if (_signals.pending) _signals.take();
       final answer = reply?.trim().toLowerCase();

@@ -13,6 +13,12 @@ const _team = 'TEAM000000';
 final _now = DateTime.utc(2026, 11, 9, 12);
 final _later = DateTime.utc(2027, 9, 5, 12);
 
+/// What Windows gives the first read of a standard input that is a character device but no console.
+const _unreadable = StdinException(
+  'Error getting terminal line mode',
+  OSError('The handle is invalid', 6),
+);
+
 /// The `project.pbxproj` of a Runner target with the configurations of [bundleIds]. A null value leaves the setting
 /// out. [team] and [entitlements] go into every configuration. [xcconfigOf] gives a configuration the base
 /// configuration file `ios/Flutter/<name>`, and [extra] more settings of a configuration.
@@ -198,11 +204,12 @@ void main() {
   File config() => File('${root.path}/wincode.yaml');
 
   /// Runs `wincode init` in [root]. [input] is what the user types; with it, the run is at a terminal, and every typed
-  /// line is echoed into stdout as a terminal would.
+  /// line is echoed into stdout as a terminal would. With [unreadable], the first read fails with it.
   Future<({int code, String out, String err, int asked})> init(
     List<String> args, {
     List<String>? input,
     bool terminal = false,
+    Object? unreadable,
     Map<String, String> env = const {},
     Directory? cwd,
   }) async {
@@ -220,6 +227,9 @@ void main() {
       terminal: terminal || input != null,
       readLine: () {
         asked++;
+        if (unreadable != null) {
+          throw unreadable;
+        }
         if (lines.isEmpty) {
           return null;
         }
@@ -734,6 +744,31 @@ Next:
         contains('the input ended before init had all it needs'),
       );
       expect(config().existsSync(), isFalse);
+    });
+
+    test('a standard input that cannot be read is the input that ended: 64, and nothing is written', () async {
+      flutterProject(_same());
+      // The first question, and the confirmation that comes after the options answered every other.
+      for (final args in [
+        <String>[],
+        ['--bundle-id', _bundleId, '--team-id', _team],
+      ]) {
+        final run = await init(args, terminal: true, unreadable: _unreadable);
+        expect((run.code, run.asked), (64, 1), reason: '$args ${run.err}');
+        expect(
+          run.err,
+          contains('the input ended before init had all it needs'),
+        );
+        expect(run.err, isNot(contains('internal error')));
+        expect(config().existsSync(), isFalse);
+      }
+      // A standard input that works still answers.
+      final run = await init(
+        ['--bundle-id', _bundleId, '--team-id', _team],
+        input: ['', '', ''],
+      );
+      expect((run.code, run.err), (0, ''));
+      expect(config().existsSync(), isTrue);
     });
   });
 

@@ -17,6 +17,12 @@ import 'fake_github.dart';
 /// dispatch, the wait, Ctrl-C, the artifact and its checks. Time is a variable that the waits advance.
 const _token = 'github_pat_FAKE0123456789abcdefghijklmnopqrstuv';
 const _bundleId = 'org.example.demo';
+
+/// What Windows gives the first read of a standard input that is a character device but no console.
+const _unreadable = StdinException(
+  'Error getting terminal line mode',
+  OSError('The handle is invalid', 6),
+);
 const _workflowRef =
     'example-org/example-app/.github/workflows/wincode-ios.yml@main';
 
@@ -324,6 +330,38 @@ void main() {
           expect(err, contains('Nothing was started.'));
         }
       }
+    });
+
+    test('a standard input that cannot be read is no terminal: confirmation-required (64), and nothing is started', () async {
+      // The read throws at once, or in the future it returns.
+      for (final Future<String?> Function() answer in [
+        () => throw _unreadable,
+        () async => throw _unreadable,
+      ]) {
+        final (code, out, err) = await wincode(
+          [],
+          terminal: true,
+          answer: answer,
+        );
+        expect(code, 64, reason: '$out$err');
+        expect(
+          err,
+          startsWith(
+            'wincode build: build needs your confirmation, and cannot ask here\n',
+          ),
+        );
+        expect(err, contains('Nothing was started.'));
+        expect('$out$err', isNot(contains('internal error')));
+        expect(actions.dispatches, isEmpty);
+      }
+      // A standard input that works still starts the run.
+      final (code, out, err) = await wincode(
+        [],
+        terminal: true,
+        answers: ['y'],
+      );
+      expect(code, 0, reason: '$out$err');
+      expect(actions.dispatches, hasLength(1));
     });
 
     test('--dry-run asks nothing and sends nothing', () async {
@@ -957,6 +995,33 @@ void main() {
       expect(out, contains('wincode build --run 9000001'));
       expect(out, contains('or cancel it at ${actions.runUrl}'));
     });
+
+    test(
+      'a standard input that cannot be read is a no: the run is left alone, 75',
+      () async {
+        for (final Future<String?> Function() answer in [
+          () => throw _unreadable,
+          () async => throw _unreadable,
+        ]) {
+          actions = FakeActions(repo, now: () => now)..zip = _artifact(ipa);
+          actions.timeline = endless();
+          pressAfterRead(2);
+          final (code, out, err) = await wincode(
+            ['--yes'],
+            terminal: true,
+            answer: answer,
+          );
+          expect(code, 75, reason: '$out$err');
+          expect(out, contains('Cancel the run on GitHub too?'));
+          expect(
+            out,
+            contains('FAIL  stopped waiting for run ${actions.runUrl}'),
+          );
+          expect('$out$err', isNot(contains('internal error')));
+          expect(actions.cancels, isEmpty);
+        }
+      },
+    );
 
     test(
       'yes sends the cancel request, and the build ends with run-cancelled',

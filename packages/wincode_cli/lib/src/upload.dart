@@ -278,7 +278,14 @@ class Uploader {
       report.write(
         'To upload this build, type the name of the app ($_confirmation): ',
       );
-      final answer = readLine?.call()?.trim();
+      final String? answer;
+      try {
+        answer = readLine?.call()?.trim();
+      } on IOException {
+        // A terminal that cannot be read is no terminal.
+        report.writeln();
+        throw uploadConfirmationRequired;
+      }
       report.writeln();
       if (answer != _confirmation) {
         findings.add(
@@ -838,6 +845,20 @@ class Uploader {
 
 /// The default wait for Apple's processing result.
 const defaultUploadTimeout = Duration(minutes: 20);
+
+/// What `upload` ends with when it has to ask for the name of the app and cannot: no terminal, CI, `--json` or
+/// `--events`, or a terminal that cannot be read.
+const uploadConfirmationRequired = WincodeException(
+  ExitCode.usage,
+  'confirmation-required',
+  'upload needs your confirmation, and cannot ask here',
+  why:
+      'an upload cannot be taken back: the build number is used from the moment Apple has the file. upload asks '
+      'you to type the name of the app, but only at a terminal, and not in CI, with --json or with --events.',
+  next:
+      'run wincode upload --dry-run to read the plan, then run it in a terminal, or give --yes. Nothing was '
+      'uploaded.',
+);
 
 /// [time] as `2026-11-11 18:58:48 UTC`, as the spike's script writes it.
 String _stamp(DateTime time) =>
