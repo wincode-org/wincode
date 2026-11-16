@@ -65,7 +65,7 @@ Run "wincode help" to see global options.
 $ wincode help doctor
 Check the setup, or a Mach-O binary against the SDK or a reference build.
 
-Without options, doctor checks the setup of the app in wincode.yaml and sends nothing: that the file loads, and that the app's App Store Connect key is where its credentials say (a folder with one AuthKey_<Key ID>.p8 and an issuer-id, outside git working trees and OneDrive, and on Linux closed to other users). With --sign, it also checks WSL2 on Windows, the pinned zsign 1.9.0 (f6158be9), whose build commands it prints, and where the distribution key is; the first check that finds zsign records its SHA-256 outside the repository, and wincode sign runs only that binary. To check a binary, give --binary and at least one of --sdk and --reference.
+Without options, doctor checks the setup of the app in wincode.yaml and sends nothing: that the file loads, and that the app's App Store Connect key is where its credentials say (a folder with one AuthKey_<Key ID>.p8 and an issuer-id, outside git working trees and OneDrive, and on Linux closed to other users). With --sign, it also checks WSL2 on Windows, the pinned zsign 1.9.0 (f6158be9), whose build commands it prints, and where the distribution key is; the first check that finds zsign records its SHA-256 outside the repository, and wincode sign runs only that binary. With --build-zsign as well, on Linux, doctor first builds that zsign from the pinned source and records the binary it built. To check a binary, give --binary and at least one of --sdk and --reference.
 
 Usage: wincode doctor [arguments]
 -h, --help                         Print this usage information.
@@ -74,6 +74,7 @@ Usage: wincode doctor [arguments]
     --reference=<Mach-O file>      List how the binary differs from a reference build, such as an Xcode-built copy. This does not fail.
     --sign                         Also check what wincode sign needs: on Windows WSL2 version 2, on Linux nothing but zsign itself; the pinned zsign and its recorded SHA-256 (recorded by the first check that finds it), and where the distribution key is.
     --build                        Also make every check that wincode build makes before it starts a run, with real reads of GitHub and, for the build number, of App Store Connect, and start nothing (ADR-0015, section 10).
+    --build-zsign                  With --sign, on Linux: build the pinned zsign for you, as the commands that --sign prints do. It downloads GitHub's archive of the pinned commit (HTTPS only, with a timeout and a size limit), checks its SHA-256 before it unpacks anything, unpacks it without a path outside its folder or a link, runs make as you (never sudo; a missing tool stops it before any download, with the command to install it, and nothing is installed), checks the version, and records the SHA-256 of the binary it built. The old zsign stays until the new one passes. With --dry-run it prints the plan and does nothing. On Windows it is not built yet.
 
 Run "wincode help" to see global options.
 

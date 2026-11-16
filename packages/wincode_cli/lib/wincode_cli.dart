@@ -22,6 +22,7 @@ import 'src/select.dart';
 import 'src/sign.dart';
 import 'src/upload.dart';
 import 'src/zsign.dart';
+import 'src/zsign_build.dart';
 
 export 'src/config.dart'
     show
@@ -75,10 +76,13 @@ export 'src/zsign.dart'
         wincodeDataDirectory,
         zsignCommit,
         zsignPath,
+        zsignBuildCommandsIn,
         zsignRunnerFor,
         zsignSourceSha256,
         zsignStateFile,
         zsignVersion;
+export 'src/tar_unpack.dart' show TarRefused, unpackTarGz;
+export 'src/zsign_build.dart' show ZsignFetch, ZsignSource, downloadArchive;
 export 'src/zsign_native.dart' show NativeZsignRunner, nativeZsignPath;
 
 /// The commands that ADR-0013 designs and later phases implement: name, summary, arguments and phase.
@@ -101,7 +105,8 @@ const _planned = [
 /// api.github.com; only tests connect to a fake server), [workingDirectory] (default: the current
 /// folder), [readLine] and [terminal] (default: standard input, which is a terminal only if it can be read), [run]
 /// (default: starts the program), [zsign] (default: the runner for [platform], which runs zsign through `wsl.exe` on
-/// Windows and directly on Linux),
+/// Windows and directly on Linux), [zsignSource] (default: GitHub's archive of the pinned zsign commit and its pinned
+/// SHA-256, which `doctor --sign --build-zsign` downloads; tests give a fake download and their own pin),
 /// [platform] (default: `Platform.operatingSystem`), [pollInterval] (default: 30 s, how often `upload` asks Apple for
 /// the state of the processing and `build` asks GitHub for the state of the run), [sleep] (default: waits), [interrupts]
 /// (default: Ctrl-C, and SIGTERM where there is one) and [answer] (default: the next line of standard input, which a
@@ -119,6 +124,7 @@ Future<int> runWincode(
   bool? terminal,
   RunProcess run = runProcess,
   ZsignRunner? zsign,
+  ZsignSource? zsignSource,
   String? platform,
   Duration pollInterval = const Duration(seconds: 30),
   Future<void> Function(Duration)? sleep,
@@ -153,6 +159,7 @@ Future<int> runWincode(
       redactor,
       run,
       zsign,
+      zsignSource ?? ZsignSource(),
       clock ?? DateTime.now,
       connect,
       connectGithub,
@@ -464,6 +471,7 @@ class _Doctor extends _Command {
     this.redactor,
     this.runProcess,
     this.zsign,
+    this.zsignSource,
     this.clock,
     this.connect,
     this.connectGithub,
@@ -498,6 +506,17 @@ class _Doctor extends _Command {
         help:
             'Also make every check that wincode build makes before it starts a run, with real reads of GitHub and, for '
             'the build number, of App Store Connect, and start nothing (ADR-0015, section 10).',
+      )
+      ..addFlag(
+        'build-zsign',
+        negatable: false,
+        help:
+            'With --sign, on Linux: build the pinned zsign for you, as the commands that --sign prints do. It downloads '
+            "GitHub's archive of the pinned commit (HTTPS only, with a timeout and a size limit), checks its SHA-256 before "
+            'it unpacks anything, unpacks it without a path outside its folder or a link, runs make as you (never sudo; '
+            'a missing tool stops it before any download, with the command to install it, and nothing is installed), '
+            'checks the version, and records the SHA-256 of the binary it built. The old zsign stays until the new one '
+            'passes. With --dry-run it prints the plan and does nothing. On Windows it is not built yet.',
       );
   }
 
@@ -506,6 +525,7 @@ class _Doctor extends _Command {
   final Redactor redactor;
   final RunProcess runProcess;
   final ZsignRunner zsign;
+  final ZsignSource zsignSource;
   final DateTime Function() clock;
   final AscConnect connect;
   final GithubConnect connectGithub;
@@ -521,8 +541,9 @@ class _Doctor extends _Command {
       'and an issuer-id, outside git working trees and OneDrive, and on Linux closed to other users). With --sign, it '
       'also checks WSL2 on Windows, the pinned zsign $zsignVersion (${zsignCommit.substring(0, 8)}), whose build '
       'commands it prints, and where the distribution key is; the first check that finds zsign records its SHA-256 '
-      'outside the repository, and wincode sign runs only that binary. To check a binary, give --binary and at least '
-      'one of --sdk and --reference.';
+      'outside the repository, and wincode sign runs only that binary. With --build-zsign as well, on Linux, doctor '
+      'first builds that zsign from the pinned source and records the binary it built. To check a binary, give '
+      '--binary and at least one of --sdk and --reference.';
 
   @override
   bool get takesArguments => false;
@@ -533,9 +554,17 @@ class _Doctor extends _Command {
     final sdk = argResults!.option('sdk');
     final reference = argResults!.option('reference');
     if (binary == null && sdk == null && reference == null) {
-      if (argResults!.flag('sign') && globalResults!.flag('dry-run')) {
+      if (argResults!.flag('build-zsign') && !argResults!.flag('sign')) {
         usageException(
-          'doctor --sign runs read-only commands (in WSL2 on Windows) and records the SHA-256 of zsign; it has no --dry-run.',
+          '--build-zsign builds the zsign that --sign checks: give --sign as well.',
+        );
+      }
+      if (argResults!.flag('sign') &&
+          globalResults!.flag('dry-run') &&
+          !argResults!.flag('build-zsign')) {
+        usageException(
+          'doctor --sign runs read-only commands (in WSL2 on Windows) and records the SHA-256 of zsign; it has no '
+          '--dry-run. With --build-zsign, --dry-run prints the plan of the build and does nothing else.',
         );
       }
       if (argResults!.flag('build') && globalResults!.flag('dry-run')) {
@@ -549,6 +578,11 @@ class _Doctor extends _Command {
     if (argResults!.flag('sign') || argResults!.flag('build')) {
       usageException(
         '--sign and --build check the setup. The binary checks read no settings.',
+      );
+    }
+    if (argResults!.flag('build-zsign')) {
+      usageException(
+        '--build-zsign builds the zsign that --sign checks. The binary checks read no settings.',
       );
     }
     if (globalResults!.option('app') != null || globalResults!.flag('all')) {
@@ -624,6 +658,23 @@ extension on _Doctor {
     final all = globalResults!.flag('all');
     final path = globalResults!.option('config')!;
     final report = jsonOutput ? err : out;
+    // --build-zsign builds on Linux only: anywhere else it is refused here, before anything is read.
+    final builder = argResults!.flag('build-zsign')
+        ? ZsignBuilder(
+            await zsignBuildRunner(zsign),
+            zsignSource,
+            redactor,
+            log: globalResults!.flag('verbose') ? err.writeln : null,
+          )
+        : null;
+    if (builder != null && globalResults!.flag('dry-run')) {
+      final findings = builder.plan();
+      writeReport(findings, report, command: 'doctor');
+      if (jsonOutput) {
+        out.writeln(jsonEncode(jsonOf(findings, command: 'doctor')));
+      }
+      return ExitCode.ok.code;
+    }
     final WincodeSettings settings;
     try {
       settings = loadSettings(path, redactor: redactor);
@@ -643,6 +694,8 @@ extension on _Doctor {
       readOnly: true,
       redactor: redactor,
     );
+    // The build is of the machine, not of an app: it runs once, and its findings come first in the first app's report.
+    var built = builder == null ? const <Finding>[] : await builder.build();
     Future<AppOutcome> one(WincodeConfig app) async {
       final findings = [const Finding.pass('settings', 'wincode.yaml loads')];
       try {
@@ -664,6 +717,8 @@ extension on _Doctor {
         findings.add(Finding.fail('credentials', e));
       }
       if (argResults!.flag('sign')) {
+        findings.addAll(built);
+        built = const [];
         findings.addAll(
           await zsign.setupFindings(
             app,
