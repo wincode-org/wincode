@@ -15,6 +15,26 @@ wincode preflight: passed
 
 exit 0
 
+# the IPA's Info.plist does not set ITSAppUsesNonExemptEncryption
+$ wincode preflight
+PASS  the files of WINCODE_ASC_KEY_DIR and the profile lie outside git working trees, or git ignores them
+PASS  App Store Connect accepts the API key
+PASS  App Store Connect has the app record of com.example.app
+INFO  2 existing builds, highest build number 12
+PASS  build 13 is higher than 12, the highest existing build
+PASS  App Store Connect has an active App Store profile for com.example.app, valid until 2027-09-05
+PASS  the profile in wincode.yaml is an App Store profile of team TEAM000000 for com.example.app, valid until 2027-09-05
+PASS  the IPA holds com.example.app, version 1.0.0, build 13
+PASS  the IPA is signed as TEAM000000.com.example.app with an App Store profile, valid until 2027-09-05
+WARN  the IPA's Info.plist does not set ITSAppUsesNonExemptEncryption
+  why: TestFlight asks the export-compliance question for every build of the app until it is answered, and the build cannot be tested before.
+  next: add ITSAppUsesNonExemptEncryption as a boolean to ios/Runner/Info.plist, then build and sign again: false when the app uses no encryption other than what the operating system provides, or is otherwise exempt; true otherwise. This is a declaration that the owner of the app makes: winCode does not decide it.
+PASS  the profile in wincode.yaml is an active App Store profile of com.example.app in App Store Connect (same UUID)
+PASS  the IPA is signed with the profile in wincode.yaml (same UUID)
+wincode preflight: passed, with 1 warning
+
+exit 0
+
 # the IPA is build 12 of com.example.app.beta; the profile expires in 20 days
 $ wincode preflight --redact
 PASS  the files of WINCODE_ASC_KEY_DIR and the profile lie outside git working trees, or git ignores them

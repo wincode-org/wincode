@@ -809,6 +809,9 @@ class Preflight {
       }
       _ipaChecked = true;
       findings.add(_signature(zip, app, text('CFBundleExecutable'), now));
+      if (!info.containsKey(_exportComplianceKey)) {
+        findings.add(_exportComplianceMissing());
+      }
       return (build != null && isDottedNumber(build) ? build : null, findings);
     } on FormatException catch (e) {
       return (null, [unreadable(e.message)]);
@@ -818,6 +821,25 @@ class Preflight {
       zip?.close();
     }
   }
+
+  /// The `export-compliance` warning: the app's Info.plist does not say whether the app uses non-exempt encryption.
+  /// Whether it does is a declaration of the app's owner, so winCode does not decide it, and a build without it is
+  /// still valid: App Store Connect asks the question in TestFlight instead.
+  Finding _exportComplianceMissing() => Finding.warn(
+    'export-compliance',
+    WincodeException(
+      ExitCode.ok,
+      'export-compliance-missing',
+      "the IPA's Info.plist does not set $_exportComplianceKey",
+      why:
+          'TestFlight asks the export-compliance question for every build of the app until it is answered, and the '
+          'build cannot be tested before.',
+      next:
+          'add $_exportComplianceKey as a boolean to ios/Runner/Info.plist, then build and sign again: false when the app '
+          'uses no encryption other than what the operating system provides, or is otherwise exempt; true otherwise. '
+          'This is a declaration that the owner of the app makes: winCode does not decide it.',
+    ),
+  );
 
   /// The `signature` check of the app at [app] (`Payload/<name>.app/`) in [zip], whose executable is [executable].
   Finding _signature(
@@ -1085,6 +1107,9 @@ List<Finding> buildNumberFindings(List<AscResource> builds, String? build) {
 }
 
 final _infoPlist = RegExp(r'^Payload/[^/]+\.app/Info\.plist$');
+
+/// The Info.plist key that answers App Store Connect's export-compliance question.
+const _exportComplianceKey = 'ITSAppUsesNonExemptEncryption';
 
 /// An attribute of [resource] as text, or an empty string.
 String _attribute(AscResource resource, String name) =>

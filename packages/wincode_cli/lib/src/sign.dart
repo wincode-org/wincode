@@ -15,6 +15,7 @@ import 'key_permissions.dart';
 import 'preflight.dart';
 import 'redact.dart';
 import 'zsign.dart';
+import 'zsign_output.dart';
 
 // The entitlements, ported from the spike's sign.py (`permits`, `minimal_entitlements`), its oracle.
 
@@ -109,6 +110,7 @@ class Signer {
     this.zsignRunner,
     this.log,
     this.events,
+    this.modeOf = folderMode,
   });
 
   final WincodeConfig config;
@@ -130,6 +132,9 @@ class Signer {
 
   /// With `--events`, gets a `check` event for each finding as it is made, and the `signing` events (ADR-0015, section 9).
   final EventWriter? events;
+
+  /// Reads the permission bits of the signing folder, to check that `chmod 700` took effect. Tests give their own.
+  final int Function(String path) modeOf;
 
   /// A new list for the findings of a run: with [events], each finding added to it is reported as it comes.
   List<Finding> _findings() =>
@@ -922,6 +927,11 @@ class Signer {
         findings.add(Finding.fail('zsign', e));
         return;
       }
+      if (!isPrivate(temp, modeOf: modeOf)) {
+        findings.add(
+          Finding.warn('folder-mode', folderNotPrivate(modeOf(temp.path))),
+        );
+      }
       final certificate = File(inTemp('certificate.pem'))
         ..writeAsStringSync(_pem(inputs.certificate.der));
       final entitlements = File(inTemp('entitlements.plist'))
@@ -1004,14 +1014,11 @@ class Signer {
       if (log case final log?) {
         outcome.said.forEach(log);
       }
-      final last = outcome.said.where((l) => l.trim().isNotEmpty).lastOrNull;
       WincodeException zsignFailed(String id, String what) => WincodeException(
         ExitCode.failed,
         id,
         what,
-        why: last == null
-            ? 'zsign printed nothing.'
-            : 'zsign said: ${redactor.forReport(last.trim())}',
+        why: zsignWhy(outcome.said, redactor),
         next: 'run the command again with --verbose to see what zsign printed. Nothing was written to the output folder.',
       );
       switch (outcome.end) {

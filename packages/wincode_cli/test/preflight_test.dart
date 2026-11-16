@@ -90,13 +90,15 @@ PlistMap _profile({
 );
 
 /// An IPA as zsign signs one: the app's Info.plist, a framework's, the embedded App Store profile, and the executable
-/// signed as [signedAs]. Without [signed], it has neither the profile nor a signature.
+/// signed as [signedAs]. Without [signed], it has neither the profile nor a signature. The Info.plist answers the
+/// export-compliance question with [exportCompliance], or leaves it out when that is null.
 List<int> _ipa({
   String bundleId = _bundleId,
   String build = '13',
   String signedAs = '$_teamId.$_bundleId',
   bool signed = true,
   String profileUuid = _uuid,
+  bool? exportCompliance = false,
 }) => zipOf({
   'Payload/': [],
   'Payload/Runner.app/': [],
@@ -105,6 +107,7 @@ List<int> _ipa({
     'CFBundleIdentifier': bundleId,
     'CFBundleShortVersionString': '1.0.0',
     'CFBundleVersion': build,
+    'ITSAppUsesNonExemptEncryption': ?exportCompliance,
   }),
   // As in the script's self-test: a framework's Info.plist is not the app's.
   'Payload/Runner.app/Frameworks/App.framework/Info.plist': writePlistBinary({
@@ -286,6 +289,11 @@ void main() {
 
     await run(
       'App Store Connect has builds 11 and 12; the IPA is build 13',
+      [],
+    );
+    ipa.writeAsBytesSync(_ipa(exportCompliance: null));
+    await run(
+      'the IPA\'s Info.plist does not set ITSAppUsesNonExemptEncryption',
       [],
     );
     ipa.writeAsBytesSync(_ipa(bundleId: 'com.example.app.beta', build: '12'));
@@ -485,6 +493,68 @@ void main() {
         expect(apple!.requests, hasLength(3));
       },
     );
+  });
+
+  group('export compliance', () {
+    test('a missing ITSAppUsesNonExemptEncryption is one warning, and the run passes', () async {
+      ipa.writeAsBytesSync(_ipa(exportCompliance: null));
+      final (code, out, err) = await preflight([]);
+      expect((code, err), (0, ''));
+      expect(
+        out,
+        contains(
+          "WARN  the IPA's Info.plist does not set ITSAppUsesNonExemptEncryption\n"
+          '  why: TestFlight asks the export-compliance question for every build of the app until it is answered, and '
+          'the build cannot be tested before.\n'
+          '  next: add ITSAppUsesNonExemptEncryption as a boolean to ios/Runner/Info.plist, then build and sign again: '
+          'false when the app uses no encryption other than what the operating system provides, or is otherwise '
+          'exempt; true otherwise. This is a declaration that the owner of the app makes: winCode does not decide '
+          'it.\n',
+        ),
+      );
+      expect('WARN'.allMatches(out), hasLength(1));
+      expect(out, endsWith('\nwincode preflight: passed, with 1 warning\n'));
+    });
+
+    for (final declared in [true, false]) {
+      test(
+        'ITSAppUsesNonExemptEncryption set to $declared is no warning',
+        () async {
+          ipa.writeAsBytesSync(_ipa(exportCompliance: declared));
+          final (code, out, _) = await preflight([]);
+          expect(code, 0);
+          expect(out, isNot(contains('WARN')));
+          expect(out, isNot(contains('ITSAppUsesNonExemptEncryption')));
+          expect(out, endsWith('\nwincode preflight: passed\n'));
+        },
+      );
+    }
+
+    test('--json lists the warning as it lists any other, and ok stays true', () async {
+      ipa.writeAsBytesSync(_ipa(exportCompliance: null));
+      final (code, out, _) = await preflight(['--json']);
+      expect(code, 0);
+      final json = jsonDecode(out) as Map<String, Object?>;
+      expect(
+        (json['ok'], json['exitCode'], json.containsKey('error')),
+        (true, 0, false),
+      );
+      final checks = (json['checks']! as List<Object?>)
+          .cast<Map<String, Object?>>();
+      expect(checks.where((c) => c['check'] == 'export-compliance'), [
+        {
+          'check': 'export-compliance',
+          'status': 'WARN',
+          'id': 'export-compliance-missing',
+          'what':
+              "the IPA's Info.plist does not set ITSAppUsesNonExemptEncryption",
+          'why': contains('TestFlight asks the export-compliance question'),
+          'next': contains('ios/Runner/Info.plist'),
+        },
+      ]);
+      // As the profile warning is: a status WARN, an id, why and next.
+      expect([for (final c in checks) c['status']], isNot(contains('FAIL')));
+    });
   });
 
   group('on this PC', () {
