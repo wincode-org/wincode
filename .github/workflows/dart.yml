@@ -62,6 +62,30 @@ jobs:
           ../compiled/wincode.exe init --workflow --yes --bundle-id com.example.app --team-id TEAM000000
           cmp .github/workflows/wincode-ios.yml ../wc/packages/wincode_cli/templates/wincode-ios.yml
 
+  actionlint:
+    # ADR-0015, sections 8 and 13: the reference workflow that wincode init --workflow writes passes actionlint, which
+    # also runs the shellcheck of the runner on its run: scripts. Only the template is linted. The release is pinned
+    # with its SHA-256, as the zsign job pins its source.
+    name: actionlint (the reference workflow)
+    runs-on: ubuntu-latest
+    env:
+      ACTIONLINT_VERSION: 1.7.12
+      ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: install the pinned actionlint
+        run: |
+          set -euo pipefail
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL -o "$RUNNER_TEMP/$archive" "https://github.com/rhysd/actionlint/releases/download/v$ACTIONLINT_VERSION/$archive"
+          echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/$archive" | sha256sum -c -
+          mkdir "$RUNNER_TEMP/actionlint"
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP/actionlint" actionlint
+          "$RUNNER_TEMP/actionlint/actionlint" -version
+      - name: lint the reference workflow
+        run: '"$RUNNER_TEMP/actionlint/actionlint" -color packages/wincode_cli/templates/wincode-ios.yml'
 
   zsign:
     # ADR-0013, phase 3a and section 11: the zsign that winCode pins signs a generated app with a throwaway certificate,

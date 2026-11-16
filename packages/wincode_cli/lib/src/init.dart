@@ -5,9 +5,11 @@ import 'package:wincode_core/wincode_core.dart';
 import 'package:yaml/yaml.dart';
 import 'package:yaml_edit/yaml_edit.dart';
 
+import 'build_project.dart' show readWorkflow, workflowContract;
 import 'config.dart';
 import 'failure.dart';
 import 'init_detect.dart';
+import 'init_workflow.dart';
 import 'key_location.dart';
 import 'redact.dart';
 import 'select.dart';
@@ -180,6 +182,22 @@ class Initializer {
         : decoded;
     _crlf = onDisk?.contains('\r\n') ?? false;
     final existingText = onDisk?.replaceAll('\r\n', '\n');
+    final workflowTarget = File(
+      '${root.path}/.github/workflows/wincode-ios.yml',
+    );
+    // --workflow alone: an existing workflow is updated, and next to an existing wincode.yaml (that --force does not
+    // replace) only the workflow is written. Nothing is detected, asked or changed about the app (ADR-0015, section 8).
+    if (options.copyWorkflow &&
+        app == null &&
+        (workflowTarget.existsSync() ||
+            (existingText != null && !options.force))) {
+      return _workflowOnly(
+        target: target,
+        name: name,
+        existingText: existingText,
+        workflowTarget: workflowTarget,
+      );
+    }
     WincodeSettings? existing;
     if (existingText != null) {
       if (app != null) {
@@ -448,9 +466,6 @@ class Initializer {
         configuration != null && configuration != _defaultConfiguration(flavor)
         ? configuration
         : null;
-    final workflowTarget = File(
-      '${root.path}/.github/workflows/wincode-ios.yml',
-    );
     if (app != null) {
       return _writeApps(
         target: target,
@@ -504,20 +519,6 @@ class Initializer {
       // The same checks that every other command makes, before anything is written.
       parseConfig(text, path: target.path);
     }
-    if (options.copyWorkflow) {
-      if (workflowTarget.existsSync()) {
-        throw WincodeException(
-          ExitCode.failed,
-          'workflow-exists',
-          '.github/workflows/wincode-ios.yml already exists',
-          why: 'init copies the reference workflow only to a new file, even with --force.',
-          next:
-              'compare it with the reference workflow (templates/wincode-ios.yml in winCode) by hand, or delete it and '
-              'run init again.',
-        );
-      }
-    }
-
     report
       ..writeln('--- $name')
       ..write(text)
@@ -570,6 +571,7 @@ class Initializer {
         'wincode-ios.yml@<branch>.',
       );
     }
+    if (options.copyWorkflow) _buildKeysNote(target, name, text);
     _nextSteps(target, credentials: credentials);
     return _json(
       written: !options.dryRun,
@@ -814,6 +816,7 @@ class Initializer {
       report.writeln('Wrote $name.');
     }
     final workflow = _workflowStep(workflowTarget);
+    if (workflow != null) _buildKeysNote(target, name, text);
     _nextSteps(target, credentials: values['credentials']);
     return _jsonOfApp(
       written: wrote,
@@ -934,15 +937,7 @@ class Initializer {
     final backup = File('${target.path}.bak');
     final backupName = '$name.bak';
     if (backup.existsSync() && !options.force) {
-      throw WincodeException(
-        ExitCode.failed,
-        'backup-exists',
-        '$backupName already exists',
-        why:
-            'init keeps the original of a flat $name as $backupName, and never replaces an earlier backup unasked.',
-        next:
-            'move or delete $backupName, or run the command again with --force to replace it.',
-      );
+      throw _backupExists(backupName, 'a flat $name');
     }
     _requireFreeWorkflow(workflowTarget);
     final values = {
@@ -964,6 +959,7 @@ class Initializer {
         ..writeln('Wrote $name.');
     }
     final workflow = _workflowStep(workflowTarget);
+    if (workflow != null) _buildKeysNote(target, name, text);
     _nextSteps(target, credentials: credentials);
     return _jsonOfApp(
       written: !options.dryRun,
@@ -1004,12 +1000,273 @@ class Initializer {
         ExitCode.failed,
         'workflow-exists',
         '.github/workflows/wincode-ios.yml already exists',
-        why: 'init copies the reference workflow only to a new file, even with --force.',
-        next:
-            'compare it with the reference workflow (templates/wincode-ios.yml in winCode) by hand, or delete it and '
-            'run init again.',
+        why:
+            'init --app changes the app in wincode.yaml. The update of the workflow shows its own changes and asks its own '
+            'question.',
+        next: 'run wincode init --workflow alone, without --app, to update the workflow, or leave --workflow out.',
       );
     }
+  }
+
+  WincodeException _backupExists(
+    String backupName,
+    String original,
+  ) => WincodeException(
+    ExitCode.failed,
+    'backup-exists',
+    '$backupName already exists',
+    why:
+        'init keeps the original of $original as $backupName, and never replaces an earlier backup unasked.',
+    next:
+        'move or delete $backupName, or run the command again with --force to replace it.',
+  );
+
+  /// `init --workflow` without `--app`, when the workflow exists or wincode.yaml does (ADR-0015, section 8). An existing
+  /// workflow is updated: the template with the old file's `XCODE_APP`, `runs-on` and `timeout-minutes`, the old
+  /// `FLUTTER_VERSION` moved to wincode.yaml when that has none, after a diff and a confirmation, with the old file kept
+  /// as `wincode-ios.yml.bak`. Without a workflow, the template is written to a new file and wincode.yaml is left
+  /// alone. No other file is touched, and no git command is run.
+  Future<Map<String, Object?>> _workflowOnly({
+    required File target,
+    required String name,
+    required String? existingText,
+    required File workflowTarget,
+  }) async {
+    for (final (option, value) in [
+      ('bundle-id', options.bundleId),
+      ('team-id', options.teamId),
+      ('profile', options.profile),
+      ('profile-dir', options.profileDir),
+      ('entitlements', options.entitlements),
+      ('workflow-ref', options.workflowRef),
+      ('output', options.output),
+      ('flavor', options.flavor),
+      ('configuration', options.configuration),
+      ('credentials', options.credentials),
+    ]) {
+      if (value != null) {
+        throw WincodeException(
+          ExitCode.usage,
+          'init-value-invalid',
+          '--$option: init --workflow writes the workflow only, here',
+          why:
+              'a workflow or a $name is already there, and an update changes one thing at a time, so that what it shows '
+              'is easy to check.',
+          next:
+              'leave --$option out, then change $name with wincode init --app <name> --$option <value> --force, or by hand.',
+        );
+      }
+    }
+    if (existingText != null) {
+      // The file loads, as for every command: init puts a key into it, and never leaves a file that does not load.
+      parseSettings(existingText, path: target.path, redactor: redactor);
+    }
+    const workflowName = '.github/workflows/wincode-ios.yml';
+    if (!workflowTarget.existsSync()) {
+      final workflow = _workflowStep(workflowTarget);
+      _buildKeysNote(target, name, existingText);
+      return _jsonOfApp(
+        written: workflow == 'copied',
+        workflow: workflow,
+        values: const {},
+      );
+    }
+
+    final oldBytes = workflowTarget.readAsBytesSync();
+    final String decoded;
+    try {
+      decoded = utf8.decode(oldBytes);
+    } on FormatException {
+      throw _workflowUnreadable('it is not text in UTF-8');
+    }
+    final oldText = (decoded.startsWith('﻿') ? decoded.substring(1) : decoded)
+        .replaceAll('\r\n', '\n');
+    final facts = readWorkflow(oldText);
+    if (facts.problem != null) {
+      throw _workflowUnreadable(facts.problem!);
+    }
+    if ((facts.contract ?? 1) > workflowContract) {
+      throw WincodeException(
+        ExitCode.config,
+        'workflow-contract',
+        '$workflowName says contract ${facts.contract}, and this wincode writes contract $workflowContract',
+        why:
+            'writing the reference workflow over it would be a downgrade, to a workflow that a newer wincode expects '
+            'something else of.',
+        next: 'update wincode, or leave the workflow as it is.',
+      );
+    }
+    final update = updateWorkflow(workflowTemplate, facts);
+    final notes = [...update.notes];
+    String? newYaml;
+    final moved = update.flutterVersion;
+    if (moved != null) {
+      if (existingText == null) {
+        notes.add(
+          'the old file had FLUTTER_VERSION $moved, which wincode.yaml holds now: set flutter_version: $moved there',
+        );
+      } else {
+        try {
+          final added = withFlutterVersion(existingText, moved);
+          if (added.already == null) {
+            newYaml = added.text;
+          } else if (added.already != moved) {
+            notes.add(
+              '$name already sets flutter_version ${added.already}, and the old workflow had $moved: $name wins',
+            );
+          }
+        } on Object catch (e) {
+          throw WincodeException(
+            ExitCode.failed,
+            'init-edit-failed',
+            'init cannot edit $name safely: $e',
+            why: 'the layout of the file is one that the editor cannot change without risking the rest of it.',
+            next:
+                'add flutter_version: $moved to $name by hand, and run wincode init --workflow again.',
+          );
+        }
+      }
+    }
+    if (newYaml != null) {
+      parseSettings(newYaml, path: target.path, redactor: redactor);
+    }
+    for (final note in notes) {
+      report.writeln('note: $note.');
+    }
+    final changed = update.text != oldText;
+    if (!changed && newYaml == null) {
+      report.writeln('$workflowName is already up to date.');
+      _buildKeysNote(target, name, existingText);
+      return _jsonOfApp(
+        written: false,
+        workflow: 'up-to-date',
+        values: const {},
+      );
+    }
+    void show(String file, String before, String after) => report
+      ..writeln(
+        'Changes init would make to $file (- is in the file, + is what init found):',
+      )
+      ..writeln(diffLines(before.split('\n'), after.split('\n')).join('\n'));
+    if (changed) {
+      show(workflowName, oldText, update.text);
+    }
+    if (newYaml != null) {
+      show(name, existingText!, newYaml);
+    }
+    final backup = File('${workflowTarget.path}.bak');
+    const backupName = 'wincode-ios.yml.bak';
+    if (changed && backup.existsSync() && !options.force) {
+      throw _backupExists(backupName, 'the workflow');
+    }
+    final values = {'flutter_version': ?(newYaml == null ? null : moved)};
+    if (options.dryRun) {
+      report.writeln('Dry run: nothing was written, and no backup was made.');
+      _buildKeysNote(target, name, newYaml ?? existingText);
+      return _jsonOfApp(
+        written: false,
+        workflow: changed ? 'would-update' : null,
+        values: values,
+      );
+    }
+    final files = [if (changed) workflowName, if (newYaml != null) name];
+    if (interactive) {
+      final answer = _ask('Write ${files.join(' and ')}? [y/N] ').toLowerCase();
+      if (answer != 'y' && answer != 'yes') {
+        report.writeln('Nothing was written.');
+        return _jsonOfApp(written: false, workflow: null, values: const {});
+      }
+    } else if (!options.yes) {
+      throw WincodeException(
+        ExitCode.usage,
+        'init-input-missing',
+        'init changes an existing workflow only after you confirm, and it cannot ask here',
+        why:
+            'init asks questions only at a terminal, and not in CI, with --yes or with --json. --force is not a yes: it '
+            'means replace the backup.',
+        next: 'read the changes above, then run the command again with --yes, or run wincode init --workflow in a terminal.',
+      );
+    }
+    final yamlBefore = newYaml == null ? null : target.readAsBytesSync();
+    if (newYaml != null) {
+      _commit(target, newYaml);
+    }
+    if (changed) {
+      final backupBefore = backup.existsSync()
+          ? backup.readAsBytesSync()
+          : null;
+      try {
+        backup.writeAsBytesSync(oldBytes);
+        writeFile(workflowTarget, update.text);
+      } on Object catch (e) {
+        // Everything is put back: the workflow, the backup and wincode.yaml.
+        try {
+          workflowTarget.writeAsBytesSync(oldBytes);
+          if (backupBefore != null) {
+            backup.writeAsBytesSync(backupBefore);
+          } else if (backup.existsSync()) {
+            backup.deleteSync();
+          }
+          if (yamlBefore != null) {
+            target.writeAsBytesSync(yamlBefore);
+          }
+        } on Object {
+          // The next message says what to check.
+        }
+        throw WincodeException(
+          ExitCode.failed,
+          'workflow-unwritable',
+          'init could not write $workflowName: $e',
+          why:
+              'the workflow, its backup and $name were put back as they were, so check them if the disk is failing.',
+          next: 'fix the cause (a read-only folder, a full disk), then run wincode init --workflow again.',
+        );
+      }
+      report
+        ..writeln('Kept the original as $backupName.')
+        ..writeln('Wrote $workflowName.');
+    }
+    if (newYaml != null) {
+      report.writeln('Wrote $name: added flutter_version $moved.');
+    }
+    _buildKeysNote(target, name, newYaml ?? existingText);
+    report.writeln(
+      'Review the file, then commit and push it to the branch that workflow: names. init runs no git command.',
+    );
+    return _jsonOfApp(
+      written: true,
+      workflow: changed ? 'updated' : null,
+      values: values,
+      backup: changed ? backupName : null,
+    );
+  }
+
+  WincodeException _workflowUnreadable(String problem) => WincodeException(
+    ExitCode.config,
+    'workflow-unreadable',
+    '.github/workflows/wincode-ios.yml cannot be read as a workflow: $problem',
+    why: 'init keeps the values of XCODE_APP, runs-on and timeout-minutes of the old file, and cannot read them from it.',
+    next: 'fix the file, or move it away and run wincode init --workflow again to write the reference workflow.',
+  );
+
+  /// What a project needs in wincode.yaml before its first `wincode build`, when [yamlText] (null: no file) lacks it.
+  void _buildKeysNote(File target, String name, String? yamlText) {
+    final apps = yamlText == null
+        ? const <WincodeConfig>[]
+        : parseSettings(yamlText, path: target.path).apps;
+    final missing = [
+      if (apps.isEmpty || apps.any((a) => a.flutterVersion == null))
+        'flutter_version',
+      if (apps.isEmpty || apps.any((a) => a.minXcodeVersion == null))
+        'min_xcode_version',
+    ];
+    if (missing.isEmpty) {
+      return;
+    }
+    report.writeln(
+      'Before the first wincode build, add ${missing.join(' and ')} to $name (once under defaults, or for each app)'
+      '${missing.contains('min_xcode_version') ? ': min_xcode_version is the oldest Xcode that may build the app, which is not the XCODE_APP that the job selects' : ''}.',
+    );
   }
 
   /// Copies the reference workflow, or says that it would, when `--workflow` was given. Returns what `--json` calls it.

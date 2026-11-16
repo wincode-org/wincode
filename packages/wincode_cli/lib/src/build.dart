@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:wincode_asc/wincode_asc.dart';
 import 'package:wincode_core/wincode_core.dart';
+import 'package:yaml/yaml.dart' show YamlException;
 
 import 'build_number.dart';
 import 'build_project.dart';
@@ -11,8 +12,11 @@ import 'credentials.dart';
 import 'events.dart';
 import 'failure.dart';
 import 'github.dart';
+import 'init_detect.dart' show diffLines;
+import 'init_workflow.dart';
 import 'preflight.dart';
 import 'redact.dart';
+import 'workflow_template.g.dart';
 
 /// The options of `wincode build` that the checks need (ADR-0015, section 1).
 class BuildOptions {
@@ -514,6 +518,7 @@ class BuildChecker {
     final facts = _workflowFacts(files);
     if (facts != null) {
       _contract(facts);
+      _drift(facts, files.texts[_workflowPath]!);
       _workflowInputs(facts);
       _xcode(facts);
     }
@@ -548,6 +553,15 @@ class BuildChecker {
                 'the token comes from ${token.source}, ${token.kind}',
               ),
       );
+      if (doctor) {
+        _add(
+          const Finding.info(
+            'actions-write',
+            'Actions write permission is not tested ahead: every request that needs it changes something, and the '
+                'dispatch itself refuses a token without it, before anything runs',
+          ),
+        );
+      }
       return token;
     } on WincodeException catch (e) {
       _add(Finding.fail('github-token', e));
@@ -902,6 +916,43 @@ class BuildChecker {
                   'push the workflow to $_ref and run wincode build again.',
       ),
     );
+  }
+
+  /// A contract 2 workflow that is not winCode's template (ADR-0015, section 8): one WARN. It never stops the build,
+  /// since a changed workflow belongs to its owner, and the contract and the checks of the IPA still hold.
+  void _drift(WorkflowFacts facts, String text) {
+    if (facts.contract != workflowContract || facts.problem != null) return;
+    final List<String> parts;
+    try {
+      parts = workflowDifferences(text, workflowTemplate);
+    } on YamlException {
+      return;
+    }
+    if (parts.isEmpty) return;
+    _add(
+      _warn(
+        'workflow-contract',
+        'workflow-differs',
+        'the workflow at $_ref has contract $workflowContract but differs from winCode\'s template in: ${parts.join(', ')} '
+            '(${parts.length} ${parts.length == 1 ? 'part' : 'parts'})',
+        why:
+            'a changed workflow belongs to its owner, and the contract and the checks of the IPA still hold. XCODE_APP, '
+            'runs-on and timeout-minutes are not counted.',
+        next: 'run wincode init --workflow to see the differences.',
+      ),
+    );
+    final log = this.log;
+    if (log != null) {
+      log(
+        'the workflow differs from winCode\'s template (- is in the workflow, + is the template, with the workflow\'s '
+        'XCODE_APP, runs-on and timeout-minutes):',
+      );
+      final ours = updateWorkflow(workflowTemplate, facts).text;
+      diffLines(
+        text.replaceAll('\r\n', '\n').split('\n'),
+        ours.split('\n'),
+      ).forEach(log);
+    }
   }
 
   void _workflowInputs(WorkflowFacts facts) {

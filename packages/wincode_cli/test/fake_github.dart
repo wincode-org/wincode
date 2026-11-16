@@ -6,6 +6,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:wincode_cli/src/workflow_template.g.dart';
+
 /// One request that [FakeGithub] received.
 class GhRequest {
   GhRequest({
@@ -163,52 +165,9 @@ class FakeGithub {
   Future<void> close() => _server.close(force: true);
 }
 
-/// The workflow file of the made-up repository: contract 2, the seven inputs of `wincode build`, Xcode 26.6.
-const workflowText = '''
-# wincode-workflow-contract: 2
-name: wincode-ios
-run-name: wincode \${{ inputs.request_id }}
-
-on:
-  workflow_dispatch:
-    inputs:
-      request_id:
-        description: Set by wincode build
-        required: true
-        type: string
-      build_name:
-        required: true
-        type: string
-      build_number:
-        required: true
-        type: string
-      flutter_version:
-        required: true
-        type: string
-      min_xcode_version:
-        required: true
-        type: string
-      flavor:
-        required: false
-        type: string
-        default: ""
-      target:
-        required: false
-        type: string
-        default: ""
-
-permissions:
-  contents: read
-
-jobs:
-  unsigned-ipa:
-    runs-on: macos-26
-    timeout-minutes: 45
-    env:
-      XCODE_APP: /Applications/Xcode_26.6.app
-    steps:
-      - run: echo build
-''';
+/// The workflow file of the made-up repository: winCode's own template (contract 2, the seven inputs of `wincode build`,
+/// Xcode 26.6), so that every test of `build` also shows that the template passes its checks.
+const workflowText = workflowTemplate;
 
 String _pubspec(String environment) =>
     'name: demo\nversion: 2.3.0+57\nenvironment:\n  sdk: ^3.5.0\n$environment';

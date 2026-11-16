@@ -186,6 +186,11 @@ final _inputName = RegExp(r'^[a-z][a-z0-9_]{0,31}$');
 final _inputValue = RegExp(r'^[A-Za-z0-9._/-]{0,64}$');
 final _version = RegExp(r'^\d+(\.\d+){0,2}$');
 final _flutterVersion = RegExp(r'^\d+\.\d+\.\d+(-[A-Za-z0-9.]+)?$');
+
+/// Whether [v] is a Flutter release as `wincode.yaml` takes it: a tag of `flutter/flutter`, at most 32 characters.
+bool isFlutterVersion(String v) =>
+    v.length <= 32 && _flutterVersion.hasMatch(v);
+
 final _target = RegExp(r'^lib/[A-Za-z0-9._/-]+\.dart$');
 
 /// Inputs that `wincode build` sets itself, so that the file may not (ADR-0015, section 2).
@@ -377,7 +382,7 @@ final _rules = <String, _Rule>{
     'write it as lib/main_<flavor>.dart, or remove the line to use lib/main.dart.',
   ),
   'flutter_version': _Rule(
-    (v) => v.length <= 32 && _flutterVersion.hasMatch(v),
+    isFlutterVersion,
     'flutter_version is not a Flutter release',
     'wincode build clones exactly that tag of flutter/flutter. A tag is three whole numbers joined by dots, such as '
         '3.47.7, and a pre-release adds - and letters, digits and dots, such as 3.48.0-0.1.pre. It has at most 32 '

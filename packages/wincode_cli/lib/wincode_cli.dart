@@ -791,7 +791,7 @@ class _Init extends _Command {
       ..addFlag(
         'workflow',
         negatable: false,
-        help: 'Copy the reference workflow to .github/workflows/wincode-ios.yml. It never replaces a file.',
+        help: 'Write the reference workflow to .github/workflows/wincode-ios.yml, or update the one there after a diff and a question, keeping its XCODE_APP, runs-on and timeout-minutes, with the old file kept as wincode-ios.yml.bak. Changes the workflow only (and adds flutter_version to wincode.yaml), and runs no git command.',
       )
       ..addFlag(
         'yes',
@@ -802,7 +802,7 @@ class _Init extends _Command {
       ..addFlag(
         'force',
         negatable: false,
-        help: 'Replace an existing wincode.yaml.',
+        help: 'Replace an existing wincode.yaml, or the wincode-ios.yml.bak of a workflow update.',
       );
   }
 
@@ -829,7 +829,11 @@ class _Init extends _Command {
       'comments and the layout of the rest, after showing the changes and asking you to confirm (--yes where it cannot '
       'ask); a value that the entry already has is replaced only with --force. On a flat wincode.yaml, --app moves the '
       'file under apps: as the app that it describes, keeps the original as wincode.yaml.bak, and needs a yes too '
-      '(ADR-0014). After a write, init loads the file again and puts the old one back if it does not load.';
+      '(ADR-0014). After a write, init loads the file again and puts the old one back if it does not load.\n\n'
+      'With --workflow and no --app, a workflow that is already there is updated to the reference workflow: init shows the '
+      'differences, asks [y/N] (--yes where it cannot ask), keeps the old file as wincode-ios.yml.bak, keeps its XCODE_APP, '
+      'runs-on and timeout-minutes, and moves its FLUTTER_VERSION to flutter_version in wincode.yaml when that has none '
+      '(ADR-0015). It writes no other file and runs no git command; pushing the workflow stays your step.';
 
   @override
   Future<int> run() async {

@@ -324,4 +324,207 @@ void main() {
       expect(flutterAllows('>=3.27.0', 'main'), isNull);
     });
   });
+
+  group('workflowDifferences', () {
+    List<String> differences(String Function(String) change) =>
+        workflowDifferences(change(workflowText), workflowText);
+
+    test('the same file has none, and neither has one with CRLF line ends', () {
+      expect(workflowDifferences(workflowText, workflowText), isEmpty);
+      expect(
+        workflowDifferences(
+          workflowText.replaceAll('\n', '\r\n'),
+          workflowText,
+        ),
+        isEmpty,
+      );
+    });
+
+    test('the values of the owner are not differences: runs-on, timeout-minutes and XCODE_APP, at the top or in a job', () {
+      expect(
+        differences(
+          (t) => t
+              .replaceFirst('runs-on: macos-26', 'runs-on: [self-hosted, mac]')
+              .replaceFirst('timeout-minutes: 45', 'timeout-minutes: 90')
+              .replaceFirst('Xcode_26.6.app', 'Xcode_26.0.app'),
+        ),
+        isEmpty,
+      );
+      expect(
+        differences(
+          (t) => t
+              .replaceFirst(
+                '    env:\n      XCODE_APP: /Applications/Xcode_26.6.app   # a final Xcode 26 or later: App Store Connect refuses builds from others\n',
+                '',
+              )
+              .replaceFirst(
+                'permissions:',
+                'env:\n  XCODE_APP: /Applications/Xcode_26.1.app\n\npermissions:',
+              ),
+        ),
+        isEmpty,
+        reason: 'XCODE_APP at the top of the file instead of the job',
+      );
+    });
+
+    test('a comment, a blank line, the order of keys and the text of a description are not differences', () {
+      expect(
+        differences(
+          (t) => t
+              .replaceFirst(
+                'name: wincode-ios\n',
+                '# mine\n\n\nname: wincode-ios\n',
+              )
+              .replaceFirst(
+                'description: The build number (CFBundleVersion)',
+                'description: Das Build',
+              )
+              .replaceFirst('permissions:\n  contents: read\n\n', '')
+              .replaceFirst(
+                'name: wincode-ios\n',
+                'permissions:\n  contents: read\nname: wincode-ios\n',
+              )
+              .replaceFirst(
+                '        required: true\n        type: string\n      build_name:',
+                '        type: string\n        required: true\n      build_name:',
+              ),
+        ),
+        isEmpty,
+      );
+    });
+
+    test('a changed step, input, pin or permission is named', () {
+      expect(
+        differences(
+          (t) => t.replaceFirst(
+            'xcodebuild -version\n',
+            'xcodebuild -version -json\n',
+          ),
+        ),
+        ['step "Xcode"'],
+      );
+      expect(
+        differences((t) => t.replaceAll('required: false', 'required: true')),
+        ['input flavor', 'input target'],
+      );
+      expect(
+        differences(
+          (t) => t
+              .replaceFirst('v7.0.1', 'v7.0.1')
+              .replaceFirst(
+                '3d3c42e5aac5ba805825da76410c181273ba90b1',
+                'a' * 40,
+              ),
+        ),
+        ['step "actions/checkout"'],
+        reason: 'a bumped pin names its step',
+      );
+      expect(
+        differences((t) => t.replaceFirst('contents: read', 'contents: write')),
+        ['permissions'],
+      );
+      expect(
+        differences(
+          (t) => t.replaceFirst('retention-days: 1', 'retention-days: 30'),
+        ),
+        ['step "actions/upload-artifact"'],
+      );
+      expect(
+        differences(
+          (t) => t.replaceFirst(
+            'workflow_dispatch:',
+            'push:\n  workflow_dispatch:',
+          ),
+        ),
+        ['on'],
+        reason: 'an added trigger is in on',
+      );
+      expect(
+        differences(
+          (t) => t.replaceFirst(
+            "if: github.event_name == 'workflow_dispatch'",
+            'if: true',
+          ),
+        ),
+        ['job unsigned-ipa if'],
+      );
+    });
+
+    test('an input or a step that was added or removed, a job that was added, and steps in another order are named', () {
+      expect(
+        differences(
+          (t) => t.replaceFirst(
+            '      target:\n',
+            '      region:\n        required: false\n        type: string\n      target:\n',
+          ),
+        ),
+        ['input region'],
+      );
+      expect(
+        differences(
+          (t) => t.replaceFirst(
+            '      target:\n        description: The entry point, or empty for lib/main.dart\n        required: false\n        type: string\n        default: ""\n',
+            '',
+          ),
+        ),
+        ['input target'],
+      );
+      expect(
+        differences(
+          (t) => t.replaceFirst(
+            '      - name: Flutter\n',
+            '      - name: Lint\n        run: echo lint\n\n      - name: Flutter\n',
+          ),
+        ),
+        ['step "Lint" (added)'],
+      );
+      expect(
+        differences(
+          (t) => t.replaceFirst(
+            '      - name: Flutter\n        env:',
+            '      - env:',
+          ),
+        ),
+        ['step "Flutter" (missing)', 'step "step 3" (added)'],
+      );
+      expect(
+        differences(
+          (t) =>
+              '$t\n  other:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo\n',
+        ),
+        ['job other'],
+      );
+    });
+
+    test('a step without a name is named after its action', () {
+      expect(
+        differences(
+          (t) => t.replaceFirst(
+            'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2',
+            'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2\n        id: up',
+          ),
+        ),
+        ['step "actions/upload-artifact"'],
+      );
+    });
+
+    test('steps in another order are named once', () {
+      expect(
+        differences((t) {
+          // The Flutter step goes before the Xcode step.
+          final flutterStep = t.substring(
+            t.indexOf('      - name: Flutter\n'),
+            t.indexOf('      - name: Build'),
+          );
+          return t
+              .replaceFirst(flutterStep, '')
+              .replaceFirst(
+                '      - name: Xcode\n',
+                '$flutterStep      - name: Xcode\n',
+              );
+        }),
+        ['the order of the steps'],
+      );
+    });
+  });
 }
