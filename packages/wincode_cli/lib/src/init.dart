@@ -18,6 +18,20 @@ import 'workflow_template.g.dart';
 /// Reads one line of the user's answer, or null when the input has ended.
 typedef ReadLine = String? Function();
 
+/// Whether standard input is a terminal that can be read. On Windows `stdin.hasTerminal` is true for any character
+/// device, such as the null device or a console that was never attached, and the first read there fails with "The
+/// handle is invalid". Reading the line mode, which is what `readLineSync` does first, finds that out before anything
+/// is asked: such a terminal is no terminal.
+bool stdinIsTerminal() {
+  if (!stdin.hasTerminal) return false;
+  try {
+    stdin.lineMode;
+    return true;
+  } on IOException {
+    return false;
+  }
+}
+
 /// What the command line of `wincode init` said. A field that is null is detected or asked.
 class InitOptions {
   const InitOptions({
@@ -1535,7 +1549,12 @@ class Initializer {
 
   String _ask(String question) {
     report.write(question);
-    final line = readLine();
+    String? line;
+    try {
+      line = readLine();
+    } on IOException {
+      // A standard input that cannot be read answers nothing, as one that has ended does.
+    }
     if (line == null) {
       report.writeln();
       throw const WincodeException(

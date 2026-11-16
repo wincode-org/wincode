@@ -18,6 +18,12 @@ import 'package:wincode_core/wincode_core.dart'
 
 import 'private.dart';
 
+/// What Windows gives the first read of a standard input that is a character device but no console.
+const _unreadable = StdinException(
+  'Error getting terminal line mode',
+  OSError('The handle is invalid', 6),
+);
+
 /// The time of every run: tokens, expiry dates, and the timestamps of the steps.
 final _now = DateTime.utc(2026, 11, 13, 12);
 final _expires = _now.add(const Duration(days: 300));
@@ -951,6 +957,34 @@ void main() {
         ),
       );
       expect(out, contains('Upload plan:'));
+    });
+
+    test('a standard input that cannot be read is no terminal: confirmation-required (64), and nothing is uploaded', () async {
+      final (code, out, err) = await upload(
+        [],
+        yes: false,
+        terminal: true,
+        readLine: () => throw _unreadable,
+      );
+      expect(code, 64, reason: '$out$err');
+      expect(
+        err,
+        startsWith(
+          'wincode upload: upload needs your confirmation, and cannot ask here\n',
+        ),
+      );
+      expect(err, contains('Nothing was uploaded.'));
+      expect('$out$err', isNot(contains('internal error')));
+      expect(writes(), isEmpty);
+      // A standard input that works still confirms.
+      final (ok, _, _) = await upload(
+        [],
+        yes: false,
+        terminal: true,
+        readLine: () => _bundleId,
+      );
+      expect(ok, 0);
+      expect(writes(), isNotEmpty);
     });
 
     test('anything else cancels, with nothing uploaded', () async {
