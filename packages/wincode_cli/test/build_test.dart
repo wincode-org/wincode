@@ -901,7 +901,7 @@ Build plan:
             mutate: () {
               repo.files['.github/workflows/wincode-ios.yml'] = workflowText
                   .replaceFirst(
-                    '      target:\n        required: false\n        type: string\n        default: ""\n',
+                    '      target:\n        description: The entry point, or empty for lib/main.dart\n        required: false\n        type: string\n        default: ""\n',
                     '',
                   );
             },

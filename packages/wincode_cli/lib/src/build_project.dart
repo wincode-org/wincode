@@ -25,6 +25,8 @@ class WorkflowFacts {
     this.runsOn,
     this.timeoutMinutes,
     this.xcodeApp,
+    this.flutterVersion,
+    this.flavor,
     this.problem,
   });
 
@@ -40,6 +42,10 @@ class WorkflowFacts {
 
   /// The value of `XCODE_APP` in the workflow's or a job's `env`.
   final String? xcodeApp;
+
+  /// `FLUTTER_VERSION` and `FLAVOR` of the workflow's or a job's `env`, as contract 1 kept them there.
+  final String? flutterVersion;
+  final String? flavor;
 
   /// Why the file could not be read as a workflow, or null.
   final String? problem;
@@ -71,6 +77,8 @@ WorkflowFacts readWorkflow(String text) {
       }
     }
     String? xcodeApp = _text(_map(root['env'])['XCODE_APP']);
+    String? flutterVersion = _text(_map(root['env'])['FLUTTER_VERSION']);
+    String? flavor = _text(_map(root['env'])['FLAVOR']);
     String? runsOn;
     int? timeout;
     final jobs = root['jobs'];
@@ -78,6 +86,8 @@ WorkflowFacts readWorkflow(String text) {
       for (final job in jobs.values) {
         if (job is! YamlMap) continue;
         xcodeApp ??= _text(_map(job['env'])['XCODE_APP']);
+        flutterVersion ??= _text(_map(job['env'])['FLUTTER_VERSION']);
+        flavor ??= _text(_map(job['env'])['FLAVOR']);
         final runner = job['runs-on'];
         if (runsOn == null && runner != null) {
           runsOn = runner is YamlList ? runner.join(', ') : '$runner';
@@ -92,6 +102,8 @@ WorkflowFacts readWorkflow(String text) {
       runsOn: runsOn,
       timeoutMinutes: timeout,
       xcodeApp: xcodeApp,
+      flutterVersion: flutterVersion,
+      flavor: flavor,
     );
   } on YamlException catch (e) {
     return WorkflowFacts(contract: number, problem: e.message);

@@ -1,12 +1,22 @@
-# The reference workflow for `wincode build` (winCode ADR-0013): it builds the app's unsigned IPA with Xcode on a
-# GitHub-hosted macOS runner. Copy it to .github/workflows/wincode-ios.yml in the app's repository, set the three values
-# under env, and name it in wincode.yaml:
+# wincode-workflow-contract: 2
+# The reference workflow for `wincode build` (winCode ADR-0015): it builds the app's unsigned IPA with Xcode on a
+# GitHub-hosted macOS runner. Copy it to .github/workflows/wincode-ios.yml in the app's repository, and name it in
+# wincode.yaml:
 #   workflow: <owner>/<repository>/.github/workflows/wincode-ios.yml@<branch>
 #
-# What wincode build relies on, so keep these three:
-#   - the request_id input, and the run name that carries it (winCode finds its run by that name);
-#   - one artifact named unsigned-ipa that holds one .ipa with Payload/<name>.app inside;
-#   - no signing: the runner holds no certificate, profile or App Store Connect key. winCode signs on Windows.
+# The three values that the owner of the repository sets are XCODE_APP, runs-on and timeout-minutes. The Flutter release,
+# the oldest Xcode, the flavor, the entry point, the version and the build number come from wincode.yaml and the command
+# line, as inputs that wincode build sends: flutter_version and min_xcode_version in wincode.yaml are required.
+#
+# What wincode build relies on, so keep these four (the number above counts them):
+#   - the inputs, and their meaning;
+#   - the run name, which carries request_id (winCode finds its run by that name);
+#   - one artifact named unsigned-ipa that holds unsigned.ipa, with Payload/<name>.app inside, and unsigned.ipa.sha256;
+#   - no signing, and no secret: the runner holds no certificate, profile or App Store Connect key. winCode signs
+#     elsewhere. Do not add secrets to this file.
+#
+# Inputs reach the shell only as environment variables of their steps, never as ${{ inputs.* }} inside run:, so that no
+# input is ever read as shell code.
 #
 # Artifacts: in a public repository anyone who can read it can download the IPA until it expires, after 1 day.
 name: wincode-ios
@@ -19,6 +29,32 @@ on:
         description: Set by wincode build, which finds this run by it
         required: true
         type: string
+      build_name:
+        description: The version (CFBundleShortVersionString), x.y.z
+        required: true
+        type: string
+      build_number:
+        description: The build number (CFBundleVersion)
+        required: true
+        type: string
+      flutter_version:
+        description: The Flutter release, a tag of flutter/flutter
+        required: true
+        type: string
+      min_xcode_version:
+        description: The oldest Xcode that may build the app
+        required: true
+        type: string
+      flavor:
+        description: The flavor, or empty for an app without flavors
+        required: false
+        type: string
+        default: ""
+      target:
+        description: The entry point, or empty for lib/main.dart
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -30,28 +66,50 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 45
     env:
-      FLUTTER_VERSION: "3.47.7"                 # the app's Flutter release
       XCODE_APP: /Applications/Xcode_26.6.app   # a final Xcode 26 or later: App Store Connect refuses builds from others
-      FLAVOR: ""                                # the flavor to build, or empty for an app without flavors
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Xcode
+        env:
+          MIN_XCODE_VERSION: ${{ inputs.min_xcode_version }}
         run: |
           sudo xcode-select -s "$XCODE_APP"
           xcodebuild -version
+          have=$(xcodebuild -version | sed -n 's/^Xcode //p')
+          if ! awk -v have="$have" -v min="$MIN_XCODE_VERSION" 'BEGIN {
+            n = split(have, h, ".")
+            m = split(min, w, ".")
+            if (m > n) n = m
+            for (i = 1; i <= n; i++) {
+              if (h[i] + 0 > w[i] + 0) exit 0
+              if (h[i] + 0 < w[i] + 0) exit 1
+            }
+            exit 0
+          }'; then
+            echo "::error::Xcode $have is older than $MIN_XCODE_VERSION, the oldest that wincode.yaml allows"
+            exit 1
+          fi
 
       - name: Flutter
+        env:
+          FLUTTER_VERSION: ${{ inputs.flutter_version }}
         run: |
           git clone -q --depth 1 --branch "$FLUTTER_VERSION" https://github.com/flutter/flutter.git "$RUNNER_TEMP/flutter"
           echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
 
       - name: Build the archive, unsigned
+        env:
+          BUILD_NAME: ${{ inputs.build_name }}
+          BUILD_NUMBER: ${{ inputs.build_number }}
+          FLAVOR: ${{ inputs.flavor }}
+          TARGET: ${{ inputs.target }}
         run: |
-          args=(--release --no-codesign)
+          args=(--release --no-codesign --build-name "$BUILD_NAME" --build-number "$BUILD_NUMBER")
           if [ -n "$FLAVOR" ]; then args+=(--flavor "$FLAVOR"); fi
+          if [ -n "$TARGET" ]; then args+=(--target "$TARGET"); fi
           flutter build ipa "${args[@]}"
 
       - name: Package the app as an unsigned IPA
@@ -64,10 +122,14 @@ jobs:
           mkdir -p "$RUNNER_TEMP/ipa/Payload"
           cp -R "${apps[0]}" "$RUNNER_TEMP/ipa/Payload/"
           (cd "$RUNNER_TEMP/ipa" && zip -qry ../unsigned.ipa Payload)
+          (cd "$RUNNER_TEMP" && shasum -a 256 unsigned.ipa | tee unsigned.ipa.sha256)
+          echo "unsigned.ipa SHA-256: $(cut -d ' ' -f 1 "$RUNNER_TEMP/unsigned.ipa.sha256")" >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: unsigned-ipa
-          path: ${{ runner.temp }}/unsigned.ipa
+          path: |
+            ${{ runner.temp }}/unsigned.ipa
+            ${{ runner.temp }}/unsigned.ipa.sha256
           if-no-files-found: error
           retention-days: 1
