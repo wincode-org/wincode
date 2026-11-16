@@ -179,13 +179,15 @@ String? recordedZsignHash(
   return null;
 }
 
-/// Records [hash] for the zsign at [path] under [key].
+/// Records [hash] for the zsign at [path] under [key], with [extra] next to it (`wincode doctor --sign --build-zsign` adds
+/// `built`: the commit and archive hash that it built the binary from).
 void recordZsignHash(
   Map<String, String> environment,
   String key,
   String path,
-  String hash,
-) {
+  String hash, {
+  Map<String, Object?> extra = const {},
+}) {
   final file = zsignStateFile(environment);
   Map<String, Object?> all = {};
   try {
@@ -197,7 +199,7 @@ void recordZsignHash(
   } on Object {
     // A new record.
   }
-  all[key] = {'path': path, 'sha256': hash};
+  all[key] = {'path': path, 'sha256': hash, ...extra};
   file.parent.createSync(recursive: true);
   file.writeAsStringSync(
     '${const JsonEncoder.withIndent('  ').convert({'zsign': all})}\n',

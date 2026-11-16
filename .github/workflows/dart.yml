@@ -89,14 +89,15 @@ jobs:
 
   zsign:
     # ADR-0013, phase 3a and section 11: the zsign that winCode pins signs a generated app with a throwaway certificate,
-    # through the same code as a Linux server runs. wincode doctor --sign records the binary, wincode sign starts it
-    # directly and signs, and wincode sign --verify-only reads the result back. Nothing here is Apple's.
+    # through the same code as a Linux server runs. wincode doctor --sign --build-zsign downloads the pinned source
+    # archive, checks its SHA-256 and builds it (phase 3a.1) and records the binary, wincode sign starts it directly and
+    # signs, and wincode sign --verify-only reads the result back. Nothing here is Apple's.
     name: zsign integration
     runs-on: ubuntu-latest
     env:
-      # packages/wincode_cli/lib/src/zsign.dart pins these; test/sign_test.dart checks that the two agree.
+      # packages/wincode_cli/lib/src/zsign.dart pins this, and test/sign_test.dart checks that the two agree. The SHA-256
+      # of the archive is pinned there only: doctor --sign --build-zsign checks it, so this job does not.
       ZSIGN_COMMIT: f6158be9e62a5ce2a53d72b1a6d880880da956c8
-      ZSIGN_SHA256: 423ebe2f4dd3380367461c03e6de3b9e9f31adcbe9a2f0237493c8f0bf9b7c5d
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -105,21 +106,15 @@ jobs:
       - uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1.8.1
         with:
           sdk: 3.13.4
-      # The commands that wincode doctor --sign prints, in the folder where wincode looks for the binary on Linux:
-      # zsign/zsign-<commit>/bin/zsign under $XDG_DATA_HOME/wincode (nativeZsignPath in lib/src/zsign_native.dart).
-      - name: build the pinned zsign
+      # The tools that the build needs, installed here by hand: wincode never installs them (it stops and says what to
+      # run). The binary is built by wincode itself, into zsign/zsign-<commit>/bin/zsign under $XDG_DATA_HOME/wincode
+      # (nativeZsignPath in lib/src/zsign_native.dart), in the step below.
+      - name: install the tools that build zsign
         run: |
           set -euo pipefail
           echo "XDG_DATA_HOME=$RUNNER_TEMP/xdg" >> "$GITHUB_ENV"
           sudo apt-get update -q
           sudo apt-get install -y -q make g++ pkg-config libssl-dev
-          mkdir -p "$RUNNER_TEMP/xdg/wincode/zsign"
-          cd "$RUNNER_TEMP/xdg/wincode/zsign"
-          curl -fsSL -o "zsign-$ZSIGN_COMMIT.tar.gz" "https://github.com/xtool-org/zsign/archive/$ZSIGN_COMMIT.tar.gz"
-          echo "$ZSIGN_SHA256  zsign-$ZSIGN_COMMIT.tar.gz" | sha256sum -c -
-          tar -xzf "zsign-$ZSIGN_COMMIT.tar.gz"
-          make -s -C "zsign-$ZSIGN_COMMIT/build/linux" VERSION=1.9.0
-          "zsign-$ZSIGN_COMMIT/bin/zsign" -v
       # The flow of a Linux server, with a throwaway identity: a PEM key and a certificate from the profile, as in a
       # real run. zsign finds the Apple intermediate that issued the certificate by the hash of the issuer's name, and
       # a PEM key leaves it no other chain. So the throwaway CA is given the name of one of those intermediates (G3),
@@ -156,9 +151,18 @@ jobs:
           export WINCODE_DIST_KEY="$w/dist.key"
           cfg="$w/fixture/wincode.yaml"
 
-          # The first doctor --sign that finds the binary records its SHA-256, and wincode sign runs only that one.
-          WINCODE_ASC_KEY_DIR="$w/asc" dart run bin/wincode.dart doctor --sign --config "$cfg" | tee "$w/doctor.txt"
-          grep -F "is now recorded in" "$w/doctor.txt"
+          # The real download and build (phase 3a.1): wincode fetches the pinned source archive, checks its SHA-256 before it
+          # unpacks it, builds it with make, checks the version, and records the SHA-256 of the binary it built. wincode
+          # sign runs only that one.
+          WINCODE_ASC_KEY_DIR="$w/asc" dart run bin/wincode.dart doctor --sign --build-zsign --config "$cfg" | tee "$w/doctor.txt"
+          grep -F "is the pinned one" "$w/doctor.txt"
+          grep -F "PASS  the zsign that was built prints version: 1.9.0" "$w/doctor.txt"
+          grep -F "is recorded in" "$w/doctor.txt"
+          # A second run finds the binary that it built, and does nothing.
+          WINCODE_ASC_KEY_DIR="$w/asc" dart run bin/wincode.dart doctor --sign --build-zsign --config "$cfg" | tee "$w/doctor2.txt"
+          grep -F "nothing to do" "$w/doctor2.txt"
+          # What it leaves is the finished tree: no build folder, no archive.
+          test "$(ls -A "$XDG_DATA_HOME/wincode/zsign")" = "zsign-$ZSIGN_COMMIT"
           # A binary that is not the recorded one is not run.
           zsign="$XDG_DATA_HOME/wincode/zsign/zsign-$ZSIGN_COMMIT/bin/zsign"
           cp "$zsign" "$w/zsign.good"

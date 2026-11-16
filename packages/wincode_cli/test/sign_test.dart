@@ -1604,7 +1604,7 @@ void main() {
     });
   });
 
-  test('winCode pins the zsign that xtool pins, and CI builds that one', () {
+  test('winCode pins the zsign that xtool pins, and CI builds that one with doctor --sign --build-zsign', () {
     final resolved = jsonDecode(
       File('../../third_party/xtool/Package.resolved').readAsStringSync(),
     ) as Map<String, Object?>;
@@ -1619,8 +1619,9 @@ void main() {
     final workflow = File('../../.github/workflows/dart.yml')
         .readAsStringSync();
     expect(workflow, contains('ZSIGN_COMMIT: $zsignCommit'));
-    expect(workflow, contains('ZSIGN_SHA256: $zsignSourceSha256'));
-    expect(workflow, contains('VERSION=$zsignVersion'));
+    // The archive's SHA-256 is pinned in the code only, and the job builds with the flag that checks it.
+    expect(workflow, isNot(contains(zsignSourceSha256)));
+    expect(workflow, contains('doctor --sign --build-zsign'));
   });
 
   test('parseWslList reads the UTF-16 list of wsl.exe -l -v', () {
