@@ -2,7 +2,7 @@
 
 The `wincode` command. Its design is [ADR-0013](../../docs/adr/0013-wincode-cli-build-sign-upload.md).
 
-Status: `doctor`, `preflight`, `init` and `sign` work, and `upload` is tested against a fake App Store Connect and exercised against App Store Connect from `wincode` (build 15, VALID). `preflight` and `doctor` read an app's App Store Connect key through its `credentials` reference (ADR-0014; layout below), and `sign` its distribution key. `sign` signs with an unencrypted PEM key only (ADR-0013, phase 3a); encrypted keys come in phase 3b. On Windows `sign` runs zsign in WSL2; on Linux it runs zsign directly, with no WSL2 (built, exercised on Linux CI with a throwaway certificate and on Linux (WSL2) with a real key; not yet run on a real server). `upload` needs no WSL2 and runs on Linux too. `build` makes every check that comes before a dispatch, prints its plan, asks, starts the workflow on a GitHub runner, follows the run, and downloads and checks its unsigned IPA ([ADR-0015](../../docs/adr/0015-wincode-build.md), parts 5a and 5b; tested against a fake GitHub, and run end to end on the Linux workflow of a test repository, not yet on a macOS runner). `status` is registered; it prints `not implemented yet, see ADR-0013` and exits with 64 until its phase. `wincode.yaml` may describe several apps ([ADR-0014](../../docs/adr/0014-one-project-many-apps.md)): `--app <name>` chooses the app of `preflight`, `doctor` and `init`, `--all` runs `preflight` and `doctor` for every app, and `init --app` adds an app to a file of apps, or moves a flat file under `apps:` (below).
+Status: `doctor`, `preflight`, `init` and `sign` work, and `upload` is tested against a fake App Store Connect and exercised against App Store Connect from `wincode` (build 15, VALID). `preflight` and `doctor` read an app's App Store Connect key through its `credentials` reference (ADR-0014; layout below), and `sign` its distribution key. `sign` signs with an unencrypted PEM key only (ADR-0013, phase 3a); encrypted keys come in phase 3b. On Windows `sign` runs zsign in WSL2; on Linux it runs zsign directly, with no WSL2 (built, exercised on Linux CI with a throwaway certificate and on Linux (WSL2) with a real key; not yet run on a real server). `upload` needs no WSL2 and runs on Linux too. `build` makes every check that comes before a dispatch, prints its plan, asks, starts the workflow on a GitHub runner, follows the run, and downloads and checks its unsigned IPA ([ADR-0015](../../docs/adr/0015-wincode-build.md), parts 5a to 5c; tested against a fake GitHub, run end to end on the Linux workflow of a test repository, and exercised on a real macOS runner). The chain `build`, `sign`, `upload` was exercised end to end on a real macOS runner: build, sign, upload, VALID (test app, build 16); what that run did not show is listed in ADR-0015 ("The first macOS run"). `status` is registered; it prints `not implemented yet, see ADR-0013` and exits with 64 until its phase. `wincode.yaml` may describe several apps ([ADR-0014](../../docs/adr/0014-one-project-many-apps.md)): `--app <name>` chooses the app of `preflight`, `doctor` and `init`, `--all` runs `preflight` and `doctor` for every app, and `init --app` adds an app to a file of apps, or moves a flat file under `apps:` (below).
 
 ```
 dart run wincode_cli:wincode <command> [arguments]
@@ -13,9 +13,9 @@ dart run wincode_cli:wincode <command> [arguments]
 | `init` | Write `wincode.yaml` for the Flutter project in this folder | works |
 | `preflight [<signed .ipa>]` | Check the signed IPA and App Store Connect before an upload. Read-only | works |
 | `sign [<unsigned .ipa>]` | Sign the IPA for the App Store with zsign (in WSL2 on Windows, directly on Linux), and check every signature | works (3a); Linux exercised on Linux (WSL2) with a real key |
-| `upload [<signed .ipa>]` | Upload the signed IPA to App Store Connect and wait for its processing | built (4), not yet run against Apple |
+| `upload [<signed .ipa>]` | Upload the signed IPA to App Store Connect and wait for its processing | built (4), exercised against App Store Connect (builds 15 and 16 of a test app, VALID) |
 | `status` | Show the state of the app's latest uploads in App Store Connect. Read-only | 4 |
-| `build` | Build the unsigned IPA on the app's macOS runner (GitHub Actions) and download it | built (5), run end to end on a Linux runner; not yet on macOS |
+| `build` | Build the unsigned IPA on the app's macOS runner (GitHub Actions) and download it | built (5), exercised end to end on a real macOS runner: build, sign, upload, VALID (test app, build 16) |
 | `doctor` | Check the setup (with `--sign`, what `sign` needs; with `--build`, what `build` checks), or a Mach-O binary against the SDK or a reference build | works |
 
 ## Global options
@@ -383,6 +383,19 @@ The build number is `--build-number <n>`, or `auto`, or by default `auto` in a f
 
 `--dry-run` sends no request and starts no program: it prints the plan from `wincode.yaml` and the options, with a placeholder for what only GitHub or App Store Connect can say, and the dispatch request as it would go out. `wincode doctor --build` makes the same checks and prints no plan, and starts nothing.
 
+### Troubleshooting the GitHub token
+
+`build` and `doctor --build` need a fine-grained personal access token with, on the app's repository, **Actions: read and write**, **Contents: read** and **Metadata: read**. A real run on a macOS runner met these three mistakes (ADR-0015, "The first macOS run"):
+
+| What `wincode` says | Why | Fix |
+| --- | --- | --- |
+| `repository-not-found` (78): "GitHub has no repository `<owner>/<repo>`, or the token cannot see it" (GitHub answered 404) | The token's resource owner is not the organization that owns the private repository, and a fine-grained token sees only the repositories of its own resource owner | Make the token again with the organization as its resource owner |
+| The same `repository-not-found` | The repository is not selected in the token's repository access | Edit the token and select `<owner>/<repo>` under repository access |
+| `github-forbidden` (77): 403 "Resource not accessible by personal access token", at the dispatch | The token lacks Actions: read and write. Nothing was started | Add Actions: read and write to the token's permissions for the repository |
+
+- **`doctor --build` cannot catch the third.** It passes with a token that lacks Actions write: every request that needs that permission changes something, so it is not tested ahead, and an INFO line (`actions-write`) says so. Only the dispatch finds out, before any run starts.
+- **With `--redact` (and in CI),** a message that names the app's variable shows the app's placeholder in it, for example `WINCODE_GH_TOKEN_APP_1` for the first app of the file. Set the variable under the app's real name: `WINCODE_GH_TOKEN_<APP>`, the name in capitals with `-` written as `_`.
+
 ## doctor
 
 ```
@@ -413,7 +426,7 @@ It exits with 0 when the checks pass, 1 when one fails or a file cannot be read,
 
 ## The reference workflow
 
-[`templates/wincode-ios.yml`](templates/wincode-ios.yml) is the workflow that `wincode build` will start in the app's repository (phase 5): it builds the unsigned IPA on a GitHub-hosted macOS runner and uploads it as the artifact `unsigned-ipa`. It has not been run on a macOS runner yet. It is contract 2 (`# wincode-workflow-contract: 2`): it takes the seven inputs that `build` sends, checks the oldest Xcode with POSIX `awk`, clones the Flutter tag shallow, writes the IPA's SHA-256 beside it and into the step summary, keeps the artifact for one day, and reads no secret. Its two actions are pinned to a commit and are refreshed by hand. The owner of the repository sets `XCODE_APP`, `runs-on` and `timeout-minutes`. `build` refuses a workflow that is not at contract 2 (`workflow-contract`), and warns (`workflow-differs`) when a contract 2 workflow differs from the template in anything else; `init --workflow` shows how.
+[`templates/wincode-ios.yml`](templates/wincode-ios.yml) is the workflow that `wincode build` starts in the app's repository (phase 5): it builds the unsigned IPA on a GitHub-hosted macOS runner and uploads it as the artifact `unsigned-ipa`. It has run on a macOS runner once, for a made-up test app: the build, sign and upload that followed ended VALID, and the `awk` comparison of its Xcode step passed for one case (26.6 against 26.0). Other versions of macOS's `awk`, a flavor and a full-size IPA are untested ([ADR-0015](../../docs/adr/0015-wincode-build.md), "The first macOS run"). It is contract 2 (`# wincode-workflow-contract: 2`): it takes the seven inputs that `build` sends, checks the oldest Xcode with POSIX `awk`, clones the Flutter tag shallow, writes the IPA's SHA-256 beside it and into the step summary, keeps the artifact for one day, and reads no secret. Its two actions are pinned to a commit and are refreshed by hand. The owner of the repository sets `XCODE_APP`, `runs-on` and `timeout-minutes`. `build` refuses a workflow that is not at contract 2 (`workflow-contract`), and warns (`workflow-differs`) when a contract 2 workflow differs from the template in anything else; `init --workflow` shows how.
 
 ## Tests
 

@@ -3,13 +3,14 @@
 - Status: Accepted
 - Date: 2026-11-15
 - Amended: 2026-11-15, after review: the Flutter release and the oldest Xcode come from the project and are checked before the dispatch (section 2); `auto` is the default build number in a file of apps (section 3); the maintainer's answers to the open questions are decisions (section 14)
-- Amends: ADR-0013 (sections 1, 3, 6, 7, 8 and 11, phase 5 in section 10, and the alternative "The REST API instead of `gh`") and ADR-0014 (sections 1, 6 and 8). Design only: nothing here is implemented, and no macOS workflow was run for it.
+- Amends: ADR-0013 (sections 1, 3, 6, 7, 8 and 11, phase 5 in section 10, and the alternative "The REST API instead of `gh`") and ADR-0014 (sections 1, 6 and 8). Design only when it was written: nothing here was implemented, and no macOS workflow was run for it. The lines below record what was built and run since.
 - Amended: 2026-11-15, while building part 5a: the Flutter release's tag must exist in `flutter/flutter`, which one read checks before the dispatch (section 2); the ids and details that the code settled where this ADR was silent ("As built: part 5a", section 13)
 - Amended: 2026-11-15, while building part 5b: a run that builds another commit than the one the checks read stops the build (`ref-moved`, section 4) instead of giving a warning; the ids and details that the code settled where this ADR was silent ("As built: part 5b", section 13)
 - Verified: 2026-11-15, a rehearsal on a Linux runner confirmed the GitHub behaviour that the design relies on: the dispatch's answer, `display_title`, what `digest` covers, the artifact's zip with `wincode_core`'s reader, and which copy of the workflow runs (section 13)
 - Verified: 2026-11-15, `wincode build` ran end to end on a Linux runner of the same test repository, with the maintainer's yes: the checks, the dispatch, the wait, the download through GitHub's redirect and every check of the IPA (section 13, "As built: part 5b"). No macOS runner was used
 - Amended: 2026-11-16, while building part 5c: contract 2 of the reference workflow, the update path of `init --workflow`, the warning for a workflow that differs from the template (`workflow-differs`), and the INFO line of `doctor --build`; a plain POSIX `awk` compares the Xcode versions, where the first draft used `sort` (section 8, "As built: part 5c")
 - Verified: 2026-11-16, `doctor --build` read the contract 2 template and a hand-written workflow of the test repository with GET requests only; nothing was dispatched and no runner was used (section 13, "As built: part 5c")
+- Verified: after part 5c, `wincode build` ran for real on a GitHub-hosted macOS runner, for a made-up test app, and `wincode sign` and `wincode upload` then took its IPA to a build that App Store Connect processed as valid (section 13, "The first macOS run")
 
 ## Context
 
@@ -715,7 +716,7 @@ The results:
   - the events: `check` carries the check's name as `id`; `signing` has `status` `started` or `ended`, and `end` (`ok`, `failed`, `timedOut`, `tooBig`) on the second; `upload` has `stage` `created`, `parts` (with `sentBytes` and `totalBytes`) or `committed`; `processing` carries Apple's three states and the messages that are new, each with its `source`, `kind` and `message` as Apple sent it; `plan` of `upload` has `file`, `size`, `version` and `build`. The schema is `eventFields` in `lib/src/events.dart`, and the writer refuses a field that it does not list.
 
 **As built: part 5b.** The second pull request holds the rest of `build`: the question, the dispatch, the wait, Ctrl-C, `--timeout`, `--yes`, `--run`, the artifact and its checks, and `--allow-public`'s deletion (the parts of item 4 that 5a left). It adds `ZipArchive.extractTo` to `wincode_core`, and to the GitHub client a write that is never repeated, a read with an `ETag`, a delete, and the download of an artifact through a redirect that carries no token.
-- **Left for the next parts** (done in part 5c, except the last): item 1, the contract 2 template with the update path of `init --workflow`; the "other differences" warning of section 8, which compares with that template; and the real run on a macOS runner, which needs the maintainer's word and is still left. Until the template landed, the contract check passed only for a workflow written by hand.
+- **Left for the next parts** (done in part 5c, and in "The first macOS run" below): item 1, the contract 2 template with the update path of `init --workflow`; the "other differences" warning of section 8, which compares with that template; and the real run on a macOS runner. Until the template landed, the contract check passed only for a workflow written by hand.
 - **The same commit (section 4, step 3)** was a warning in the first draft of this ADR. It is a stop since the review of part 5b: `ref-moved` (1). The commit that the checks read is the one `build` records when it resolves the ref, and the run's `head_sha` is compared with it as soon as the run is known.
 - **Ids that this ADR did not name,** given while building:
   - 1: `ref-moved`; `ipa-signed` (the IPA holds `embedded.mobileprovision`, and `build` refuses a signature it did not make); `output-unwritable` (the output folder cannot be made or written);
@@ -768,7 +769,7 @@ The results:
   - **Two actions, each pinned to a commit with its release in a comment:** `actions/checkout` v7.0.1 is `3d3c42e5aac5ba805825da76410c181273ba90b1` and `actions/upload-artifact` v7.0.2 is `cf430e030ddbb5b0abf93d22962f4752f3646cd9`. Both were checked on 2026-11-16: each is the latest release (`GET /repos/<owner>/<repo>/releases/latest`), and its tag (`GET .../git/ref/tags/<tag>`) is a lightweight tag whose object is that commit, so there was no annotated tag to dereference. The pins are refreshed by hand, with the same two reads; nothing refreshes them.
   - **The runner label and the Xcode path cannot be pinned,** since they name images that GitHub changes. They were checked against GitHub's runner-images repository on 2026-11-16: its `README.md` lists `macos-26` as a label of "macOS 26 Arm64", and `images/macos/macos-26-arm64-Readme.md` (image version 20261102.0473.1) lists Xcode 26.6, the default, at `/Applications/Xcode_26.6.app`. The template says the owner of the repository sets `XCODE_APP`, `runs-on` and `timeout-minutes`.
   - **The Flutter step is plain shell:** a shallow clone of the tag (`git clone -q --depth 1 --branch "$FLUTTER_VERSION"`), with no third-party action, so that no code that is not GitHub's runs on the runner. The cost is no cache, about a minute.
-  - **The oldest-Xcode check is a plain POSIX `awk` program** that compares the two versions number by number (`split` on dots, then `+ 0`), so that GNU and BSD `awk` agree; it uses none of the extensions of gawk, and no `sort -V`. A missing component counts as 0 (`26` is `26.0`), and an Xcode that prints no version is older than any minimum. A test runs the step's own text under `sh`, with stubs for `sudo` and `xcodebuild`, for fifteen pairs of versions, under every `awk` that the machine has. On Ubuntu 24.04 those are GNU awk 5.2.1, mawk 1.3.4, original-awk (the one-true-awk, version 20231127, from which macOS's awk descends), and BusyBox 1.36.1's. All agreed. **macOS's own `awk` was not tested, and cannot be here:** the first real run on a macOS runner is its test.
+  - **The oldest-Xcode check is a plain POSIX `awk` program** that compares the two versions number by number (`split` on dots, then `+ 0`), so that GNU and BSD `awk` agree; it uses none of the extensions of gawk, and no `sort -V`. A missing component counts as 0 (`26` is `26.0`), and an Xcode that prints no version is older than any minimum. A test runs the step's own text under `sh`, with stubs for `sudo` and `xcodebuild`, for fifteen pairs of versions, under every `awk` that the machine has. On Ubuntu 24.04 those are GNU awk 5.2.1, mawk 1.3.4, original-awk (the one-true-awk, version 20231127, from which macOS's awk descends), and BusyBox 1.36.1's. All agreed. **macOS's own `awk` was not tested, and cannot be here:** the first real run on a macOS runner is its test. That run passed the step for one case, 26.6 against 26.0 ("The first macOS run" below); other pairs of versions, and other versions of macOS's `awk`, are untested.
   - **The step summary and the hash file** are written by the packing step, after `shasum -a 256`, as section 6 says. The artifact `unsigned-ipa` keeps its two files for one day and fails when one is missing. No `${{ ... }}` is inside a `run:` block, no secret or token is read, and `persist-credentials` is false: tests read all three from the template.
   - **actionlint** passes on the template (version 1.7.12, run with shellcheck 0.9.0 on Linux), and CI runs it (below).
 - **`init --workflow`** routes by what exists, without `--app`:
@@ -804,6 +805,18 @@ The results:
 - **`doctor --build` on `rehearsal-5b`** (the hand-written workflow): the contract PASS, and one WARN, `workflow-differs`, naming six parts: `step "actions/checkout"`, `step "Xcode"`, `step "Flutter"`, `step "Build the archive, unsigned"` and `step "Package the app as an unsigned IPA"` (each `(missing)`) and `step "Pack a small IPA-shaped file"` (`(added)`). The same two other FAILs.
 - **What it did not show:** a run of the template, on Linux or on macOS (it needs the maintainer's word), the `awk` of macOS, a `wincode.yaml` that `init` changed on real data (the rehearsal project already set `flutter_version`; the tests cover it), and the first real build with `actions/checkout` and `actions/upload-artifact` as pinned.
 
+**The first macOS run** (after part 5c; a made-up test app, in a private test repository).
+- **The setup:** a GitHub-hosted `macos-26` runner with Xcode 26.6 and Flutter 3.47.3. The app is a minimal Flutter app with two common plugins and CocoaPods turned on in its `pubspec.yaml`.
+- **`wincode build`** dispatched once, followed the run and downloaded the artifact. Every check of the IPA passed: the zip against GitHub's `digest`, the files in the zip, the hash that the build job recorded, and the IPA's bundle ID, version and build number, with no profile. The job took about 2 minutes, and 3 macOS minutes were billed. The log shows that `pod install` ran.
+- **The Xcode step:** the `awk` comparison of the selected Xcode with `min_xcode_version` ran on the macOS runner and passed for one case, 26.6 against 26.0.
+- **Sign and upload:** `wincode sign` signed that unsigned IPA (zsign in WSL2 on Windows), and `sign --verify-only` and `upload --dry-run` passed. The maintainer ran `wincode upload`, and App Store Connect processed the build as `VALID` (test app, build number 16). So the chain build, sign, upload was exercised end to end on a real macOS runner.
+- **Token permissions** (the messages and fixes are in "Troubleshooting the GitHub token" in `packages/wincode_cli/README.md`):
+  - a fine-grained token whose resource owner is not the organization cannot see the organization's private repository: GitHub answers 404, which `build` reports as `repository-not-found`;
+  - the repository must be selected in the token's repository access, or the answer is the same 404;
+  - without Actions: read and write, the dispatch is refused with 403 (`github-forbidden`, "Resource not accessible by personal access token") and nothing starts. `doctor --build` passes with such a token, as section 10 says it can: it cannot test write permission ahead, and says so in an INFO line.
+- **Redaction:** with `--redact`, the variable name `WINCODE_GH_TOKEN_<APP>` is printed with the app's redacted name (`..._APP_1`).
+- **What it did not show:** a branch that moves (`ref-moved`), Ctrl-C, the timeout (75), a failed run, `--allow-public` and its cleanup, a full-size IPA (the test IPA is about 6 MB), a public repository, a flavor, and other versions of macOS's `awk` than the single case above. This record does not say whether `GET /v1/apps/{id}/buildUploads` lists uploads, or whether the app was one app of a file of apps.
+
 **Accepted when** these all hold. They replace ADR-0013's phase 5 criteria and ADR-0014's additions to them.
 - **Against a fake GitHub server** (no network in CI):
   - the dispatch carries every input, and the run is found from the dispatch's answer, and by its name after a 204;
@@ -825,7 +838,7 @@ The results:
 - **No secret in any output,** `--verbose` included: no token, no signed link, no `Authorization` header.
 - **The template:** it passes actionlint, and `init --workflow` writes it byte for byte to a new file.
 - **The update of a workflow** by `init --workflow` shows the diff with the old file's values kept, asks, and writes the `.bak`. It stops on an existing `.bak` unless `--force`, writes nothing with `--dry-run`, and changes `wincode.yaml` only by adding `flutter_version`, when that has none.
-- **The real run:** `wincode build`, `wincode sign` and `wincode upload` of one app of a file of apps, in a row, end with a build processed as valid. It uses macOS minutes and an upload, with the maintainer's yes. It also confirms whether `GET /v1/apps/{id}/buildUploads` lists uploads.
+- **The real run:** `wincode build`, `wincode sign` and `wincode upload` of one app of a file of apps, in a row, end with a build processed as valid. It uses macOS minutes and an upload, with the maintainer's yes. It also confirms whether `GET /v1/apps/{id}/buildUploads` lists uploads. *Met for the build, sign and upload of a test app by "The first macOS run" above; what that record leaves open is named there.*
 
 ### 14. Out of scope, and the review's decisions
 
@@ -854,7 +867,7 @@ The review also added the Flutter and Xcode versions from the project (section 2
 
 - **No command needs `gh` any more.** It is one of three places a token can come from. A Linux server needs `wincode` and `GH_TOKEN`; a desktop user logged in to `gh` needs nothing new.
 - **winCode holds a GitHub token,** in memory, during `build` and `doctor --build`. ADR-0013's "winCode holds no GitHub token at all" (section 7) gives way to the rules of section 5.
-- **Each repository updates its workflow to contract 2** before `build` works there. `init --workflow` does it, keeping the old file's `XCODE_APP`, `runs-on` and `timeout-minutes`; the Flutter release moves from the workflow's `env` to `flutter_version` in `wincode.yaml`. No `build` has run yet, so no existing run breaks.
+- **Each repository updates its workflow to contract 2** before `build` works there. `init --workflow` does it, keeping the old file's `XCODE_APP`, `runs-on` and `timeout-minutes`; the Flutter release moves from the workflow's `env` to `flutter_version` in `wincode.yaml`. No `build` had run when this was written, so no existing run breaks.
 - **ADR-0014's phase 5 changes:**
   - `build_number` is always sent, and the workflow requires it; in a file of apps it is `auto` unless given;
   - `build_name`, `target`, `flutter_version` and `min_xcode_version` are new inputs, reserved in `workflow_inputs`, which holds at most 18 entries;
@@ -869,7 +882,7 @@ The review also added the Flutter and Xcode versions from the project (section 2
 - **Cost stays visible:** a question before every paid run at a terminal, `--yes` in automation, and the minutes per job in the result.
 - **To revisit:**
   - flutter_tools' scheme and configuration rules, each time a project moves to a new Flutter;
-  - what only the first real run can show, such as a full-size IPA (section 13).
+  - what the first real run did not show, such as a full-size IPA (section 13, "The first macOS run").
 
 ## Alternatives considered
 
