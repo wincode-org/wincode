@@ -50,8 +50,13 @@ Inputs are Apple's too, and stay so: the SDK headers and libraries (the user's o
 
 The payments SDK in the measured app builds from source with the four `#Preview` blocks removed (the macro server of the Darwin SDK lacks the preview macros). The patch is recorded in `third_party/README.md`. Nothing else in the dependencies was edited.
 
+## Compiler warnings
+
+The Swift build of the measured app logs 23 distinct warnings. All of them are in the own sources of three plugins (2 in the barcode scanner, 20 in the payments plugin, 1 in the video player). None comes from the runner's sources or from the remote SwiftPM packages. [expected-warnings.tsv](expected-warnings.tsv) lists them by package, file and message, so that a later check can fail on a new warning only.
+
 ## Not proven
 
+- Row 1: that URL redirects reach plugins when the runner makes its view controller in code. Google sign-in working in a grafted build does not show it, because every grafted build that ran Google sign-in carried Xcode's storyboard, which makes the view controller the way UIKit does. Only a build with no storyboard and all plugins, run on a device, answers it.
 - Row 2: that the build-machine path is the whole of the difference to Xcode's `App`.
 - Row 4: that the engine folder equals Google's published artifact; it was inherited.
 - Rows 7 to 10 and 12: only copies have been used. Whether an IPA with winCode's own versions passes the same checks is open.

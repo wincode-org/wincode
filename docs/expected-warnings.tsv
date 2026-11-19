@@ -1,0 +1,35 @@
+# Expected compiler warnings of the Runner build of a real app (eleven native plugins).
+#
+# One row per warning, as three tab-separated columns: package folder (name and version), file inside it, message.
+# The message has Swift's trailing [#Group] tag removed; clang's [-Wflag] is kept. Line numbers are left out on
+# purpose: they change when a file is edited without adding a warning. Compare the rows of a new build with these as a
+# multiset; a row that is not here is a new warning.
+#
+# Source: the log of one build on 2026-11-02 (Flutter 3.47.5, Swift 6.4, iOS SDK 26.5, swift-build). The log has 44 lines
+# with "warning:" because Swift prints each warning twice, once as its headline and once in the code excerpt; there are
+# 23 distinct warnings. They come from three plugins' own sources. None comes from the app's runner sources or from the
+# remote SwiftPM packages (the payments SDK, the Google sign-in chain).
+# When a plugin or the toolchain is updated, rebuild, review the differences, and replace this file in the same pull request.
+mobile_scanner-7.4.1	darwin/mobile_scanner/Sources/mobile_scanner/MobileScannerCameraSelector.swift	'devices(for:)' was deprecated in iOS 10.0: Use AVCaptureDeviceDiscoverySession instead.
+mobile_scanner-7.4.1	darwin/mobile_scanner/Sources/mobile_scanner/MobileScannerPlugin.swift	immutable value 'device' was never used; consider replacing with '_' or removing it
+stripe_ios-14.0.0	ios/stripe_ios/Sources/stripe_ios/EmbeddedPaymentElementFactory.swift	left side of nil coalescing operator '??' has non-optional type 'String', so the right side is never used
+stripe_ios-14.0.0	ios/stripe_ios/Sources/stripe_ios/EmbeddedPaymentElementFactory.swift	left side of nil coalescing operator '??' has non-optional type 'String', so the right side is never used
+stripe_ios-14.0.0	ios/stripe_ios/Sources/stripe_ios/EmbeddedPaymentElementFactory.swift	left side of nil coalescing operator '??' has non-optional type 'String', so the right side is never used
+stripe_ios-14.0.0	ios/stripe_ios/Sources/stripe_ios/Stripe Sdk/CustomerSheet/ReactNativeCustomerAdapter.swift	expression implicitly coerced from 'String?' to 'Any'
+stripe_ios-14.0.0	ios/stripe_ios/Sources/stripe_ios/Stripe Sdk/EmbeddedPaymentElementView.swift	value 'self' was defined but never used; consider replacing with boolean test
+stripe_ios-14.0.0	ios/stripe_ios/Sources/stripe_ios/Stripe Sdk/PaymentOptionDisplayData+ReactNative.swift	expression implicitly coerced from 'String?' to 'Any'
+stripe_ios-14.0.0	ios/stripe_ios/Sources/stripe_ios/Stripe Sdk/StripeSdkImpl+PaymentSheet.swift	'catch' block is unreachable because no errors are thrown in 'do' block
+stripe_ios-14.0.0	ios/stripe_ios/Sources/stripe_ios/Stripe Sdk/StripeSdkImpl+PaymentSheet.swift	'init(mode:paymentMethodTypes:onBehalfOf:paymentMethodConfigurationId:confirmHandler:requireCVCRecollection:)' is deprecated: The confirmHandler closure has been replaced by an async version. To update, delete the `intentCreationCallback` argument in the closure and return the intent client secret or throw an error. See https://github.com/stripe/stripe-ios/blob/master/MIGRATING.md#migrating-from-versions--2500 for help.
+stripe_ios-14.0.0	ios/stripe_ios/Sources/stripe_ios/Stripe Sdk/StripeSdkImpl+PaymentSheet.swift	immutable value 'customerClientSecret' was never used; consider replacing with '_' or removing it
+stripe_ios-14.0.0	ios/stripe_ios/Sources/stripe_ios/Stripe Sdk/StripeSdkImpl+PaymentSheet.swift	immutable value 'customerEphemeralKeySecret' was never used; consider replacing with '_' or removing it
+stripe_ios-14.0.0	ios/stripe_ios/Sources/stripe_ios/Stripe Sdk/StripeSdkImpl+PaymentSheet.swift	variable 'customerClientSecret' was never mutated; consider changing to 'let' constant
+stripe_ios-14.0.0	ios/stripe_ios/Sources/stripe_ios/Stripe Sdk/StripeSdkImpl+PaymentSheet.swift	variable 'customerEphemeralKeySecret' was never mutated; consider changing to 'let' constant
+stripe_ios-14.0.0	ios/stripe_ios/Sources/stripe_ios/Stripe Sdk/StripeSdkImpl.swift	'confirmPayment(_:with:completion:)' is deprecated: renamed to 'confirmPaymentIntent(params:authenticationContext:completion:)'
+stripe_ios-14.0.0	ios/stripe_ios/Sources/stripe_ios/Stripe Sdk/StripeSdkImpl.swift	'confirmSetupIntent(_:with:completion:)' is deprecated: renamed to 'confirmSetupIntent(params:authenticationContext:completion:)'
+stripe_ios-14.0.0	ios/stripe_ios/Sources/stripe_ios/Stripe Sdk/StripeSdkImpl.swift	'handleNextAction(forPayment:with:returnURL:completion:)' is deprecated: renamed to 'handleNextAction(paymentIntentClientSecret:authenticationContext:completion:)'
+stripe_ios-14.0.0	ios/stripe_ios/Sources/stripe_ios/Stripe Sdk/StripeSdkImpl.swift	'handleNextAction(forSetupIntent:with:returnURL:completion:)' is deprecated: renamed to 'handleNextAction(setupIntentClientSecret:authenticationContext:completion:)'
+stripe_ios-14.0.0	ios/stripe_ios/Sources/stripe_ios/StripePlugin.swift	left side of nil coalescing operator '??' has non-optional type 'String', so the right side is never used
+stripe_ios-14.0.0	ios/stripe_ios/Sources/stripe_ios/StripePlugin.swift	value 'resultList' was defined but never used; consider replacing with boolean test
+stripe_ios-14.0.0	ios/stripe_ios/Sources/stripe_objc/RCTBridge.m	property 'requiresMainQueueSetup' requires method 'requiresMainQueueSetup' to be defined - use @dynamic or provide a method implementation in this category [-Wobjc-property-implementation]
+stripe_ios-14.0.0	ios/stripe_ios/Sources/stripe_objc/Stripe Sdk/StripeSdkEventEmitterCompat.m	method definition for 'sendEventWithName:body:' not found [-Wincomplete-implementation]
+video_player_avfoundation-2.12.0	Sources/video_player_avfoundation_objc/include/video_player_avfoundation_objc/FVPAVFactory.h	'AVKeyValueStatus' is deprecated: first deprecated in iOS 16.0 - Use AVAsyncProperty.Status instead
