@@ -1,6 +1,6 @@
 # Producer matrix: who makes each file of a finished IPA
 
-Status: 2026-11-19. Measured on one real Flutter app with eleven native plugins, built through the hybrid lane (ADR-0008) and compared with an Xcode-built copy of the same app by `tools/ipa-diff`. The app is not named.
+Status: 2026-11-21. Measured on one real Flutter app with eleven native plugins, built through the hybrid lane (ADR-0008) and compared with an Xcode-built copy of the same app by `tools/ipa-diff`. The app is not named. The rows describe build 14, the last build that carried Xcode's storyboard. Build 17, which has none, was uploaded and run on an iPhone on 2026-11-21 (section "Build 17").
 
 A finished IPA is a folder of files. This page puts every file into a group and says who makes that group today when winCode builds the app, and what still needs a tool that runs only on a Mac. It describes the files, not App Review: Apple's processing of these builds and a run on a device are the only acceptance tests so far (PLAN, "Where we stand").
 
@@ -15,7 +15,7 @@ A finished IPA is a folder of files. This page puts every file into a group and 
 
 ## The matrix
 
-The measured IPA has 910 files; the Xcode-built copy has 911. The one file only Xcode's copy has is the ad-hoc signature list of one framework, which signing replaces. Row 7 is part of row 6, so the file counts add up to 910.
+The measured IPA (build 14) has 910 files; the Xcode-built copy has 911. The one file only Xcode's copy has is the ad-hoc signature list of one framework, which signing replaces. Row 7 is part of row 6, so the file counts add up to 910.
 
 | # | File group | Files | Made by | State | How it differs from Xcode's file |
 | --- | --- | ---: | --- | --- | --- |
@@ -28,8 +28,8 @@ The measured IPA has 910 files; the Xcode-built copy has 911. The one file only 
 | 7 | `Assets.car` inside four third-party bundles (vector and packed images, 1,460,912 bytes) | 4 | **Apple-made** (`actool`), copied | Proven, not produced by winCode | Equal, because they are Xcode's. |
 | 8 | `Assets.car` of the app itself (app icon, launch colour; 981,720 bytes) | 1 | **Apple-made** (`actool`), copied | Proven, not produced by winCode | Equal, because it is Xcode's. winCode's own writer is the separate `Assets.car` track. |
 | 9 | Loose icon PNGs next to the app's `Assets.car` | 2 | **Apple-made** (`actool` with `--compress-pngs`, which writes Apple's CgBI variant), copied | Proven, not produced by winCode | Equal, because they are Xcode's. |
-| 10 | Compiled storyboard (`Main.storyboardc`: two nibs and a plist) | 3 | **Apple-made** (`ibtool`), copied | Proven | Equal, because it is Xcode's. The runner can instead make its window in code and drop the storyboard (ADR-0011 rule 3, spike F). The first grafted builds had none and ran; a later experiment added the Xcode-built storyboard back and the builds after it kept it. |
-| 11 | The app's `Info.plist` | 1 | winCode: merges the app's file with the build settings (`wincode_core`) | Proven | Four keys fewer (row 14). The identity keys (bundle ID, name, version, build number) are those of the test app. |
+| 10 | Compiled storyboard (`Main.storyboardc`: two nibs and a plist) and the two `Info.plist` keys that name it (`UIMainStoryboardFile`, and `UISceneStoryboardFile` in the scene configuration) | 3 in build 14; 0 in build 17 | Not needed. The runner makes its view controller in code, the way a storyboard makes it (ADR-0011 rule 3, spike F, `sceneDelegateBase`). Build 14 carried Xcode's copy (`ibtool`) | Proven by build 17, which has neither the files nor the keys | Build 14: equal, because the files are Xcode's. Build 17: three files and two keys fewer, nothing in their place. |
+| 11 | The app's `Info.plist` | 1 | winCode: merges the app's file with the build settings (`wincode_core`) | Proven | Four keys fewer (row 14); in build 17 also the two storyboard keys (row 10). The identity keys (bundle ID, name, version, build number) are those of the test app. |
 | 12 | `PkgInfo`, the binary `AppFrameworkInfo.plist` and the root `PrivacyInfo.xcprivacy` | 3 | Copied from the Xcode-built copy. Their formats are trivial; winCode has not yet written them itself | Proven | Equal. |
 | 13 | Signatures: each Mach-O's code signature, each bundle's `_CodeSignature/CodeResources`, the entitlements | all signed | winCode: zsign in WSL2 or on Linux, with the team's own certificate (ADR-0009, `wincode sign`) | Proven | Not compared with the Xcode copy, which is unsigned at the top level. Checked by `wincode sign` and `wincode preflight` instead. |
 | 14 | Four `Info.plist` keys that only Xcode writes: `DTXcode`, `DTXcodeBuild`, `DTCompiler`, `BuildMachineOSBuild` | 4 keys in each of 26 plists | Nobody: winCode never writes them (ADR-0011 rule 2) | Proven: App Store Connect processed builds without them | The only difference left in the 25 bundle plists. |
@@ -41,10 +41,27 @@ The measured IPA has 910 files; the Xcode-built copy has 911. The one file only 
 | --- | ---: | --- | --- |
 | Compiled asset catalogs | 5 in the measured app | `actool` is Apple's, and no open format description covers vector and packed renditions. | The packages' catalogs (4): a cloud job on a macOS runner makes them once, cached by a hash of their inputs (design: a later pull request). The app's own catalog: winCode's clean-room writer, PNG only, a separate track. |
 | Loose CgBI icon PNGs | 2 | Same tool, with `--compress-pngs`. | The same cloud job; the flag is part of its recipe. |
-| Compiled storyboards and xibs | 3 | `ibtool` is Apple's. | Not needed: put the window in code (ADR-0011 rule 3). None of the app's eleven plugins ships one; the SwiftPM test hosts that do are not linked. |
 | Four `Info.plist` keys | 4 per plist | They describe the Xcode that built the app, so any value winCode wrote would be false. | None, by policy. |
 
+Storyboards and xibs are no longer on this list. `ibtool` is not needed: none of the app's eleven plugins ships one (the SwiftPM test hosts that do are not linked), and build 17 shows that the app needs none when the runner makes its window in code (row 10). The two `Info.plist` keys that name a storyboard went with it.
+
 Inputs are Apple's too, and stay so: the SDK headers and libraries (the user's own Xcode download, never shipped by winCode), the signing certificate and the provisioning profile, and App Review.
+
+## Build 17: no storyboard, all plugins
+
+Build 17 is build 14 with these changes and no others: the `Runner` and `App` rebuilt in fixed neutral folders (`docs/spikes/spike-f-device-test.md`), the runner's scene delegate making the view controller the way a storyboard does (`sceneDelegateBase`), `Base.lproj/Main.storyboardc` removed, and `UIMainStoryboardFile` and `UISceneStoryboardFile` removed from `Info.plist`. All nine plugin classes are linked. It has 907 files, three fewer than build 14.
+
+| Evidence | Result |
+| --- | --- |
+| `tools/ipa-diff` against build 14 | Only the build number, the two storyboard keys and the three storyboard files differ, besides the rebuilt `Runner` and `App`. Their load commands are equal, and so are the entitlements. |
+| `tools/ipa-diff` against the Xcode-built copy | Only the differences named on this page, plus the storyboard keys and files. |
+| `tools/ipa-declarations` on the signed build | 4 of 4: URL types, queried schemes, entitlements and universal-link hosts equal to the Xcode-built copy. |
+| Compiler warnings | 23 in the log, 23 in [expected-warnings.tsv](expected-warnings.tsv), none new. |
+| Build folders | A search of the finished `Runner` and `App` finds no user name, no project or client folder name, and no `/home/` or `/mnt/` path. |
+| App Store Connect | Uploaded to the test app record, internal group only. Processed as valid about 4 minutes after the upload started (2026-11-21). No error. One warning, code 90725: Apple's notice that from April 2027 uploads must be built with the iOS 27 SDK (this build used 26.5). |
+| Device | By the maintainer, on one iPhone, from TestFlight: two cold launches, Google sign-in, Apple sign-in, and the payment sheet opening all passed. Nothing was paid: the build carries the production key. The iOS version was not recorded. |
+
+What this shows: with no storyboard, the code-made view controller gave the plugins what these four steps need, including the return of Google sign-in to the app through a URL. What it does not show is under "Not proven".
 
 ## Patches in what winCode builds
 
@@ -56,12 +73,16 @@ The Swift build of the measured app logs 23 distinct warnings. All of them are i
 
 ## Not proven
 
-- Row 1: that URL redirects reach plugins when the runner makes its view controller in code. Google sign-in working in a grafted build does not show it, because every grafted build that ran Google sign-in carried Xcode's storyboard, which makes the view controller the way UIKit does. Only a build with no storyboard and all plugins, run on a device, answers it.
+- Payment return URLs: a payment that comes back to the app through a URL (3-D Secure, a redirect method) was not exercised. The reference's payment sheet has no return URL, and build 17's device test only opened the sheet.
+- Deep links and universal links: not exercised. The reference declares no URL scheme for deep links and no associated domain, so there is no behaviour to compare. `tools/ipa-declarations` shows only that what the reference declares is unchanged.
+- Every row: App Review has not judged a build made this way.
+- Other devices and iOS versions: build 17 ran on one iPhone. The minimum supported version (iOS 15) is not covered. Apple Pay is not configured in the reference.
+- Row 1: what build 17 shows is for this app's two sign-in flows and its payment sheet. A plugin that needs another launch event or another URL callback is not covered.
 - Row 2: that the build-machine path is the whole of the difference to Xcode's `App`.
 - Row 4: that the engine folder equals Google's published artifact; it was inherited.
-- Rows 7 to 10 and 12: only copies have been used. Whether an IPA with winCode's own versions passes the same checks is open.
-- Every row: App Review has not judged a build made this way.
+- Rows 7 to 9 and 12: only copies have been used. Whether an IPA with winCode's own versions passes the same checks is open.
+- Build folders: nothing enforces the fixed neutral folders yet; the check is a search of the finished files, run by hand.
 
 ## How to repeat the check
 
-`tools/ipa-diff <our.ipa> <xcode-built.ipa>` lists Info.plist keys, framework layout, load commands, entitlements and the SHA-256 of every other file. It reads files only and runs no Apple tool. The counts above come from its output and from a file-by-file comparison of the same two IPAs.
+`tools/ipa-diff <our.ipa> <xcode-built.ipa>` lists Info.plist keys, framework layout, load commands, entitlements and the SHA-256 of every other file. It reads files only and runs no Apple tool. The counts above come from its output and from a file-by-file comparison of the same two IPAs. `tools/ipa-declarations <our.ipa> <xcode-built.ipa>` checks that URL types, queried schemes, entitlements and universal-link hosts are equal.
