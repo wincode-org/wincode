@@ -39,7 +39,7 @@ The measured IPA (build 14) has 910 files; the Xcode-built copy has 911. The one
 
 | What | Files | Why winCode cannot make it yet | Path |
 | --- | ---: | --- | --- |
-| Compiled asset catalogs | 5 in the measured app | `actool` is Apple's, and no open format description covers vector and packed renditions. | The packages' catalogs (4): a cloud job on a macOS runner makes them once, cached by a hash of their inputs (design: a later pull request). The app's own catalog: winCode's clean-room writer, PNG only, a separate track. |
+| Compiled asset catalogs | 5 in the measured app | `actool` is Apple's, and no open format description covers vector and packed renditions. | The packages' catalogs (4): a cloud job on a macOS runner makes them once, cached by a hash of their inputs (design: [ADR-0016](adr/0016-asset-catalog-cloud-job.md)). The app's own catalog: winCode's clean-room writer, PNG only, a separate track. |
 | Loose CgBI icon PNGs | 2 | Same tool, with `--compress-pngs`. | The same cloud job; the flag is part of its recipe. |
 | Four `Info.plist` keys | 4 per plist | They describe the Xcode that built the app, so any value winCode wrote would be false. | None, by policy. |
 
