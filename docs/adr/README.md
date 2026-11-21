@@ -19,4 +19,4 @@ Architecture Decision Records. Copy `0000-template.md` for each new decision.
 | [0013](0013-wincode-cli-build-sign-upload.md) | wincode CLI: build, sign, upload | Proposed |
 | [0014](0014-one-project-many-apps.md) | One project, many apps: several apps in one wincode.yaml, a credentials reference per app | Accepted |
 | [0015](0015-wincode-build.md) | wincode build: the unsigned IPA from a GitHub macOS runner, started and followed through GitHub's REST API | Accepted |
-| [0016](0016-asset-catalog-cloud-job.md) | A cloud job compiles asset catalogs with `actool`, cached by a hash of its inputs (design only) | Proposed |
+| [0016](0016-asset-catalog-cloud-job.md) | A cloud job compiles asset catalogs with `actool`, cached by a hash of its inputs (design; step 0 captured) | Proposed |
