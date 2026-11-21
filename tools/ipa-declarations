@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+"""ipa-declarations: check that what an app declares to iOS is present, and unchanged, in a build.
+
+  tools/ipa-declarations <ours> <reference> [--entitlements FILE]
+  tools/ipa-declarations --self-test
+
+<ours> and <reference> are each an .app directory, an .ipa file, or a folder holding one .app (as for ipa-diff). Each
+check prints PASS, FAIL or SKIP; the exit status is 1 when any check fails, 2 on a usage error, 0 otherwise.
+
+  URL schemes            CFBundleURLTypes is equal.
+  Queried schemes        LSApplicationQueriesSchemes is equal.
+  Entitlements           Every entitlement the reference carries is in ours with the same value, and the ones ours adds
+                         are only those a provisioning profile adds.
+  Universal-link hosts   The "applinks:" hosts of com.apple.developer.associated-domains are equal.
+
+The reference's entitlements are read from its code signature. An Xcode build before signing has none: pass the
+project's entitlements file with --entitlements. When ours is unsigned the two entitlement checks are SKIPped, so run
+the tool again on the signed IPA. A FAIL line names the differing values; a PASS line gives only counts. The values
+are an app's identifiers, so keep the output of a real app out of public places.
+
+It reads files only (ipa-diff's Mach-O reader) and runs no Apple tool.
+"""
+import contextlib
+import io
+import plistlib
+import struct
+import sys
+import tempfile
+from importlib.machinery import SourceFileLoader
+from importlib.util import module_from_spec, spec_from_loader
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+# Entitlements that signing adds from the provisioning profile, so they need not be in the app's own entitlements.
+PROFILE_KEYS = {"application-identifier", "com.apple.developer.team-identifier", "keychain-access-groups",
+                "get-task-allow", "beta-reports-active"}
+DOMAINS = "com.apple.developer.associated-domains"
+
+
+def ipa_diff():
+    loader = SourceFileLoader("ipa_diff", str(HERE / "ipa-diff"))
+    module = module_from_spec(spec_from_loader("ipa_diff", loader))
+    loader.exec_module(module)
+    return module
+
+
+def declarations(path, d, scratch):
+    """The Info.plist and the entitlements (None when unsigned) of the main executable of the app at <path>."""
+    app = d.open_bundle(path, scratch)
+    info = plistlib.loads((app / "Info.plist").read_bytes())
+    macho = d.macho((app / info["CFBundleExecutable"]).read_bytes())
+    return info, (d.entitlements(macho["signature"]) if macho else None)
+
+
+def hosts(entitlements):
+    return sorted(v[len("applinks:"):] for v in entitlements.get(DOMAINS, []) if v.startswith("applinks:"))
+
+
+def compare(ours, reference, expected):
+    """[(status, name, detail)] for ours = (info, entitlements), reference = (info, entitlements), expected = the
+    reference's entitlements (a dict), or None when they could not be read."""
+    results = []
+
+    def add(ok, name, ok_text, fail_text):
+        results.append(("PASS" if ok else "FAIL", name, ok_text if ok else fail_text))
+
+    for key, name in (("CFBundleURLTypes", "URL schemes"), ("LSApplicationQueriesSchemes", "Queried schemes")):
+        a, b = ours[0].get(key, []), reference[0].get(key, [])
+        add(a == b, name, f"equal ({len(b)} declared)", f"ours {a!r}, reference {b!r}")
+    if ours[1] is None:
+        for name in ("Entitlements", "Universal-link hosts"):
+            results.append(("SKIP", name, "ours is unsigned: check the signed IPA"))
+        return results
+    missing = sorted(k for k in expected if k not in ours[1])
+    changed = sorted(k for k in expected if k in ours[1] and ours[1][k] != expected[k])
+    extra = sorted(k for k in ours[1] if k not in expected and k not in PROFILE_KEYS)
+    problems = [f"missing {missing}"] * bool(missing) + [f"changed {changed}"] * bool(changed) + [f"unexpected {extra}"] * bool(extra)
+    add(not problems, "Entitlements", f"{len(expected)} of the reference present and equal; ours adds only profile keys",
+        "; ".join(problems))
+    a, b = hosts(ours[1]), hosts(expected)
+    add(a == b, "Universal-link hosts", f"equal ({len(b)} declared)", f"ours {a}, reference {b}")
+    return results
+
+
+def run(ours_path, reference_path, entitlements_file=None):
+    d = ipa_diff()
+    with tempfile.TemporaryDirectory() as ta, tempfile.TemporaryDirectory() as tb:
+        ours, reference = declarations(ours_path, d, ta), declarations(reference_path, d, tb)
+    expected = reference[1]
+    if entitlements_file:
+        expected = plistlib.loads(Path(entitlements_file).read_bytes())
+    elif expected is None and ours[1] is not None:
+        print("ipa-declarations: the reference is unsigned: pass the project's entitlements file with --entitlements",
+              file=sys.stderr)
+        return 2
+    results = compare(ours, reference, expected)
+    for status, name, detail in results:
+        print(f"{status}  {name}: {detail}")
+    return 1 if any(r[0] == "FAIL" for r in results) else 0
+
+
+def self_test():
+    def macho(entitlements):
+        sig = b""
+        if entitlements is not None:
+            xml = plistlib.dumps(entitlements)
+            blob = struct.pack(">II", 0xFADE7171, 8 + len(xml)) + xml
+            sig = struct.pack(">IIIII", 0xFADE0CC0, 20 + len(blob), 1, 5, 20) + blob
+        command = struct.pack("<IIII", 0x1D, 16, 48, len(sig)) if entitlements is not None else b""
+        return struct.pack("<IiiIIIII", 0xFEEDFACF, 0x0100000C, 0, 2, 1 if command else 0, len(command), 0, 0) + command + sig
+
+    def app(root, name, info, entitlements):
+        folder = Path(root) / f"{name}.app"
+        folder.mkdir()
+        (folder / "Info.plist").write_bytes(plistlib.dumps({"CFBundleExecutable": "X", **info}))
+        (folder / "X").write_bytes(macho(entitlements))
+        return folder
+
+    urls = {"CFBundleURLTypes": [{"CFBundleURLSchemes": ["one"]}]}
+    signed = {"com.apple.developer.applesignin": ["Default"], "application-identifier": "T.b", "get-task-allow": False}
+    with tempfile.TemporaryDirectory() as root:
+        reference = app(root, "reference", urls, None)
+        file = Path(root) / "p.entitlements"
+        file.write_bytes(plistlib.dumps({"com.apple.developer.applesignin": ["Default"]}))
+
+        def status(info, entitlements, entitlements_file=file):
+            ours = app(root, f"ours{len(list(Path(root).glob('*.app')))}", info, entitlements)
+            out = {}
+            with contextlib.redirect_stdout(io.StringIO()) as text, contextlib.redirect_stderr(io.StringIO()):
+                code = run(ours, reference, entitlements_file)
+            for line in text.getvalue().splitlines():
+                out[line.split(":")[0].split("  ")[1]] = line.split("  ")[0]
+            return code, out
+
+        code, out = status(urls, signed)
+        assert code == 0 and set(out.values()) == {"PASS"}, (code, out)
+        code, out = status({"CFBundleURLTypes": [{"CFBundleURLSchemes": ["two"]}]}, signed)
+        assert code == 1 and out["URL schemes"] == "FAIL", (code, out)
+        code, out = status(urls, {"application-identifier": "T.b"})
+        assert code == 1 and out["Entitlements"] == "FAIL", (code, out)  # applesignin missing
+        code, out = status(urls, {**signed, "com.apple.developer.applesignin": ["Other"]})
+        assert code == 1 and out["Entitlements"] == "FAIL", (code, out)  # value changed
+        code, out = status(urls, {**signed, "com.apple.developer.in-app-payments": ["m"]})
+        assert code == 1 and out["Entitlements"] == "FAIL", (code, out)  # one the profile does not add
+        code, out = status(urls, {**signed, DOMAINS: ["applinks:example.test"]})
+        assert code == 1 and out["Universal-link hosts"] == "FAIL", (code, out)
+        code, out = status({**urls, "LSApplicationQueriesSchemes": ["x"]}, signed)
+        assert code == 1 and out["Queried schemes"] == "FAIL", (code, out)
+        code, out = status(urls, None)
+        assert code == 0 and out["Entitlements"] == "SKIP" and out["URL schemes"] == "PASS", (code, out)
+        assert status(urls, signed, None)[0] == 2  # unsigned reference, no entitlements file
+    print("ipa-declarations self-test: ok")
+
+
+if __name__ == "__main__":
+    args = sys.argv[1:]
+    if args == ["--self-test"]:
+        self_test()
+    elif len(args) == 2 or (len(args) == 4 and args[2] == "--entitlements"):
+        sys.exit(run(args[0], args[1], args[3] if len(args) == 4 else None))
+    else:
+        sys.exit(__doc__)
