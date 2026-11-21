@@ -87,6 +87,19 @@ jobs:
       - name: lint the reference workflow
         run: '"$RUNNER_TEMP/actionlint/actionlint" -color packages/wincode_cli/templates/wincode-ios.yml'
 
+  ipa-declarations:
+    # tools/ipa-declarations compares the URL types, entitlements and universal-link hosts of a build with an Xcode-built
+    # copy of the app. Its self-test makes small bundles with a code signature in a temporary folder: no IPA, nothing of
+    # Apple's. The tool reads Mach-O files with tools/ipa-diff, so a break there shows here too.
+    name: ipa-declarations self-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: self-test
+        run: python3 -I tools/ipa-declarations --self-test
+
   zsign:
     # ADR-0013, phase 3a and section 11: the zsign that winCode pins signs a generated app with a throwaway certificate,
     # through the same code as a Linux server runs. wincode doctor --sign records the binary, wincode sign starts it
