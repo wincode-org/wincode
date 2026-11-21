@@ -202,7 +202,7 @@ Decisions for the maintainer, with a recommendation each:
 - **Copy from an Xcode-built copy (today).** Needs a copy per app and per change of the catalogs, and a Mac build to make it.
 - **A full `flutter build ipa` on the runner for every build (the cloud Mac lane).** About 7 minutes of macOS for a real app on every build, to get five files that rarely change.
 - **`xcodebuild` on a generated project, so that Xcode chooses the flags.** The flags are Xcode's by construction, but the generated project's settings must match the app's, and a package's resource bundle is not made the way a project's target is. Kept as the fallback if direct `actool` cannot reproduce the reference's entries.
-- **Reading `actool` itself to learn its flags.** Not allowed: Apple's tools are never looked inside (CLAUDE.md, PLAN). Command lines and outputs only.
+- **Reading `actool` itself to learn its flags.** Not allowed: Apple's tools are never looked inside (CONTRIBUTING.md, PLAN). Command lines and outputs only.
 - **winCode's own `Assets.car` writer now.** It is the separate clean-room track and does not cover vector and packed renditions yet.
 - **Only the Actions cache, no store on the PC.** The cache forgets after 7 days without use, so the job would run again for inputs that did not change.
 - **A per-catalog hash.** Saves seconds, not minutes (section 4).
