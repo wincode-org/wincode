@@ -43,3 +43,5 @@ A generic sample app (the stock counter app and `launch_events_recorder`, a plug
 ## Reproduce
 
 `gh workflow run launch-events.yml --ref <branch>`; it also runs when its file is pushed to `feat/launch-events`. The artifact has the logs of each variant and scenario, a screenshot of each launch, `summary.md` and the environment.
+
+Part 2, the device test of a build with no storyboard and all plugins, and the fixed build folder: `spike-f-device-test.md`.
