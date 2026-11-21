@@ -206,7 +206,7 @@ Everything else is clean: every native plugin with native code ships a `Package.
 
 ## Gaps found by real apps
 
-Building a real production app, with a payments SDK built from stock sources as its heaviest dependency, showed where the Linux toolchain is not Xcode. The evidence is in ADR-0012. Each row is a position, not yet a finished piece of work.
+Building a real production app, with a payments SDK built from stock sources as its heaviest dependency, showed where the Linux toolchain is not Xcode. The evidence is in ADR-0012. Each row is a position, not yet a finished piece of work. Who makes each file of a finished IPA, and what is still Apple-made, is in [producer-matrix.md](producer-matrix.md).
 
 | Gap | Position | State |
 | --- | --- | --- |
