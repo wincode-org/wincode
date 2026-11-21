@@ -1,6 +1,6 @@
 # Spike F, part 2: a storyboard-free build with all plugins, on a device
 
-Status: written 2026-11-20. The build is made and checked; **it has not been uploaded or run on a device yet**, so there is no result. This page is the plan and what each result means.
+Status: written 2026-11-20, result added 2026-11-21. Build 17 was uploaded, processed as valid, and run on an iPhone by the maintainer: **every step that was reported passed** (section "Result"). The rest of the page is the plan as it was written.
 
 ## Question
 
@@ -63,6 +63,14 @@ A note on step 4: reaching the sheet makes the app ask its server for a payment 
 
 - **All five pass:** the storyboard leaves the Apple-made list. The producer matrix row for `Main.storyboardc` changes from "copied" to "not needed", and "Not proven" loses its first line: URL redirects reach plugins when the runner makes its view controller in code, for the two sign-ins of this app, on this device.
 - **Any step fails:** report which step, and the record column above. Do not change anything. The report names which launch events or URL callbacks were missed, with that evidence, and the work stops there: the design of a fix is a separate task. The next measurement would be a build with a plugin that records every launch event and URL callback it receives, as spike F's did on the simulator.
+
+## Result
+
+Build 17 was uploaded to the test app record (internal group only) and processed as valid on 2026-11-21, about 4 minutes after the upload started, with no error and one notice: code 90725, Apple's note that from April 2027 uploads must be built with the iOS 27 SDK (this build used 26.5).
+
+The maintainer ran it from TestFlight on one iPhone. The report names steps 1 to 4, and all of them passed: two cold launches, Google sign-in, Apple sign-in, and the payment sheet opening. The report does not mention step 0, the build number shown in TestFlight; the build that ran is the upload of build 17. Nothing was paid. The iOS version was not recorded.
+
+By the rule above, the storyboard leaves the Apple-made list, and the producer matrix records it. The "Not tested" list below still stands.
 
 ## Not tested
 
