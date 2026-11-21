@@ -3,7 +3,8 @@ name: oracle-reference-builds
 # Reference data from real Xcode for the zero-rejection checks and the Assets.car track
 # (docs/PLAN.md): the spike counter app and the spike E hooks app built by Xcode, text dumps of
 # both bundles, and placeholder assets compiled by actool: an app icon (docs/formats/assets-car-app-icon.md),
-# and the colour set and image set that a UILaunchScreen entry names (ADR-0011, rule 3).
+# and the colour set and image set that a UILaunchScreen entry names (ADR-0011, rule 3). The last steps save the `actool`
+# command lines that Xcode itself passes for an app's catalog and for a Swift package's resource bundle (ADR-0016, step 0).
 # Outputs only: no signing, no Apple account, no secrets. Compare with the Windows-built bundles
 # using tools/ipa-diff. Manual only: gh workflow run oracle-reference-builds.yml --ref <branch>
 
@@ -120,6 +121,97 @@ jobs:
           "${cmd[@]}" >"$S/actool-output.txt" 2>&1
           xcrun assetutil --info "$O/Assets.car" >"$S/assetutil-info.json"
           (cd "$O" && find . -type f -exec stat -f '%z %N' {} + | sort -k2) >"$S/compiled-files.txt"
+
+      # Step 0 of ADR-0016 (docs/adr/0016-asset-catalog-cloud-job.md): save the `actool` command lines that Xcode itself passes
+      # for an app's catalog (the two builds above) and for the resource bundle of a Swift package (the two probes below).
+      # Observation only: the lines and the catalogs they made go to `dumps/capture/` (artifact `xcode-dumps`), and the recipe
+      # is written from them afterwards. Each probe is its own step and may fail without stopping the other; the last step
+      # of the group fails the job when a probe left no actool line, so an empty capture is never green. `timeout-minutes`
+      # on each step keeps a hang from using the whole job's 30 minutes.
+      - name: Probe catalog (one image set, a plain generated PNG)
+        timeout-minutes: 3
+        run: |
+          set -euo pipefail
+          C="$RUNNER_TEMP/probe-catalog/Assets.xcassets"; mkdir -p "$C/ProbeImage.imageset"
+          printf '{"info":{"author":"xcode","version":1}}\n' >"$C/Contents.json"
+          printf '{"images":[{"filename":"probe@2x.png","idiom":"universal","scale":"2x"}],"info":{"author":"xcode","version":1}}\n' \
+            >"$C/ProbeImage.imageset/Contents.json"
+          python3 - "$C/ProbeImage.imageset/probe@2x.png" <<'PY'
+          # A plain 8 x 8 RGBA image: no art, no text.
+          import struct, sys, zlib
+          def chunk(kind, data):
+              return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+          rows = b"".join(b"\0" + bytes((32, 96, 160, 255)) * 8 for _ in range(8))
+          open(sys.argv[1], "wb").write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 8, 8, 8, 6, 0, 0, 0))
+                                        + chunk(b"IDAT", zlib.compress(rows, 9)) + chunk(b"IEND", b""))
+          PY
+          file "$C/ProbeImage.imageset/probe@2x.png"
+
+      - name: Probe A, a Flutter plugin whose Swift package has one catalog, built into an app by Flutter
+        continue-on-error: true
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          P="$RUNNER_TEMP/probe"; D="$RUNNER_TEMP/dumps/capture"; mkdir -p "$P" "$D"; cd "$P"
+          flutter create --template=plugin --platforms=ios --org dev.wincode.spike probe_assets >/dev/null
+          flutter create --org dev.wincode.spike --project-name probe_app --platforms ios probe_app >/dev/null
+          S="probe_assets/ios/probe_assets"
+          test -f "$S/Package.swift" || { echo "the plugin template made no Swift package:"; find probe_assets/ios | sort; exit 1; }
+          cp -R "$RUNNER_TEMP/probe-catalog/Assets.xcassets" "$S/Sources/probe_assets/"
+          perl -0pi -e 's/(resources:\s*\[)/$1\n                .process("Assets.xcassets"),/' "$S/Package.swift"
+          grep -q '\.process("Assets.xcassets")' "$S/Package.swift" || { echo "no resources list in Package.swift:"; cat "$S/Package.swift"; exit 1; }
+          cd probe_app
+          flutter pub add probe_assets --path ../probe_assets
+          flutter build ios --release --no-codesign -v >"$D/probe-plugin-build.log" 2>&1 \
+            || { tail -60 "$D/probe-plugin-build.log"; exit 1; }
+
+      - name: Probe B, a plain Swift package with one catalog, built for iOS by xcodebuild
+        continue-on-error: true
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          P="$RUNNER_TEMP/probe-package"; D="$RUNNER_TEMP/dumps/capture"; mkdir -p "$P/Sources/ProbePackage" "$D"; cd "$P"
+          cat >Package.swift <<'SWIFT'
+          // swift-tools-version: 5.9
+          import PackageDescription
+          let package = Package(
+              name: "ProbePackage",
+              platforms: [.iOS(.v15)],
+              products: [.library(name: "ProbePackage", targets: ["ProbePackage"])],
+              targets: [.target(name: "ProbePackage", resources: [.process("Assets.xcassets")])]
+          )
+          SWIFT
+          echo 'public let probe = 1' >Sources/ProbePackage/Probe.swift
+          cp -R "$RUNNER_TEMP/probe-catalog/Assets.xcassets" Sources/ProbePackage/
+          xcodebuild -scheme ProbePackage -destination 'generic/platform=iOS' -configuration Release \
+            -derivedDataPath "$P/dd" CODE_SIGNING_ALLOWED=NO build >"$D/probe-package-build.log" 2>&1 \
+            || { tail -60 "$D/probe-package-build.log"; exit 1; }
+
+      - name: Save the actool lines and the catalogs they made, and check that both probes left some
+        if: always()
+        run: |
+          D="$RUNNER_TEMP/dumps/capture"; mkdir -p "$D"
+          # Each line, with the two lines before it (Xcode's "CompileAssetCatalog ..." header and the "cd" line).
+          for log in "$RUNNER_TEMP/dumps/build-counter.log" "$RUNNER_TEMP/dumps/build-hooks_app.log" "$D"/probe-*-build.log; do
+            [ -f "$log" ] || continue
+            n=$(basename "$log" .log)
+            grep -n -B2 '/actool ' "$log" >"$D/$n.actool.txt" || true
+            echo "$n: $(grep -c '/actool ' "$log" || true) lines with /actool"
+          done | tee "$D/summary.txt"
+          # Every Assets.car that these builds made: size, SHA-256 and `assetutil --info`.
+          for root in "$RUNNER_TEMP/app-counter" "$RUNNER_TEMP/app-hooks_app" "$RUNNER_TEMP/probe/probe_app/build/ios/iphoneos" "$RUNNER_TEMP/probe-package/dd/Build/Products"; do
+            [ -d "$root" ] || continue
+            find "$root" -name Assets.car | sort | while read -r f; do
+              rel="${f#"$RUNNER_TEMP"/}"; name=$(echo "$rel" | tr '/ ' '__')
+              echo "$rel: $(stat -f '%z' "$f") bytes, sha256 $(shasum -a 256 "$f" | cut -d' ' -f1)"
+              xcrun assetutil --info "$f" >"$D/assetutil-$name.json" 2>&1 || true
+            done
+          done | tee "$D/assets-car-files.txt"
+          # A probe counts only when its own catalog was compiled (its package name is in the lines around the actool call).
+          ok=0
+          grep -q 'probe_assets' "$D/probe-plugin-build.actool.txt" 2>/dev/null || { echo "::error::probe A (plugin) left no actool line for probe_assets"; ok=1; }
+          grep -q 'ProbePackage' "$D/probe-package-build.actool.txt" 2>/dev/null || { echo "::error::probe B (package) left no actool line for ProbePackage"; ok=1; }
+          exit "$ok"
 
       - name: Upload counter Runner.app
         if: always() && github.event.repository.private == true
